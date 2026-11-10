@@ -7,6 +7,7 @@
 
 #include <grapher/DrawList.h>
 #include <grapher/Graph.h>
+#include <grapher/Groups.h>
 #include <grapher/Routing.h>
 #include <grapher/Schema.h>
 #include <grapher/Style.h>
@@ -90,6 +91,9 @@ public:
     bool Wheel(Vec2 at, float steps);
     /// @}
 
+    /// @brief What is under a screen point, topmost first: nodes, then edges, then groups. A group is hit by its
+    ///        header strip, its resize grip and its connect handle; its empty interior is empty canvas (a press there
+    ///        starts a marquee, a right-click adds a node into it).
     [[nodiscard]] Hit  HitTest(Vec2 screen) const;
     [[nodiscard]] bool Busy() const { return mode_ != Mode::Idle; }
 
@@ -106,6 +110,7 @@ public:
     /// @name Edits (each snapshots through onBeforeChange, then reports onChanged)
     /// @{
     /// @return the new node's id; empty when `type` is unknown
+    /// @note A node added with its centre in a group's frame lands wholly inside it (see the move gesture).
     std::string AddNode(std::string_view type, Vec2 worldCenter);
     /// @return false when nothing was selected
     bool DeleteSelection();
@@ -124,6 +129,11 @@ private:
     enum class Mode { Idle, Moving, Resizing, Connecting, Marquee, Panning };
 
     [[nodiscard]] DrawList Render(const Camera& cam, Vec2 viewport, bool chrome) const;
+    /// @param groupInterior a group's empty interior counts as the group (a connection's target)
+    [[nodiscard]] Hit HitAt(Vec2 screen, bool groupInterior) const;
+    /// @brief Each of `roots` whose centre lies in a group's frame but sticks out of it slides wholly inside, below the
+    ///        header, when it fits; a group slides with what it holds. Groups in `moving` are no target.
+    void Settle(const NodeSet& roots, const NodeSet& moving);
     /// @brief Every wire's world-space path, rerouted only when a node frame, an edge or the options changed.
     /// @note A backend router keeps routing live during a drag while its incremental reroute is quick. When it is slow, the
     ///       wires that touch no dragged node keep their routed paths, the rest take the built-in router's, and the drop
@@ -152,6 +162,7 @@ private:
     std::string active_;            ///< the node a resize or connect starts from
     std::string connectTo_;
     std::vector<std::pair<std::string, Rect>> origin_;   ///< frames at the start of a move or resize
+    NodeSet     carried_;           ///< moving because a selected group holds them, not because they are selected
 
     mutable WirePaths   wires_;
     mutable std::size_t wiresKey_   = 0;

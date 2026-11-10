@@ -5,6 +5,7 @@
 ///        (orthogonal A* over a sparse grid of the nodes' outlines, preferring few bends and unused lanes) and drawn in
 ///        its type's style: an elbow keeps its corners (slightly rounded), a curve rounds them wide, a straight line
 ///        keeps them sharp. A curve or straight line that is already clear keeps its plain shape.
+///        A group (NodeShape::Group) is no obstacle: wires run over it, though one can end on its outline.
 
 #include <grapher/Graph.h>
 #include <grapher/Schema.h>

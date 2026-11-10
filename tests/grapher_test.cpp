@@ -362,6 +362,185 @@ void TestBackendDrag()
     }
 }
 
+grapher::Schema GroupSchema()
+{
+    grapher::Schema s;
+    grapher::NodeType box{"box", "Box"};
+    box.width  = 100.f;
+    box.height = 60.f;
+    s.nodeTypes.push_back(box);
+    grapher::NodeType folder{"folder", "Folder"};
+    folder.shape  = grapher::NodeShape::Group;
+    folder.fields = {{"name", "Name"}, {"path", "Path", grapher::FieldKind::Path}};
+    s.nodeTypes.push_back(folder);
+    grapher::EdgeType curve{"curve", "curve"};
+    curve.color = {1, 2, 3};
+    s.edgeTypes.push_back(curve);
+    return s;
+}
+
+void TestGroupMembership()
+{
+    const grapher::Schema s = GroupSchema();
+    grapher::Graph        g;
+    g.nodes.push_back({"a", "box", {60, 100, 100, 60}});
+    g.nodes.push_back({"G", "folder", {0, 0, 600, 400}});
+    g.nodes.push_back({"H", "folder", {40, 60, 300, 200}});
+    g.nodes.push_back({"b", "box", {400, 100, 100, 60}});
+    g.nodes.push_back({"c", "box", {800, 100, 100, 60}});
+    g.nodes.push_back({"half", "box", {550, 100, 100, 60}});   // sticks out of G: not a member
+    CHECK(grapher::IsGroup(g.nodes[1], s) && !grapher::IsGroup(g.nodes[0], s));
+    CHECK(grapher::ParentGroup(g, s, *g.FindNode("a")) == "H");   // the smallest frame wins, so groups nest
+    CHECK(grapher::ParentGroup(g, s, *g.FindNode("b")) == "G");
+    CHECK(grapher::ParentGroup(g, s, *g.FindNode("H")) == "G");
+    CHECK(grapher::ParentGroup(g, s, *g.FindNode("G")).empty());
+    CHECK(grapher::ParentGroup(g, s, *g.FindNode("c")).empty());
+    CHECK(grapher::ParentGroup(g, s, *g.FindNode("half")).empty());
+    CHECK((grapher::GroupMembers(g, s, "G") == std::vector<std::string>{"a", "H", "b"}));
+    CHECK((grapher::GroupMembers(g, s, "H") == std::vector<std::string>{"a"}));
+
+    // Two groups of the same frame never hold each other.
+    g.nodes.push_back({"G2", "folder", {0, 0, 600, 400}});
+    CHECK(!grapher::GroupHolds(g.nodes[1], g.nodes.back(), s) && !grapher::GroupHolds(g.nodes.back(), g.nodes[1], s));
+}
+
+void TestGroupGestures()
+{
+    const grapher::Schema s = GroupSchema();
+    grapher::Graph        g;
+    g.nodes.push_back({"G", "folder", {0, 0, 600, 400}, {{"name", "src"}, {"path", "D:/x/src"}}});
+    g.nodes.push_back({"H", "folder", {40, 60, 300, 200}, {{"name", "inner"}}});
+    g.nodes.push_back({"a", "box", {60, 100, 100, 60}});
+    g.nodes.push_back({"b", "box", {400, 100, 100, 60}});
+    g.nodes.push_back({"c", "box", {800, 100, 100, 60}});
+    grapher::Canvas canvas(g, s);   // identity camera: screen = world
+    canvas.SetViewport({1200, 800});
+    int snapshots = 0, changes = 0;
+    canvas.onBeforeChange = [&](std::string_view) { ++snapshots; };
+    canvas.onChanged      = [&] { ++changes; };
+    auto frame = [&](const char* id) { return g.FindNode(id)->frame; };
+    auto drag  = [&](grapher::Vec2 from, grapher::Vec2 to) {
+        canvas.PointerDown(from, grapher::Button::Left, {});
+        canvas.PointerMove({(from.x + to.x) * 0.5f, (from.y + to.y) * 0.5f});
+        canvas.PointerMove(to);
+        canvas.PointerUp(to, grapher::Button::Left);
+    };
+
+    // A group is hit by its header; its empty interior is empty canvas, an inner group's header is the inner group.
+    CHECK(canvas.HitTest({300, 10}).kind == grapher::HitKind::Node && canvas.HitTest({300, 10}).id == "G");
+    CHECK(canvas.HitTest({300, 350}).kind == grapher::HitKind::None);
+    CHECK(canvas.HitTest({200, 70}).id == "H");
+    CHECK(canvas.HitTest({200, 240}).kind == grapher::HitKind::None);
+    CHECK(canvas.HitTest({590, 390}).kind == grapher::HitKind::Resize);   // the grip still works
+    CHECK(canvas.HitTest({100, 130}).id == "a");                          // a member is over its group
+
+    // A press in the interior starts a marquee: it picks what it touches inside, and a group only when it holds all of it.
+    drag({380, 80}, {590, 390});
+    CHECK((canvas.SelectedNodes() == grapher::NodeSet{"b"}));
+    drag({30, 50}, {350, 270});
+    CHECK((canvas.SelectedNodes() == grapher::NodeSet{"H", "a"}));
+    CHECK(snapshots == 0);
+
+    // Dragging a group by its header moves everything it holds, nested groups included, in one snapshot.
+    drag({300, 10}, {350, 60});
+    CHECK(snapshots == 1 && changes == 1);
+    CHECK((canvas.SelectedNodes() == grapher::NodeSet{"G"}));
+    CHECK(frame("G").x == 50.f && frame("G").y == 50.f);
+    CHECK(frame("H").x == 90.f && frame("a").x == 110.f && frame("a").y == 150.f && frame("b").x == 450.f);
+    CHECK(frame("c").x == 800.f);   // outside: left alone
+
+    // Dropping a node with its centre in a group's frame puts it wholly inside, below the header.
+    drag({820, 120}, {590, 120});   // c lands at x 570: its centre is in G, its right edge out
+    CHECK(frame("c").x == 540.f && frame("c").y == 100.f);   // G's right 650, less the padding, less c's width
+    CHECK(grapher::ParentGroup(g, s, *g.FindNode("c")) == "G");
+    CHECK(snapshots == 2);
+
+    // Moving the group now takes c along; dragging c out by its centre takes it out.
+    drag({300, 60}, {300, 80});
+    CHECK(frame("c").y == 120.f && frame("G").y == 70.f);
+    drag({560, 140}, {960, 140});
+    CHECK(frame("c").x == 940.f && grapher::ParentGroup(g, s, *g.FindNode("c")).empty());
+
+    // A group dropped half into a bigger one goes in with what it holds.
+    g.nodes.push_back({"F", "folder", {1000, 500, 200, 150}});
+    g.nodes.push_back({"f", "box", {1020, 540, 100, 60}});
+    drag({1100, 510}, {600, 360});   // F to (500, 350): its centre in G (50..650, 70..470), its corner out
+    CHECK(frame("F").x == 440.f && frame("F").y == 310.f);   // G's right less padding less F's width; bottom likewise
+    CHECK(frame("f").x == 460.f && frame("f").y == 350.f);   // f keeps its place in F
+    CHECK(grapher::ParentGroup(g, s, *g.FindNode("F")) == "G" && grapher::ParentGroup(g, s, *g.FindNode("f")) == "F");
+    g.RemoveNodes({"F", "f"});
+
+    // A node added with its centre in a group lands inside it (the smallest one).
+    const grapher::Rect h = frame("H");   // {90, 130, 300, 200}
+    const std::string   n = canvas.AddNode("box", {h.Right() - 10.f, h.y + 100.f});
+    CHECK(grapher::ParentGroup(g, s, *g.FindNode(n)) == "H");
+    CHECK(frame(n.c_str()).Right() == h.Right() - canvas.style.padding);
+
+    // A connection dropped in a group's interior ends on the group.
+    const grapher::Rect rc = frame("c");
+    canvas.PointerDown({rc.Right(), rc.y + rc.h * 0.5f}, grapher::Button::Left, {});
+    canvas.PointerMove({600, 440});
+    canvas.PointerUp({600, 440}, grapher::Button::Left);
+    CHECK(g.edges.size() == 1 && g.edges[0].from == "c" && g.edges[0].to == "G");
+}
+
+void TestGroupDraw()
+{
+    const grapher::Schema s = GroupSchema();
+    grapher::Graph        g;
+    g.nodes.push_back({"a", "box", {60, 100, 100, 60}});
+    g.nodes.push_back({"G", "folder", {0, 0, 600, 400}, {{"name", "src"}, {"path", "D:/x/src"}}});
+    g.nodes.push_back({"b", "box", {400, 100, 100, 60}});
+    g.edges.push_back({"e", "a", "b", "curve"});
+    grapher::Canvas canvas(g, s);
+    canvas.SetViewport({800, 600});
+    canvas.SelectNodes({"G"});   // selected nodes draw last; a selected group still stays behind
+
+    const grapher::DrawList l = canvas.Draw();
+    std::size_t group = 0, edge = 0, nodeA = 0, title = 0, path = 0, grip = 0;
+    for (std::size_t i = 0; i < l.cmds.size(); ++i) {
+        if (const auto* r = std::get_if<grapher::FillRect>(&l.cmds[i])) {
+            if (r->rect == g.nodes[1].frame && !group) group = i;
+            if (r->rect == g.nodes[0].frame && !nodeA) nodeA = i;
+        }
+        if (const auto* p = std::get_if<grapher::Polyline>(&l.cmds[i]); p && p->color == s.edgeTypes[0].color && !edge) edge = i;
+        if (const auto* p = std::get_if<grapher::Polygon>(&l.cmds[i]); p && p->fill == canvas.style.selection) grip = i;
+        if (const auto* t = std::get_if<grapher::Text>(&l.cmds[i])) {
+            if (t->text == "src" && t->bold && t->box.y == 0.f && t->box.h == canvas.style.groupHeader) title = i;
+            if (t->text == "D:/x/src") path = i;
+        }
+    }
+    CHECK(group > 0 && edge > group && nodeA > edge);   // the frame under the wires, the wires under the cards
+    CHECK(title > group && title < edge && path > title);   // a header label on the frame
+    CHECK(grip > nodeA);                                    // its handles over what it holds
+    const auto& frameCmd = std::get<grapher::FillRect>(l.cmds[group]);
+    CHECK(frameCmd.fill.a == canvas.style.groupFill && frameCmd.stroke == canvas.style.selection);
+}
+
+void TestGroupRouting()
+{
+    // Groups are no obstacles: a wire runs over one, into what it holds, and onto the group itself.
+    const grapher::Schema s = GroupSchema();
+    grapher::Graph        g;
+    g.nodes.push_back({"a", "box", {0, 0, 100, 60}});
+    g.nodes.push_back({"b", "box", {400, 0, 100, 60}});
+    g.nodes.push_back({"G", "folder", {150, -100, 200, 260}});
+    g.nodes.push_back({"m", "box", {200, 300, 100, 60}});
+    g.nodes.push_back({"M", "folder", {180, 250, 140, 140}});   // holds m
+    g.edges.push_back({"ab", "a", "b", "curve"});
+    g.edges.push_back({"am", "a", "m", "curve"});
+    g.edges.push_back({"aG", "a", "G", "curve"});
+    const auto w = grapher::RouteWires(g, s, {});
+    CHECK(w.at("ab").size() == 25);   // its plain bezier, straight over G
+    CHECK(Crosses(w.at("ab"), g.nodes[2].frame));
+    CHECK(w.at("am").size() == 25);   // into a member, over its group's outline
+    CHECK(w.contains("aG") && w.at("aG").back().x == 150.f);   // onto the group's facing side
+
+    // The same frame as a card is an obstacle again.
+    g.nodes[2].type = "box";
+    CHECK(!Crosses(grapher::RouteWires(g, s, {}).at("ab"), g.nodes[2].frame));
+}
+
 } // namespace
 
 int main()
@@ -381,6 +560,10 @@ int main()
     TestTransitionsAndDefaults();
     TestRouting();
     TestBackendDrag();
+    TestGroupMembership();
+    TestGroupGestures();
+    TestGroupDraw();
+    TestGroupRouting();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

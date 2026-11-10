@@ -39,6 +39,11 @@ struct Rect {
     [[nodiscard]] constexpr bool  Intersects(const Rect& o) const {
         return x <= o.Right() && o.x <= Right() && y <= o.Bottom() && o.y <= Bottom();
     }
+    /// @brief Whether `o` lies wholly inside (touching the outline counts).
+    [[nodiscard]] constexpr bool Holds(const Rect& o) const {
+        return o.x >= x - 0.01f && o.Right() <= Right() + 0.01f && o.y >= y - 0.01f && o.Bottom() <= Bottom() + 0.01f;
+    }
+    [[nodiscard]] constexpr float Area() const { return w * h; }
     [[nodiscard]] constexpr Rect Inflated(float d) const { return {x - d, y - d, w + 2 * d, h + 2 * d}; }
     [[nodiscard]] static Rect FromPoints(Vec2 a, Vec2 b) {
         return {std::min(a.x, b.x), std::min(a.y, b.y), std::abs(b.x - a.x), std::abs(b.y - a.y)};

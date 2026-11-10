@@ -6,5 +6,6 @@
 #include <grapher/DrawList.h>
 #include <grapher/Geometry.h>
 #include <grapher/Graph.h>
+#include <grapher/Groups.h>
 #include <grapher/Schema.h>
 #include <grapher/Style.h>

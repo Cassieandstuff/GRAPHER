@@ -206,6 +206,46 @@ void TestDragKeepsRoutes(bool slow)
     CHECK(routed("after the drop"));
 }
 
+void TestGroupsAreNoObstacles()
+{
+    // A group is no obstacle: a wire runs straight over it, a wire to it ends on its outline, and its frame becomes an
+    // obstacle when its type stops being a group (and stops again when it goes back), incrementally.
+    grapher::Schema s = MakeSchema();
+    grapher::NodeType group{"group", "Group"};
+    group.shape = grapher::NodeShape::Group;
+    s.nodeTypes.push_back(group);
+    grapher::Graph g;
+    g.nodes.push_back({"a", "box", {0, 0, 100, 60}});
+    g.nodes.push_back({"b", "box", {400, 0, 100, 60}});
+    g.nodes.push_back({"G", "group", {150, -100, 200, 260}});
+    g.nodes.push_back({"c", "box", {150, 400, 100, 60}});
+    g.edges.push_back({"ab", "a", "b", "elbow"});
+    g.edges.push_back({"cG", "c", "G", "elbow"});
+    auto router = grapher::avoid::MakeRouter();
+    auto straight = [](const std::vector<Vec2>& p) {
+        for (const Vec2& v : p)
+            if (std::abs(v.y - p.front().y) > 1.f) return false;
+        return true;
+    };
+
+    auto w = router->Route(g, s, {});
+    CHECK(w.contains("ab") && w.contains("cG"));
+    if (!w.contains("ab") || !w.contains("cG")) return;
+    CHECK(straight(w.at("ab")) && Crosses(w.at("ab"), g.nodes[2].frame));
+    CHECK(OnOutline(w.at("cG").back(), g.nodes[2].frame));
+
+    g.nodes[2].type = "box";
+    w = router->Route(g, s, {});
+    CHECK(w.contains("ab") && !Crosses(w.at("ab"), g.nodes[2].frame));
+    CHECK(w.contains("cG") && OnOutline(w.at("cG").back(), g.nodes[2].frame));
+
+    g.nodes[2].type  = "group";
+    g.nodes[2].frame = {150, -120, 200, 260};   // and a moved group end follows it
+    w = router->Route(g, s, {});
+    CHECK(w.contains("ab") && straight(w.at("ab")));
+    CHECK(w.contains("cG") && OnOutline(w.at("cG").back(), g.nodes[2].frame));
+}
+
 } // namespace
 
 int main()
@@ -219,6 +259,7 @@ int main()
     TestAvoidsNodes();
     TestNestsParallelElbows();
     TestCanvasUsesBackend();
+    TestGroupsAreNoObstacles();
     TestDragKeepsRoutes(false);
     TestDragKeepsRoutes(true);
     if (g_failed) {

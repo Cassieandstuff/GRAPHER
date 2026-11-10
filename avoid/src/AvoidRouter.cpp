@@ -1,8 +1,11 @@
 #include <grapher/avoid/AvoidRouter.h>
 
+#include <grapher/Groups.h>
+
 #include <libavoid/libavoid.h>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -38,6 +41,22 @@ void AddPins(Avoid::ShapeRef* shape)
 }
 
 Avoid::Rectangle RectOf(const Rect& r) { return Avoid::Rectangle(Avoid::Point(r.x, r.y), Avoid::Point(r.Right(), r.Bottom())); }
+
+/// @brief Where a wire meets a group, which is no obstacle and so has no shape or pins: the middle of the group's side
+///        that faces the wire's other end, leaving outward.
+Avoid::ConnEnd GroupEnd(const Rect& group, const Rect& other, Avoid::Point& at)
+{
+    const Vec2 d = other.Center() - group.Center();
+    Avoid::ConnDirFlags dir;
+    if (std::abs(d.x) * (group.h + other.h) >= std::abs(d.y) * (group.w + other.w)) {
+        at  = Avoid::Point(d.x >= 0 ? group.Right() : group.x, group.y + group.h * 0.5);
+        dir = d.x >= 0 ? Avoid::ConnDirRight : Avoid::ConnDirLeft;
+    } else {
+        at  = Avoid::Point(group.x + group.w * 0.5, d.y >= 0 ? group.Bottom() : group.y);
+        dir = d.y >= 0 ? Avoid::ConnDirDown : Avoid::ConnDirUp;
+    }
+    return Avoid::ConnEnd(at, dir);
+}
 
 Avoid::ConnType TypeOf(EdgeLine line) { return line == EdgeLine::Straight ? Avoid::ConnType_PolyLine : Avoid::ConnType_Orthogonal; }
 
@@ -76,6 +95,8 @@ struct AvoidRouter::Impl {
         Avoid::ConnRef* ref = nullptr;
         std::string     from, to;
         EdgeLine        line = EdgeLine::Curve;
+        bool            groupEnd[2] = {false, false};   ///< the source / target end is a group's side, not a shape
+        Avoid::Point    at[2];                         ///< where a group end sits
     };
 
     std::unique_ptr<Avoid::Router>         router;
@@ -109,15 +130,22 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
     if (!m.router || !(m.options == o)) m.Reset(o);
     Avoid::Router& router = *m.router;
 
+    // Groups are no obstacles (wires run over them to what they hold), so they get no shape.
+    std::unordered_map<std::string_view, const Node*> nodes;
+    std::unordered_set<std::string_view>              groups;
+    for (const Node& n : graph.nodes) {
+        nodes.emplace(n.id, &n);
+        if (IsGroup(n, schema)) groups.insert(n.id);
+    }
+
     // Connectors that no longer exist, or whose ends changed, go first: a shape is never deleted under a connector.
-    std::unordered_set<std::string> nodeIds;
-    for (const Node& n : graph.nodes) nodeIds.insert(n.id);
     std::unordered_map<std::string, const Edge*> wanted;
     for (const Edge& e : graph.edges)
-        if (e.from != e.to && nodeIds.contains(e.from) && nodeIds.contains(e.to)) wanted.emplace(e.id, &e);
+        if (e.from != e.to && nodes.contains(e.from) && nodes.contains(e.to)) wanted.emplace(e.id, &e);
     for (auto it = m.conns.begin(); it != m.conns.end();) {
         const auto w = wanted.find(it->first);
-        if (w == wanted.end() || w->second->from != it->second.from || w->second->to != it->second.to) {
+        if (w == wanted.end() || w->second->from != it->second.from || w->second->to != it->second.to ||
+            groups.contains(it->second.from) != it->second.groupEnd[0] || groups.contains(it->second.to) != it->second.groupEnd[1]) {
             router.deleteConnector(it->second.ref);
             it = m.conns.erase(it);
         } else {
@@ -125,9 +153,9 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
         }
     }
 
-    // Shapes: drop the gone, move the moved, add the new.
+    // Shapes: drop the gone (and the nodes that became groups), move the moved, add the new.
     for (auto it = m.shapes.begin(); it != m.shapes.end();) {
-        if (!nodeIds.contains(it->first)) {
+        if (!nodes.contains(it->first) || groups.contains(it->first)) {
             router.deleteShape(it->second.ref);
             it = m.shapes.erase(it);
         } else {
@@ -135,6 +163,7 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
         }
     }
     for (const Node& n : graph.nodes) {
+        if (groups.contains(n.id)) continue;
         auto it = m.shapes.find(n.id);
         if (it == m.shapes.end()) {
             Avoid::Rectangle rect = RectOf(n.frame);
@@ -147,19 +176,38 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
         }
     }
 
-    // Connectors: add the new, retype the changed.
+    // Connectors: add the new, retype the changed, follow the group ends that moved.
     for (const auto& [id, e] : wanted) {
-        const EdgeType* t    = schema.FindEdge(e->type);
-        const EdgeLine  line = t ? t->line : EdgeLine::Curve;
-        auto            it   = m.conns.find(id);
+        const EdgeType*   t    = schema.FindEdge(e->type);
+        const EdgeLine    line = t ? t->line : EdgeLine::Curve;
+        const std::string ends[2] = {e->from, e->to};
+        Avoid::Point      at[2];
+        auto endOf = [&](int k) {
+            const std::string& self = ends[k];
+            if (!groups.contains(self)) return Avoid::ConnEnd(m.shapes.at(self).ref, kAnySide);
+            return GroupEnd(nodes.at(self)->frame, nodes.at(ends[1 - k])->frame, at[k]);
+        };
+        auto it = m.conns.find(id);
         if (it == m.conns.end()) {
-            auto* ref = new Avoid::ConnRef(&router, Avoid::ConnEnd(m.shapes.at(e->from).ref, kAnySide),
-                                           Avoid::ConnEnd(m.shapes.at(e->to).ref, kAnySide));
+            const Avoid::ConnEnd src = endOf(0), dst = endOf(1);
+            auto* ref = new Avoid::ConnRef(&router, src, dst);
             ref->setRoutingType(TypeOf(line));
-            m.conns.emplace(id, Impl::Conn{ref, e->from, e->to, line});
-        } else if (it->second.line != line) {
-            it->second.ref->setRoutingType(TypeOf(line));
-            it->second.line = line;
+            Impl::Conn c{ref, e->from, e->to, line, {groups.contains(e->from), groups.contains(e->to)}, {at[0], at[1]}};
+            m.conns.emplace(id, c);
+            continue;
+        }
+        Impl::Conn& c = it->second;
+        if (c.line != line) {
+            c.ref->setRoutingType(TypeOf(line));
+            c.line = line;
+        }
+        for (int k = 0; k < 2; ++k) {
+            if (!c.groupEnd[k]) continue;
+            const Avoid::ConnEnd end = endOf(k);
+            if (at[k] == c.at[k]) continue;
+            c.at[k] = at[k];
+            if (k == 0) c.ref->setSourceEndpoint(end);
+            else c.ref->setDestEndpoint(end);
         }
     }
 

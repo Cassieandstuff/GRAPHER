@@ -224,6 +224,7 @@ std::string Canvas::AddNode(std::string_view type, Vec2 worldCenter)
     n.type  = t->id;
     n.frame = {Snap(worldCenter.x - t->width * 0.5f), Snap(worldCenter.y - t->height * 0.5f), t->width, t->height};
     graph_->nodes.push_back(n);
+    Settle({n.id}, {n.id});
     SelectNodes({n.id});
     Changed();
     return n.id;
@@ -281,15 +282,19 @@ Rect Canvas::ScreenRectOf(std::string_view nodeId) const
 
 // ── Hit testing ──────────────────────────────────────────────────────────────
 
-Hit Canvas::HitTest(Vec2 screen) const
+Hit Canvas::HitTest(Vec2 screen) const { return HitAt(screen, false); }
+
+Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
 {
-    // Topmost first: selected nodes draw last, so they are tested first.
-    std::vector<const Node*> order;
+    // Topmost first: selected nodes draw last, so they are tested first. Groups draw under everything, inner over outer.
+    std::vector<const Node*> order, groups;
     order.reserve(graph_->nodes.size());
     for (auto it = graph_->nodes.rbegin(); it != graph_->nodes.rend(); ++it)
-        if (selNodes_.contains(it->id)) order.push_back(&*it);
+        if (IsGroup(*it, *schema_)) groups.push_back(&*it);
+        else if (selNodes_.contains(it->id)) order.push_back(&*it);
     for (auto it = graph_->nodes.rbegin(); it != graph_->nodes.rend(); ++it)
-        if (!selNodes_.contains(it->id)) order.push_back(&*it);
+        if (!IsGroup(*it, *schema_) && !selNodes_.contains(it->id)) order.push_back(&*it);
+    std::stable_sort(groups.begin(), groups.end(), [](const Node* a, const Node* b) { return a->frame.Area() < b->frame.Area(); });
 
     const float handle = HandleRadius(style, camera.zoom) + 4.f;
     for (const Node* n : order) {
@@ -306,7 +311,47 @@ Hit Canvas::HitTest(Vec2 screen) const
         if (w == wires.end() || w->second.size() < 2) continue;
         if (PolylineDistance(screen, ToScreen(camera, w->second)) <= kEdgeHitPx) return {HitKind::Edge, it->id};
     }
+    for (const Node* n : groups) {
+        const Rect r = camera.ToScreen(n->frame);
+        if (Distance(screen, ConnectHandle(r)) <= handle) return {HitKind::Connect, n->id};
+        if (!r.Contains(screen)) continue;
+        if (ResizeGrip(r, style).Contains(screen)) return {HitKind::Resize, n->id};
+        if (groupInterior || screen.y <= r.y + style.groupHeader * camera.zoom) return {HitKind::Node, n->id};
+    }
     return {};
+}
+
+void Canvas::Settle(const NodeSet& roots, const NodeSet& moving)
+{
+    const float pad = style.padding;
+    for (const std::string& id : roots) {
+        Node* n = graph_->FindNode(id);
+        if (!n) continue;
+        const bool  group  = IsGroup(*n, *schema_);
+        const Vec2  centre = n->frame.Center();
+        const Node* target = nullptr;
+        for (const Node& g : graph_->nodes) {
+            if (g.id == id || moving.contains(g.id) || !IsGroup(g, *schema_) || !g.frame.Contains(centre)) continue;
+            if (group && g.frame.Area() <= n->frame.Area()) continue;
+            if (!target || g.frame.Area() < target->frame.Area()) target = &g;
+        }
+        if (!target || target->frame.Holds(n->frame)) continue;
+        const Rect& g = target->frame;
+        const Rect  inner{g.x + pad, g.y + style.groupHeader, g.w - 2 * pad, g.h - style.groupHeader - pad};
+        if (n->frame.w > inner.w || n->frame.h > inner.h) continue;   // too big to go in: it stays where it was dropped
+        const Vec2 d{std::clamp(n->frame.x, inner.x, inner.Right() - n->frame.w) - n->frame.x,
+                     std::clamp(n->frame.y, inner.y, inner.Bottom() - n->frame.h) - n->frame.y};
+        std::vector<std::string> along{id};
+        if (group) {
+            const auto held = GroupMembers(*graph_, *schema_, id);
+            along.insert(along.end(), held.begin(), held.end());
+        }
+        for (const std::string& m : along)
+            if (Node* node = graph_->FindNode(m)) {
+                node->frame.x += d.x;
+                node->frame.y += d.y;
+            }
+    }
 }
 
 const WirePaths& Canvas::Wires() const
@@ -327,7 +372,7 @@ const WirePaths& Canvas::Wires() const
     std::size_t key = Mix(reinterpret_cast<std::uintptr_t>(schema_), (plain ? 1u : 0u) | (patch ? 2u : 0u));
     key = Mix(key, optionsKey);
     for (const Node& n : graph_->nodes) {
-        key = Mix(key, hs(n.id));
+        key = Mix(Mix(key, hs(n.id)), hs(n.type));
         for (float f : {n.frame.x, n.frame.y, n.frame.w, n.frame.h}) key = Mix(key, Bits(f));
     }
     for (const Edge& e : graph_->edges) {
@@ -405,8 +450,14 @@ bool Canvas::PointerDown(Vec2 at, Button button, Modifiers mods)
         }
         if (!selNodes_.contains(hit.id)) SelectNodes({hit.id});
         mode_ = Mode::Moving;
+        // A selected group takes everything it holds along.
+        carried_.clear();
         for (const Node& n : graph_->nodes)
-            if (selNodes_.contains(n.id)) origin_.emplace_back(n.id, n.frame);
+            if (selNodes_.contains(n.id) && IsGroup(n, *schema_))
+                for (std::string& m : GroupMembers(*graph_, *schema_, n.id))
+                    if (!selNodes_.contains(m)) carried_.insert(std::move(m));
+        for (const Node& n : graph_->nodes)
+            if (selNodes_.contains(n.id) || carried_.contains(n.id)) origin_.emplace_back(n.id, n.frame);
         return true;
     case HitKind::Edge:
         SelectEdge(hit.id);
@@ -455,7 +506,7 @@ bool Canvas::PointerMove(Vec2 at)
         }
         return true;
     case Mode::Connecting: {
-        const Hit hit = HitTest(at);
+        const Hit hit = HitAt(at, true);   // a group's interior is a target too
         connectTo_    = (hit.kind != HitKind::None && hit.kind != HitKind::Edge && hit.id != active_) ? hit.id : std::string{};
         return true;
     }
@@ -476,6 +527,21 @@ bool Canvas::PointerUp(Vec2 at, Button)
 
     switch (mode) {
     case Mode::Moving:
+        if (started_) {
+            // Dropped with its centre in a group: it goes in. Members carried by a moved group stay where they are in it.
+            NodeSet roots, moving;
+            for (const auto& [id, frame] : origin_) {
+                moving.insert(id);
+                if (!carried_.contains(id)) roots.insert(id);
+            }
+            for (const auto& [id, frame] : origin_)
+                if (const Node* n = graph_->FindNode(id); n && IsGroup(*n, *schema_))
+                    for (const std::string& m : GroupMembers(*graph_, *schema_, id)) roots.erase(m);
+            Settle(roots, moving);
+            Changed();
+        }
+        carried_.clear();
+        return true;
     case Mode::Resizing:
         if (started_) Changed();
         return true;
@@ -500,8 +566,9 @@ bool Canvas::PointerUp(Vec2 at, Button)
         if (!started_) return true;
         const Rect box  = camera.ToWorld(Rect::FromPoints(downAt_, at));
         NodeSet    next = additive_ ? selNodes_ : NodeSet{};
+        // A group is picked only when the box takes in all of it, so a marquee started inside one selects what it holds.
         for (const Node& n : graph_->nodes)
-            if (box.Intersects(n.frame)) next.insert(n.id);
+            if (IsGroup(n, *schema_) ? box.Holds(n.frame) : box.Intersects(n.frame)) next.insert(n.id);
         SelectNodes(std::move(next));
         return true;
     }
@@ -551,6 +618,44 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         }
     }
 
+    // Groups, under everything else: outer ones first, so a nested group sits on its parent.
+    std::vector<const Node*> groups;
+    for (const Node& n : graph_->nodes)
+        if (IsGroup(n, *schema_)) groups.push_back(&n);
+    std::stable_sort(groups.begin(), groups.end(), [](const Node* a, const Node* b) { return a->frame.Area() > b->frame.Area(); });
+    for (const Node* g : groups) {
+        const NodeType& t   = TypeOf(*g);
+        const bool      sel = chrome && selNodes_.contains(g->id);
+        const bool      hov = chrome && (g->id == hovered_ || g->id == connectTo_);
+        const Rect      r   = cam.ToScreen(g->frame);
+        if (!r.Intersects(Rect{0, 0, viewport.x, viewport.y})) continue;
+        Color fill = t.band, head = t.band;
+        fill.a     = s.groupFill;
+        head.a     = static_cast<std::uint8_t>(std::min(255, s.groupFill * 2));
+        c.push_back(FillRect{r, fill, sel ? s.selection : (hov ? s.text : t.band), sel ? 2.f : 1.25f, s.corner * z});
+        const float hh = std::min(s.groupHeader * z, r.h);
+        c.push_back(FillRect{{r.x + 1.f, r.y + 1.f, std::max(0.f, r.w - 2.f), std::max(0.f, hh - 1.f)}, head, {}, 0.f, s.corner * z});
+
+        const float fs = s.fontSize * z;
+        if (fs < 4.f) continue;
+        const std::string& named = t.titleField.empty() ? std::string{} : g->Field(t.titleField);
+        const std::string  title = named.empty() ? "Untitled " + t.label : named;
+        std::string        detail;
+        for (const FieldDef& f : t.fields) {
+            const std::string& v = g->Field(f.id);
+            if (!f.onCard || f.id == t.titleField || v.empty()) continue;
+            if (!detail.empty()) detail += " · ";
+            detail += v;
+        }
+        const float pad = s.padding * z;
+        const float w   = std::max(0.f, r.w - 2 * pad);
+        const float ts  = fs * 1.1f;
+        const float tw  = detail.empty() ? w : std::min(w, ts * 0.62f * static_cast<float>(title.size()) + pad);
+        c.push_back(Text{{r.x + pad, r.y, tw, hh}, title, ts, named.empty() ? s.muted : s.text, true});
+        if (!detail.empty() && w - tw > 20.f)
+            c.push_back(Text{{r.x + pad + tw + pad * 0.5f, r.y, w - tw - pad * 0.5f, hh}, detail, fs, s.muted});
+    }
+
     // Edges, under the nodes; their labels go on top of everything, so a short edge between two cards still reads.
     std::vector<DrawCmd> labels;
     const float      arrow = std::clamp(9.f * z, 5.f, 12.f);
@@ -589,6 +694,14 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
             }
             c.push_back(Polyline{path, s.selection, 2.f, true});
         }
+
+    auto drawHandles = [&](const Rect& r, bool sel) {
+        const float hr = HandleRadius(s, z);
+        c.push_back(Circle{ConnectHandle(r), hr, s.background, sel ? s.selection : s.muted, 1.5f});
+        const Rect g = ResizeGrip(r, s);
+        c.push_back(Polygon{{{g.Right() - 2, g.y + 4}, {g.Right() - 2, g.Bottom() - 2}, {g.x + 4, g.Bottom() - 2}},
+                            sel ? s.selection : s.muted});
+    };
 
     // Nodes: unselected, then selected on top.
     auto drawNode = [&](const Node& n) {
@@ -669,19 +782,19 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         }
         }   // card / note
 
-        if (sel || hov) {
-            const float hr = HandleRadius(s, z);
-            c.push_back(Circle{ConnectHandle(r), hr, s.background, sel ? s.selection : s.muted, 1.5f});
-            const Rect g = ResizeGrip(r, s);
-            c.push_back(Polygon{{{g.Right() - 2, g.y + 4}, {g.Right() - 2, g.Bottom() - 2}, {g.x + 4, g.Bottom() - 2}},
-                                sel ? s.selection : s.muted});
-        }
+        if (sel || hov) drawHandles(r, sel);
     };
     for (const Node& n : graph_->nodes)
-        if (!chrome || !selNodes_.contains(n.id)) drawNode(n);
+        if (!IsGroup(n, *schema_) && (!chrome || !selNodes_.contains(n.id))) drawNode(n);
     if (chrome)
         for (const Node& n : graph_->nodes)
-            if (selNodes_.contains(n.id)) drawNode(n);
+            if (!IsGroup(n, *schema_) && selNodes_.contains(n.id)) drawNode(n);
+    // A group's handles go over what it holds, or its grip could hide under a member.
+    if (chrome)
+        for (const Node* g : groups) {
+            const bool sel = selNodes_.contains(g->id);
+            if (sel || g->id == hovered_ || g->id == connectTo_) drawHandles(cam.ToScreen(g->frame), sel);
+        }
 
     c.insert(c.end(), labels.begin(), labels.end());
 

@@ -30,6 +30,9 @@ enum class NodeShape {
     Card,   ///< a title, a type line, its fields, then the body as a summary
     Note,   ///< a text card: the body fills it
     Pill,   ///< a small capsule that edges run through: its on-card field values on one line, joined by " · "
+    /// @brief A frame that holds other nodes, drawn behind them with its title in a header strip. Membership is
+    ///        geometric (grapher/Groups.h): moving the group moves what it holds, and wires pass over it.
+    Group,
 };
 
 struct NodeType {

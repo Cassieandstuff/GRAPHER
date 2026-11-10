@@ -5,10 +5,19 @@ core knows no UI toolkit; backends paint its draw lists.
 
 | Header | Contents |
 |---|---|
-| `grapher/Schema.h` | `NodeType` (fields, shape: card / note / pill, colour, drillable, default edge), `EdgeType` (line, dash, arrow), `Schema` |
+| `grapher/Schema.h` | `NodeType` (fields, shape: card / note / pill / group, colour, drillable, default edge), `EdgeType` (line, dash, arrow), `Schema` |
 | `grapher/Graph.h` | `Node`, `Edge`, `Graph` — a value type, so undo is a copy |
+| `grapher/Groups.h` | group membership: a node belongs to the smallest group whose frame holds it (`ParentGroup`, `GroupMembers`) |
 | `grapher/Routing.h` | `RouteWires` — ports spread along node sides; wires that would cut through a node routed around it (orthogonal A*), drawn in their edge type's style |
 | `grapher/Canvas.h` | `Camera`, `Canvas` — gestures (select, move, resize, connect, marquee, pan, zoom) and `Draw()` |
+
+**Groups** (`NodeShape::Group`) are frames that hold nodes, as JSON Canvas groups do: membership is geometric, so they
+nest. A group draws behind the edges and nodes, with its title (and its other on-card fields) in a header strip. Its
+header, resize grip and connect handle pick it; its empty interior is empty canvas, so a press there starts a marquee
+(which takes a group only when it holds all of it). Dragging a group moves everything it holds; a node dropped or added
+with its centre in a group's frame slides wholly inside it (when it fits), and dragging its centre out takes it out.
+Neither router treats a group as an obstacle: wires run over it, and a wire can end on its outline.
+
 | `grapher/DrawList.h` | what a backend paints: rects, polylines, polygons, circles, text, in screen pixels |
 | `grapher/Style.h` | background, grid and card chrome |
 | `grapher/qt/CanvasWidget.h` | the Qt backend: `CanvasWidget` and `Paint(QPainter&, DrawList)` |

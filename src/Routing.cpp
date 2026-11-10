@@ -1,5 +1,7 @@
 #include <grapher/Routing.h>
 
+#include <grapher/Groups.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -97,10 +99,12 @@ bool SegmentHitsRect(Vec2 a, Vec2 b, const Rect& r)
     return clip(-dx, a.x - r.x) && clip(dx, r.Right() - a.x) && clip(-dy, a.y - r.y) && clip(dy, r.Bottom() - a.y) && t1 - t0 > 1e-4f;
 }
 
-bool PathClear(const std::vector<Vec2>& pts, const std::vector<Rect>& nodes, std::size_t skipA, std::size_t skipB, float pad)
+/// @param solid which nodes block a wire (a group doesn't: wires pass over it)
+bool PathClear(const std::vector<Vec2>& pts, const std::vector<Rect>& nodes, const std::vector<char>& solid, std::size_t skipA,
+               std::size_t skipB, float pad)
 {
     for (std::size_t k = 0; k < nodes.size(); ++k) {
-        if (k == skipA || k == skipB) continue;
+        if (k == skipA || k == skipB || !solid[k]) continue;
         const Rect r = nodes[k].Inflated(pad);
         for (std::size_t i = 1; i < pts.size(); ++i)
             if (SegmentHitsRect(pts[i - 1], pts[i], r)) return false;
@@ -347,9 +351,11 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
 {
     std::unordered_map<std::string_view, std::size_t> index;
     std::vector<Rect> frames;
+    std::vector<char> solid;   // a group is no obstacle: wires run over it to and from what it holds
     for (std::size_t k = 0; k < graph.nodes.size(); ++k) {
         index.emplace(graph.nodes[k].id, k);
         frames.push_back(graph.nodes[k].frame);
+        solid.push_back(IsGroup(graph.nodes[k], schema) ? 0 : 1);
     }
 
     std::vector<Wire> wires;
@@ -402,7 +408,7 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
         case EdgeLine::Elbow: plain = PlainElbow(wire.pa, wire.pb); break;
         default: plain = Bezier(wire.pa, wire.pb); break;
         }
-        const bool clear = !o.avoidNodes || PathClear(plain, frames, wire.a, wire.b, o.clearance * 0.4f);
+        const bool clear = !o.avoidNodes || PathClear(plain, frames, solid, wire.a, wire.b, o.clearance * 0.4f);
         if (wire.line != EdgeLine::Elbow && clear) out.emplace(wire.edge->id, std::move(plain));
         else if (!o.avoidNodes) out.emplace(wire.edge->id, RoundCorners(plain, o.cornerRadius));
         else {
@@ -418,12 +424,13 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
     std::vector<Rect>  obstacles;
     std::vector<float> xs, ys;
     Rect               all = frames.front();
-    for (const Rect& f : frames) {
-        const Rect r = f.Inflated(o.clearance);
+    for (std::size_t k = 0; k < frames.size(); ++k) {
+        const Rect r = frames[k].Inflated(o.clearance);
+        all = Rect::Union(all, r);
+        if (!solid[k]) continue;
         obstacles.push_back(r);
         xs.insert(xs.end(), {r.x, r.Right()});
         ys.insert(ys.end(), {r.y, r.Bottom()});
-        all = Rect::Union(all, r);
     }
     {
         // The lane down the middle of each gap between neighbouring outlines.
