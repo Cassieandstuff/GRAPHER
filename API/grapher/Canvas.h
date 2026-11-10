@@ -124,8 +124,10 @@ private:
     enum class Mode { Idle, Moving, Resizing, Connecting, Marquee, Panning };
 
     [[nodiscard]] DrawList Render(const Camera& cam, Vec2 viewport, bool chrome) const;
-    /// @brief Every wire's world-space path, rerouted only when a node frame, an edge or the options changed. While a drag
-    ///        is under way and a full route has been slow, wires take their plain shapes until the drop.
+    /// @brief Every wire's world-space path, rerouted only when a node frame, an edge or the options changed.
+    /// @note A backend router keeps routing live during a drag while its incremental reroute is quick. When it is slow, the
+    ///       wires that touch no dragged node keep their routed paths, the rest take the built-in router's, and the drop
+    ///       reroutes everything through the backend. Without a backend, a slow built-in route drags with plain shapes.
     [[nodiscard]] const WirePaths& Wires() const;
     [[nodiscard]] const NodeType& TypeOf(const Node& n) const;
     [[nodiscard]] float Snap(float v) const;
@@ -154,7 +156,10 @@ private:
     mutable WirePaths   wires_;
     mutable std::size_t wiresKey_   = 0;
     mutable bool        wiresValid_ = false;
-    mutable double      routeMs_    = 0.0;   ///< how long the last full route took
+    mutable double      routeMs_    = 0.0;   ///< how long the last built-in route around the nodes took
+    mutable WirePaths   routed_;             ///< the backend's last paths
+    mutable std::size_t backendKey_ = 0;     ///< the router and options the backend last routed with
+    mutable double      backendMs_  = -1.0;  ///< how long the backend's last incremental route took; < 0 = not yet known
 };
 
 } // namespace grapher

@@ -6,12 +6,13 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <unordered_set>
 
 namespace grapher {
 
 namespace {
 
-constexpr double kLiveRouteMs = 12.0;   ///< a full route slower than this pauses routing while dragging
+constexpr double kLiveRouteMs = 12.0;   ///< a route slower than this is not rerun on every step of a drag
 
 std::size_t Mix(std::size_t h, std::size_t v) { return h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2)); }
 std::size_t Bits(float f) { return std::bit_cast<std::uint32_t>(f); }
@@ -147,8 +148,9 @@ Canvas::Canvas(Graph& graph, const Schema& schema) : graph_(&graph), schema_(&sc
 
 void Canvas::SetGraph(Graph& graph)
 {
-    graph_ = &graph;
-    mode_  = Mode::Idle;
+    graph_      = &graph;
+    mode_       = Mode::Idle;
+    backendKey_ = 0;   // the backend rebuilds for a new graph; that route doesn't time a drag step
     hovered_.clear();
     ClearSelection();
 }
@@ -309,16 +311,21 @@ Hit Canvas::HitTest(Vec2 screen) const
 
 const WirePaths& Canvas::Wires() const
 {
-    const bool     fast = (mode_ == Mode::Moving || mode_ == Mode::Resizing) && started_ && routeMs_ > kLiveRouteMs;
-    RoutingOptions o    = routing;
-    if (fast) o.avoidNodes = false;
+    const bool     dragging = (mode_ == Mode::Moving || mode_ == Mode::Resizing) && started_;
+    // With a backend, a slow live reroute leaves the settled wires alone and patches only the dragged nodes' wires.
+    const bool     patch = router && dragging && backendMs_ > kLiveRouteMs;
+    const bool     plain = (!router || patch) && dragging && routeMs_ > kLiveRouteMs;
+    RoutingOptions o     = routing;
+    if (plain) o.avoidNodes = false;
+
+    std::size_t optionsKey = Mix(reinterpret_cast<std::uintptr_t>(router.get()),
+                                 (o.avoidNodes ? 1u : 0u) | (o.spreadPorts ? 2u : 0u));
+    for (float f : {o.clearance, o.bendCost, o.shareCost, o.crossCost, o.laneSpacing, o.cornerRadius, o.curveRadius})
+        optionsKey = Mix(optionsKey, Bits(f));
 
     const std::hash<std::string_view> hs;
-    std::size_t key = Mix(reinterpret_cast<std::uintptr_t>(schema_), fast);
-    key = Mix(key, reinterpret_cast<std::uintptr_t>(router.get()));
-    key = Mix(key, (o.avoidNodes ? 1u : 0u) | (o.spreadPorts ? 2u : 0u));
-    for (float f : {o.clearance, o.bendCost, o.shareCost, o.crossCost, o.laneSpacing, o.cornerRadius, o.curveRadius})
-        key = Mix(key, Bits(f));
+    std::size_t key = Mix(reinterpret_cast<std::uintptr_t>(schema_), (plain ? 1u : 0u) | (patch ? 2u : 0u));
+    key = Mix(key, optionsKey);
     for (const Node& n : graph_->nodes) {
         key = Mix(key, hs(n.id));
         for (float f : {n.frame.x, n.frame.y, n.frame.w, n.frame.h}) key = Mix(key, Bits(f));
@@ -330,10 +337,32 @@ const WirePaths& Canvas::Wires() const
     }
     if (wiresValid_ && key == wiresKey_) return wires_;
 
-    const auto start = std::chrono::steady_clock::now();
-    // Mid-drag on a slow graph the plain shapes come from the built-in router; a backend gets the settled geometry.
-    wires_           = (router && !fast) ? router->Route(*graph_, *schema_, o) : RouteWires(*graph_, *schema_, o);
-    if (!fast) routeMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    const auto start   = std::chrono::steady_clock::now();
+    const auto elapsed = [&] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(); };
+    if (router && !patch) {
+        // A backend's first route with a router or options builds everything; only the reroutes after it time a drag step.
+        const bool incremental = backendKey_ == optionsKey && !routed_.empty();
+        routed_     = router->Route(*graph_, *schema_, o);
+        backendMs_  = incremental ? elapsed() : -1.0;
+        backendKey_ = optionsKey;
+        wires_      = routed_;
+    } else if (patch) {
+        std::unordered_set<std::string_view> moving;
+        for (const auto& [id, frame] : origin_) moving.insert(id);
+        const WirePaths quick = RouteWires(*graph_, *schema_, o);
+        if (!plain) routeMs_ = elapsed();
+        wires_.clear();
+        for (const Edge& e : graph_->edges) {
+            const bool touched = moving.contains(e.from) || moving.contains(e.to);
+            const auto settled = routed_.find(e.id);
+            const auto live    = quick.find(e.id);
+            if (!touched && settled != routed_.end()) wires_.emplace(e.id, settled->second);
+            else if (live != quick.end()) wires_.emplace(e.id, live->second);
+        }
+    } else {
+        wires_ = RouteWires(*graph_, *schema_, o);
+        if (!plain) routeMs_ = elapsed();
+    }
     wiresKey_   = key;
     wiresValid_ = true;
     return wires_;

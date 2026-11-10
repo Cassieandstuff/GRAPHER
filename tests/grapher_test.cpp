@@ -1,9 +1,14 @@
 // GRAPHER core tests: plain asserts, no framework (the TARGETER convention).
 #include <grapher/Grapher.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
+#include <thread>
+#include <variant>
+#include <vector>
 
 #ifdef _MSC_VER
 #include <crtdbg.h>
@@ -274,6 +279,89 @@ void TestRouting()
     }
 }
 
+/// @brief A backend stand-in: every wire gets the same marker path, after a delay that makes the backend fast or slow.
+class StubRouter : public grapher::WireRouter {
+public:
+    explicit StubRouter(int delayMs) : delayMs_(delayMs) {}
+    static inline const std::vector<grapher::Vec2> kMarker{{-7.f, -7.f}, {-7.f, -9.f}, {-5.f, -9.f}};
+    int calls = 0;
+    grapher::WirePaths Route(const grapher::Graph& g, const grapher::Schema&, const grapher::RoutingOptions&) override
+    {
+        ++calls;
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs_));
+        grapher::WirePaths out;
+        for (const grapher::Edge& e : g.edges) out.emplace(e.id, kMarker);
+        return out;
+    }
+
+private:
+    int delayMs_;
+};
+
+/// @brief The wires as drawn (identity camera: screen = world), told from the grid by their colour.
+std::vector<std::vector<grapher::Vec2>> DrawnWires(const grapher::Canvas& canvas, grapher::Color wire)
+{
+    std::vector<std::vector<grapher::Vec2>> out;
+    for (const auto& c : canvas.Draw().cmds)
+        if (const auto* p = std::get_if<grapher::Polyline>(&c); p && p->color == wire) out.push_back(p->points);
+    return out;
+}
+
+void TestBackendDrag()
+{
+    // Dragging a node never trades a backend's routes for plain curves. "ab" runs past the blocker c; "df" is elsewhere.
+    grapher::Schema s;
+    s.nodeTypes.push_back({"box", "Box"});
+    grapher::EdgeType curve{"curve", "curve"};
+    curve.color = {1, 2, 3};
+    curve.arrow = false;
+    s.edgeTypes.push_back(curve);
+    for (int delayMs : {0, 30}) {
+        grapher::Graph g;
+        g.nodes.push_back({"a", "box", {0, 0, 100, 60}});
+        g.nodes.push_back({"b", "box", {400, 0, 100, 60}});
+        g.nodes.push_back({"c", "box", {200, -40, 80, 140}});
+        g.nodes.push_back({"d", "box", {0, 300, 100, 60}});
+        g.nodes.push_back({"f", "box", {400, 300, 100, 60}});
+        g.edges.push_back({"ab", "a", "b", "curve"});
+        g.edges.push_back({"df", "d", "f", "curve"});
+        grapher::Canvas canvas(g, s);
+        auto stub     = std::make_shared<StubRouter>(delayMs);
+        canvas.router = stub;
+        canvas.SetViewport({800, 600});
+        CHECK(DrawnWires(canvas, curve.color).size() == 2);   // the first, full route
+
+        canvas.PointerDown({30, 30}, grapher::Button::Left, {});
+        canvas.PointerMove({30, 40});
+        CHECK(canvas.Busy());
+        int  before = stub->calls;
+        auto wires  = DrawnWires(canvas, curve.color);   // the first step reroutes through the backend, which times it
+        CHECK(stub->calls == before + 1);
+        CHECK(wires.size() == 2 && wires[0] == StubRouter::kMarker && wires[1] == StubRouter::kMarker);
+
+        canvas.PointerMove({30, 50});
+        before = stub->calls;
+        wires  = DrawnWires(canvas, curve.color);
+        CHECK(wires.size() == 2);
+        if (wires.size() != 2) continue;
+        if (delayMs == 0) {
+            CHECK(stub->calls == before + 1);   // quick: the backend keeps routing live
+            CHECK(wires[0] == StubRouter::kMarker && wires[1] == StubRouter::kMarker);
+        } else {
+            CHECK(stub->calls == before);   // slow: the backend waits for the drop
+            CHECK(wires[1] == StubRouter::kMarker);   // a wire away from the drag keeps its routed path
+            CHECK(wires[0] != StubRouter::kMarker);   // the dragged node's wire is rerouted live, around the blocker
+            CHECK(wires[0].size() >= 2 && !Crosses(wires[0], g.nodes[2].frame));
+        }
+
+        canvas.PointerUp({30, 50}, grapher::Button::Left);
+        before = stub->calls;
+        wires  = DrawnWires(canvas, curve.color);
+        CHECK(stub->calls == before + (delayMs == 0 ? 0 : 1));   // live wires are already settled; patched ones reroute
+        CHECK(wires.size() == 2 && wires[0] == StubRouter::kMarker && wires[1] == StubRouter::kMarker);   // dropped: all routed
+    }
+}
+
 } // namespace
 
 int main()
@@ -292,6 +380,7 @@ int main()
     TestDraw();
     TestTransitionsAndDefaults();
     TestRouting();
+    TestBackendDrag();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;
