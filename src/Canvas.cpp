@@ -1,11 +1,34 @@
 #include <grapher/Canvas.h>
 
 #include <algorithm>
+#include <bit>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <functional>
 
 namespace grapher {
 
 namespace {
+
+constexpr double kLiveRouteMs = 12.0;   ///< a full route slower than this pauses routing while dragging
+
+std::size_t Mix(std::size_t h, std::size_t v) { return h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2)); }
+std::size_t Bits(float f) { return std::bit_cast<std::uint32_t>(f); }
+
+/// @brief The point halfway along a polyline, by length.
+Vec2 Midpoint(const std::vector<Vec2>& pts)
+{
+    float total = 0.f;
+    for (std::size_t i = 1; i < pts.size(); ++i) total += Distance(pts[i - 1], pts[i]);
+    float left = total * 0.5f;
+    for (std::size_t i = 1; i < pts.size(); ++i) {
+        const float seg = Distance(pts[i - 1], pts[i]);
+        if (seg >= left && seg > 0.f) return pts[i - 1] + (pts[i] - pts[i - 1]) * (left / seg);
+        left -= seg;
+    }
+    return pts.back();
+}
 
 constexpr float kDragThreshold = 3.f;   ///< screen px a press must travel before it becomes a gesture
 constexpr float kEdgeHitPx     = 6.f;
@@ -275,15 +298,42 @@ Hit Canvas::HitTest(Vec2 screen) const
             return {HitKind::Node, n->id};
         }
     }
+    const WirePaths& wires = Wires();
     for (auto it = graph_->edges.rbegin(); it != graph_->edges.rend(); ++it) {
-        const Node* a = graph_->FindNode(it->from);
-        const Node* b = graph_->FindNode(it->to);
-        if (!a || !b || a == b) continue;
-        const EdgeType* t    = schema_->FindEdge(it->type);
-        const auto      path = ToScreen(camera, EdgePath(a->frame, b->frame, t ? t->line : EdgeLine::Curve));
-        if (PolylineDistance(screen, path) <= kEdgeHitPx) return {HitKind::Edge, it->id};
+        const auto w = wires.find(it->id);
+        if (w == wires.end() || w->second.size() < 2) continue;
+        if (PolylineDistance(screen, ToScreen(camera, w->second)) <= kEdgeHitPx) return {HitKind::Edge, it->id};
     }
     return {};
+}
+
+const WirePaths& Canvas::Wires() const
+{
+    const bool     fast = (mode_ == Mode::Moving || mode_ == Mode::Resizing) && started_ && routeMs_ > kLiveRouteMs;
+    RoutingOptions o    = routing;
+    if (fast) o.avoidNodes = false;
+
+    const std::hash<std::string_view> hs;
+    std::size_t key = Mix(reinterpret_cast<std::uintptr_t>(schema_), fast);
+    key = Mix(key, (o.avoidNodes ? 1u : 0u) | (o.spreadPorts ? 2u : 0u));
+    for (float f : {o.clearance, o.bendCost, o.shareCost, o.cornerRadius, o.curveRadius}) key = Mix(key, Bits(f));
+    for (const Node& n : graph_->nodes) {
+        key = Mix(key, hs(n.id));
+        for (float f : {n.frame.x, n.frame.y, n.frame.w, n.frame.h}) key = Mix(key, Bits(f));
+    }
+    for (const Edge& e : graph_->edges) {
+        for (const std::string* s : {&e.id, &e.from, &e.to, &e.type}) key = Mix(key, hs(*s));
+        const EdgeType* t = schema_->FindEdge(e.type);
+        key = Mix(key, t ? static_cast<std::size_t>(t->line) + 1 : 0);
+    }
+    if (wiresValid_ && key == wiresKey_) return wires_;
+
+    const auto start = std::chrono::steady_clock::now();
+    wires_           = RouteWires(*graph_, *schema_, o);
+    if (!fast) routeMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    wiresKey_   = key;
+    wiresValid_ = true;
+    return wires_;
 }
 
 // ── Gestures ─────────────────────────────────────────────────────────────────
@@ -471,21 +521,21 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
 
     // Edges, under the nodes; their labels go on top of everything, so a short edge between two cards still reads.
     std::vector<DrawCmd> labels;
-    const float arrow = std::clamp(9.f * z, 5.f, 12.f);
+    const float      arrow = std::clamp(9.f * z, 5.f, 12.f);
+    const WirePaths& wires = Wires();
     for (const Edge& e : graph_->edges) {
-        const Node* a = graph_->FindNode(e.from);
-        const Node* b = graph_->FindNode(e.to);
-        if (!a || !b || a == b) continue;
+        const auto wire = wires.find(e.id);
+        if (wire == wires.end() || wire->second.size() < 2) continue;
         static const EdgeType kPlain{};
         const EdgeType* t     = schema_->FindEdge(e.type);
         const EdgeType& type  = t ? *t : kPlain;
         const bool      sel   = chrome && e.id == selEdge_;
         const Color     color = sel ? s.selection : type.color;
-        const auto      path  = ToScreen(cam, EdgePath(a->frame, b->frame, type.line));
+        const auto      path  = ToScreen(cam, wire->second);
         c.push_back(Polyline{path, color, sel ? 2.5f : 1.5f, type.dashed});
         if (type.arrow) c.push_back(Arrowhead(path, arrow, color));
         if (!e.label.empty() && s.fontSize * z >= 6.f) {
-            const Vec2  mid = path[path.size() / 2];
+            const Vec2  mid = Midpoint(path);
             const float fs  = s.fontSize * z * 0.9f;
             const float w   = std::max(40.f, fs * 0.55f * static_cast<float>(e.label.size()) + 8.f);
             labels.push_back(FillRect{{mid.x - w * 0.5f, mid.y - fs * 0.8f, w, fs * 1.6f}, s.background, {}, 0.f, 3.f});

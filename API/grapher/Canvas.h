@@ -7,6 +7,7 @@
 
 #include <grapher/DrawList.h>
 #include <grapher/Graph.h>
+#include <grapher/Routing.h>
 #include <grapher/Schema.h>
 #include <grapher/Style.h>
 
@@ -66,9 +67,10 @@ public:
     void SetSchema(const Schema& schema) { schema_ = &schema; }
     [[nodiscard]] const Schema& GetSchema() const { return *schema_; }
 
-    Camera camera;
-    Style  style;
-    float  snap = 10.f;   ///< world grid that moves and resizes land on; 0 = free
+    Camera         camera;
+    Style          style;
+    RoutingOptions routing;
+    float          snap = 10.f;   ///< world grid that moves and resizes land on; 0 = free
 
     std::function<void(std::string_view label)> onBeforeChange;   ///< right before the graph mutates
     std::function<void()>                       onChanged;        ///< after a mutation is complete
@@ -120,6 +122,9 @@ private:
     enum class Mode { Idle, Moving, Resizing, Connecting, Marquee, Panning };
 
     [[nodiscard]] DrawList Render(const Camera& cam, Vec2 viewport, bool chrome) const;
+    /// @brief Every wire's world-space path, rerouted only when a node frame, an edge or the options changed. While a drag
+    ///        is under way and a full route has been slow, wires take their plain shapes until the drop.
+    [[nodiscard]] const WirePaths& Wires() const;
     [[nodiscard]] const NodeType& TypeOf(const Node& n) const;
     [[nodiscard]] float Snap(float v) const;
     void Changed();
@@ -143,6 +148,11 @@ private:
     std::string active_;            ///< the node a resize or connect starts from
     std::string connectTo_;
     std::vector<std::pair<std::string, Rect>> origin_;   ///< frames at the start of a move or resize
+
+    mutable WirePaths   wires_;
+    mutable std::size_t wiresKey_   = 0;
+    mutable bool        wiresValid_ = false;
+    mutable double      routeMs_    = 0.0;   ///< how long the last full route took
 };
 
 } // namespace grapher

@@ -7,6 +7,7 @@ core knows no UI toolkit; backends paint its draw lists.
 |---|---|
 | `grapher/Schema.h` | `NodeType` (fields, shape: card / note / pill, colour, drillable, default edge), `EdgeType` (line, dash, arrow), `Schema` |
 | `grapher/Graph.h` | `Node`, `Edge`, `Graph` — a value type, so undo is a copy |
+| `grapher/Routing.h` | `RouteWires` — ports spread along node sides; wires that would cut through a node routed around it (orthogonal A*), drawn in their edge type's style |
 | `grapher/Canvas.h` | `Camera`, `Canvas` — gestures (select, move, resize, connect, marquee, pan, zoom) and `Draw()` |
 | `grapher/DrawList.h` | what a backend paints: rects, polylines, polygons, circles, text, in screen pixels |
 | `grapher/Style.h` | background, grid and card chrome |

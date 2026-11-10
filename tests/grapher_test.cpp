@@ -5,6 +5,10 @@
 #include <cstdlib>
 #include <string>
 
+#ifdef _MSC_VER
+#include <crtdbg.h>
+#endif
+
 namespace {
 
 int g_failed = 0;
@@ -189,16 +193,105 @@ void TestTransitionsAndDefaults()
     CHECK(pillText);
 }
 
+bool Crosses(const std::vector<grapher::Vec2>& path, const grapher::Rect& r)
+{
+    // Sample densely: any sample strictly inside the rectangle means the wire runs through it.
+    for (std::size_t i = 1; i < path.size(); ++i)
+        for (int k = 0; k <= 20; ++k) {
+            const grapher::Vec2 p = path[i - 1] + (path[i] - path[i - 1]) * (static_cast<float>(k) / 20.f);
+            if (p.x > r.x + 0.5f && p.x < r.Right() - 0.5f && p.y > r.y + 0.5f && p.y < r.Bottom() - 0.5f) return true;
+        }
+    return false;
+}
+
+void TestRouting()
+{
+    grapher::Schema s;
+    s.nodeTypes.push_back({"box", "Box"});
+    s.edgeTypes.push_back({"curve", "curve"});
+    grapher::EdgeType elbow{"elbow", "elbow"};
+    elbow.line = grapher::EdgeLine::Elbow;
+    s.edgeTypes.push_back(elbow);
+    grapher::RoutingOptions sharp;
+    sharp.cornerRadius = 0.f;
+    sharp.curveRadius  = 0.f;
+
+    // A clear curve keeps its bezier.
+    {
+        grapher::Graph g;
+        g.nodes.push_back({"a", "box", {0, 0, 100, 60}});
+        g.nodes.push_back({"b", "box", {400, 0, 100, 60}});
+        g.edges.push_back({"e", "a", "b", "curve"});
+        const auto w = grapher::RouteWires(g, s, {});
+        CHECK(w.at("e").size() == 25);
+        CHECK(w.at("e").front().x == 100.f && w.at("e").back().x == 400.f);
+    }
+
+    // A node in the way: the curve detours around it, still starting and ending on the right sides.
+    {
+        grapher::Graph g;
+        g.nodes.push_back({"a", "box", {0, 0, 100, 60}});
+        g.nodes.push_back({"b", "box", {400, 0, 100, 60}});
+        g.nodes.push_back({"c", "box", {200, -40, 80, 140}});
+        g.edges.push_back({"e", "a", "b", "curve"});
+        for (const grapher::RoutingOptions& o : {grapher::RoutingOptions{}, sharp}) {
+            const auto path = grapher::RouteWires(g, s, o).at("e");   // a copy: the map is a temporary
+            CHECK(!Crosses(path, g.nodes[2].frame));
+            CHECK(path.front().x == 100.f && path.back().x == 400.f);
+        }
+        grapher::RoutingOptions off;
+        off.avoidNodes = false;
+        CHECK(Crosses(grapher::RouteWires(g, s, off).at("e"), g.nodes[2].frame));   // and does cross without routing
+    }
+
+    // An elbow with sharp corners is all horizontal and vertical runs, around a blocker too.
+    {
+        grapher::Graph g;
+        g.nodes.push_back({"a", "box", {0, 0, 100, 60}});
+        g.nodes.push_back({"b", "box", {400, 200, 100, 60}});
+        g.nodes.push_back({"c", "box", {180, 60, 120, 140}});
+        g.edges.push_back({"e", "a", "b", "elbow"});
+        const auto path = grapher::RouteWires(g, s, sharp).at("e");
+        bool orthogonal = true;
+        for (std::size_t i = 1; i < path.size(); ++i)
+            if (path[i].x != path[i - 1].x && path[i].y != path[i - 1].y) orthogonal = false;
+        CHECK(orthogonal);
+        CHECK(!Crosses(path, g.nodes[2].frame));
+    }
+
+    // Three wires into one side spread along it, in the order of their sources, so they don't cross at the target.
+    {
+        grapher::Graph g;
+        g.nodes.push_back({"t", "box", {400, 0, 100, 300}});
+        g.nodes.push_back({"low", "box", {0, 400, 100, 60}});
+        g.nodes.push_back({"top", "box", {0, -200, 100, 60}});
+        g.nodes.push_back({"mid", "box", {0, 120, 100, 60}});
+        for (const char* src : {"low", "top", "mid"}) g.edges.push_back({std::string("e-") + src, src, "t", "curve"});
+        const auto w = grapher::RouteWires(g, s, {});
+        const float yTop = w.at("e-top").back().y, yMid = w.at("e-mid").back().y, yLow = w.at("e-low").back().y;
+        CHECK(yTop < yMid && yMid < yLow);
+        CHECK(w.at("e-mid").back().x == 400.f);   // all on the left side
+    }
+}
+
 } // namespace
 
 int main()
 {
+#ifdef _MSC_VER
+    // A failed debug assertion prints and aborts instead of opening a dialog nobody running the suite will see.
+    for (int kind : {_CRT_WARN, _CRT_ERROR, _CRT_ASSERT}) {
+        _CrtSetReportMode(kind, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(kind, _CRTDBG_FILE_STDERR);
+    }
+#endif
     TestColor();
     TestGraph();
     TestCamera();
     TestGestures();
     TestDraw();
     TestTransitionsAndDefaults();
+    TestRouting();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;
