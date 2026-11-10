@@ -1,0 +1,20 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+    "configurePresets": [
+        {
+            "name": "dev",
+            "displayName": "Dev (core + tests, no dependencies)",
+            "generator": "Visual Studio 18 2026",
+            "architecture": { "value": "x64", "strategy": "set" },
+            "binaryDir": "${sourceDir}/build/dev"
+        }
+    ],
+    "buildPresets": [
+        { "name": "debug",   "configurePreset": "dev", "configuration": "Debug" },
+        { "name": "release", "configurePreset": "dev", "configuration": "RelWithDebInfo" }
+    ],
+    "testPresets": [
+        { "name": "debug", "configurePreset": "dev", "configuration": "Debug", "output": { "outputOnFailure": true } }
+    ]
+}

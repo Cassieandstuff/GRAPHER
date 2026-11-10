@@ -1,0 +1,178 @@
+// GRAPHER core tests: plain asserts, no framework (the TARGETER convention).
+#include <grapher/Grapher.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
+namespace {
+
+int g_failed = 0;
+
+#define CHECK(cond)                                                                 \
+    do {                                                                            \
+        if (!(cond)) {                                                              \
+            std::fprintf(stderr, "FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond);    \
+            ++g_failed;                                                             \
+        }                                                                           \
+    } while (0)
+
+grapher::Schema MakeSchema()
+{
+    grapher::Schema s;
+    grapher::NodeType repo;
+    repo.id = "repo";
+    repo.label = "Repository";
+    repo.drillable = true;
+    repo.fields = {{"name", "Name"}, {"license", "License", grapher::FieldKind::Tag, {"MIT", "GPL-3.0"}}};
+    s.nodeTypes.push_back(repo);
+    grapher::NodeType note;
+    note.id = "note";
+    note.label = "Note";
+    note.shape = grapher::NodeShape::Note;
+    s.nodeTypes.push_back(note);
+    s.edgeTypes.push_back({"depends", "depends on"});
+    return s;
+}
+
+void TestColor()
+{
+    CHECK(grapher::ParseColor("#4f8cff") == (grapher::Color{0x4f, 0x8c, 0xff, 255}));
+    CHECK(grapher::ParseColor("fff") == (grapher::Color{255, 255, 255, 255}));
+    CHECK(!grapher::ParseColor("#12345").has_value());
+    CHECK(!grapher::ParseColor("#zzzzzz").has_value());
+    CHECK((grapher::Color{1, 2, 3, 255}).ToHex() == "#010203");
+}
+
+void TestGraph()
+{
+    grapher::Graph g;
+    g.nodes.push_back({"a", "repo", {0, 0, 100, 50}});
+    g.nodes.push_back({"b", "repo", {200, 0, 100, 50}});
+    g.edges.push_back({"e", "a", "b", "depends"});
+    CHECK(g.FindNode("b") != nullptr);
+    CHECK(g.Bounds() == (grapher::Rect{0, 0, 300, 50}));
+    g.RemoveNodes({"a"});
+    CHECK(g.nodes.size() == 1);
+    CHECK(g.edges.empty());   // edges touching a removed node go with it
+    CHECK(grapher::NewId().size() == 16);
+    CHECK(grapher::NewId() != grapher::NewId());
+}
+
+void TestCamera()
+{
+    grapher::Camera c{{100, 50}, 2.f};
+    const grapher::Vec2 w{10, 20};
+    CHECK(c.ToWorld(c.ToScreen(w)) == w);
+}
+
+void TestGestures()
+{
+    const grapher::Schema s = MakeSchema();
+    grapher::Graph        g;
+    grapher::Canvas       canvas(g, s);
+    canvas.SetViewport({800, 600});
+
+    int snapshots = 0, changes = 0;
+    canvas.onBeforeChange = [&](std::string_view) { ++snapshots; };
+    canvas.onChanged      = [&] { ++changes; };
+
+    const std::string a = canvas.AddNode("repo", {120, 60});
+    const std::string b = canvas.AddNode("repo", {520, 60});
+    CHECK(!a.empty() && !b.empty());
+    CHECK(canvas.AddNode("nope", {0, 0}).empty());
+    CHECK(snapshots == 2 && changes == 2);
+
+    // A click on a node selects it and changes nothing.
+    const grapher::Rect ra = canvas.ScreenRectOf(a);
+    const grapher::Vec2 inA{ra.x + 30, ra.y + 30};
+    CHECK(canvas.HitTest(inA).kind == grapher::HitKind::Node);
+    canvas.PointerDown(inA, grapher::Button::Left, {});
+    canvas.PointerUp(inA, grapher::Button::Left);
+    CHECK(canvas.SelectedNodes().size() == 1 && canvas.SelectedNodes().contains(a));
+    CHECK(snapshots == 2);
+
+    // A drag moves it on the snap grid, snapshotting once.
+    canvas.PointerDown(inA, grapher::Button::Left, {});
+    canvas.PointerMove({inA.x + 13, inA.y + 4});
+    canvas.PointerMove({inA.x + 47, inA.y + 21});
+    canvas.PointerUp({inA.x + 47, inA.y + 21}, grapher::Button::Left);
+    const grapher::Node* na = g.FindNode(a);
+    CHECK(snapshots == 3 && changes == 3);
+    CHECK(na->frame.x == 50.f && na->frame.y == 20.f);   // 0+47 -> 50, 0+21 -> 20
+
+    // Dragging from a's connect handle onto b draws one edge of the first edge type.
+    const grapher::Rect ra2 = canvas.ScreenRectOf(a);
+    const grapher::Vec2 handle{ra2.Right(), ra2.y + ra2.h * 0.5f};
+    CHECK(canvas.HitTest(handle).kind == grapher::HitKind::Connect);
+    const grapher::Rect rb = canvas.ScreenRectOf(b);
+    const grapher::Vec2 inB{rb.x + 40, rb.y + 40};
+    canvas.PointerDown(handle, grapher::Button::Left, {});
+    canvas.PointerMove(inB);
+    canvas.PointerUp(inB, grapher::Button::Left);
+    CHECK(g.edges.size() == 1 && g.edges[0].from == a && g.edges[0].to == b && g.edges[0].type == "depends");
+
+    // The same pair again adds nothing.
+    canvas.PointerDown(handle, grapher::Button::Left, {});
+    canvas.PointerMove(inB);
+    canvas.PointerUp(inB, grapher::Button::Left);
+    CHECK(g.edges.size() == 1);
+
+    // The edge is hittable halfway along.
+    const grapher::Vec2 mid{(ra2.Right() + rb.x) * 0.5f, (ra2.y + ra2.h * 0.5f + rb.y + rb.h * 0.5f) * 0.5f};
+    CHECK(canvas.HitTest(mid).kind == grapher::HitKind::Edge);
+
+    // A marquee over everything selects both nodes.
+    canvas.PointerDown({1, 1}, grapher::Button::Left, {});
+    canvas.PointerMove({799, 599});
+    canvas.PointerUp({799, 599}, grapher::Button::Left);
+    CHECK(canvas.SelectedNodes().size() == 2);
+
+    // Deleting them takes the edge too.
+    CHECK(canvas.DeleteSelection());
+    CHECK(g.nodes.empty() && g.edges.empty());
+    CHECK(!canvas.DeleteSelection());
+}
+
+void TestDraw()
+{
+    const grapher::Schema s = MakeSchema();
+    grapher::Graph        g;
+    g.nodes.push_back({"a", "repo", {0, 0, 240, 120}, {{"name", "Community Behaviors"}, {"license", "GPL-3.0"}}, "the plugin"});
+    g.nodes.push_back({"n", "note", {300, 0, 200, 100}, {}, "pseudo { code }"});
+    g.edges.push_back({"e", "a", "n", "depends", "uses"});
+    grapher::Canvas canvas(g, s);
+    canvas.SetViewport({800, 600});
+    canvas.Frame();
+
+    auto hasText = [](const grapher::DrawList& l, const std::string& text) {
+        for (const auto& c : l.cmds)
+            if (const auto* t = std::get_if<grapher::Text>(&c); t && t->text == text) return true;
+        return false;
+    };
+    const grapher::DrawList live = canvas.Draw();
+    CHECK(hasText(live, "Community Behaviors"));
+    CHECK(hasText(live, "GPL-3.0"));
+    CHECK(hasText(live, "pseudo { code }"));
+    CHECK(hasText(live, "uses"));
+
+    const grapher::DrawList all = canvas.DrawAll(1.f, 40.f);
+    CHECK(all.size.x == 500.f + 80.f && all.size.y == 120.f + 80.f);
+}
+
+} // namespace
+
+int main()
+{
+    TestColor();
+    TestGraph();
+    TestCamera();
+    TestGestures();
+    TestDraw();
+    if (g_failed) {
+        std::fprintf(stderr, "%d check(s) failed\n", g_failed);
+        return EXIT_FAILURE;
+    }
+    std::puts("grapher-test: all checks passed");
+    return EXIT_SUCCESS;
+}
