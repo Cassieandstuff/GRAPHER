@@ -42,3 +42,15 @@ ctest --preset debug
 ```
 
 `Directory.Build.props` caps the compiler at half the machine's cores (`BUILD_CORES` overrides).
+
+## libavoid routing backend (optional)
+
+`GRAPHER_AVOID=ON` (preset `avoid`) builds `grapher::avoid`: `grapher::avoid::MakeRouter()` returns a `WireRouter` a
+canvas uses through `canvas.router`. It routes with [libavoid](https://github.com/mjwybrow/adaptagrams) (LGPL-2.1+):
+orthogonal routes around nodes, parallel runs nudged apart and ordered so they nest, pins on every side so ends spread,
+and incremental rerouting as nodes move. Without it the canvas uses the built-in `RouteWires`.
+
+libavoid is fetched at a pinned commit and built as `avoid.dll`, with one change, `avoid/patches/export-vertid.cmake`
+(exports `VertID` so its headers work across the DLL boundary). A program using it ships `avoid.dll` and
+`GRAPHER_AVOID_LICENSE` (libavoid's LGPL text) beside itself, and must not prevent replacing the DLL. `avoid/compat/afx.h`
+stands in for MFC, which libavoid's MSVC debug assertions would otherwise need.

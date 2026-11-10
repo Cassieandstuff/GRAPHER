@@ -12,6 +12,7 @@
 #include <grapher/Style.h>
 
 #include <functional>
+#include <memory>
 #include <set>
 #include <string>
 #include <string_view>
@@ -70,6 +71,7 @@ public:
     Camera         camera;
     Style          style;
     RoutingOptions routing;
+    std::shared_ptr<WireRouter> router;   ///< a routing backend; null = the built-in RouteWires
     float          snap = 10.f;   ///< world grid that moves and resizes land on; 0 = free
 
     std::function<void(std::string_view label)> onBeforeChange;   ///< right before the graph mutates

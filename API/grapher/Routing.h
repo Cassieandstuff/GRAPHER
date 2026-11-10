@@ -21,6 +21,10 @@ struct RoutingOptions {
     float clearance    = 16.f;   ///< world units a routed wire keeps from the nodes it passes
     float bendCost     = 40.f;   ///< a bend costs as much as this much extra length
     float shareCost    = 24.f;   ///< running along a lane another wire already uses costs this much more per step
+    /// @brief Crossing another wire, for backends that can weigh it (libavoid calls its version experimental and slow, and
+    ///        it rarely buys a detour); 0 = off. Parallel runs are kept from crossing by nudging, not by this.
+    float crossCost    = 0.f;
+    float laneSpacing  = 8.f;    ///< the gap between parallel wires a backend spreads apart
     float cornerRadius = 10.f;   ///< an elbow's corners
     float curveRadius  = 40.f;   ///< a detouring curve's corners
     friend bool operator==(const RoutingOptions&, const RoutingOptions&) = default;
@@ -33,5 +37,14 @@ using WirePaths = std::unordered_map<std::string, std::vector<Vec2>>;
 /// @note Each path starts on the source node's outline and ends on the target's; the last segment points into the target,
 ///       so an arrowhead drawn along it lands on the node.
 [[nodiscard]] WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOptions& options);
+
+/// @brief A router a host can swap in for RouteWires (a backend over a routing library, e.g. grapher::avoid). It may keep
+///        state between calls (incremental routing), so one instance serves one canvas.
+class WireRouter {
+public:
+    virtual ~WireRouter() = default;
+    /// @brief The same contract as RouteWires.
+    [[nodiscard]] virtual WirePaths Route(const Graph& graph, const Schema& schema, const RoutingOptions& options) = 0;
+};
 
 } // namespace grapher

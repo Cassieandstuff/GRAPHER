@@ -8,13 +8,23 @@
             "generator": "Visual Studio 18 2026",
             "architecture": { "value": "x64", "strategy": "set" },
             "binaryDir": "${sourceDir}/build/dev"
+        },
+        {
+            "name": "avoid",
+            "displayName": "Dev + libavoid backend (fetches adaptagrams)",
+            "inherits": "dev",
+            "binaryDir": "${sourceDir}/build/libavoid",
+            "cacheVariables": { "GRAPHER_AVOID": "ON" }
         }
     ],
     "buildPresets": [
-        { "name": "debug",   "configurePreset": "dev", "configuration": "Debug" },
-        { "name": "release", "configurePreset": "dev", "configuration": "RelWithDebInfo" }
+        { "name": "debug",         "configurePreset": "dev",   "configuration": "Debug" },
+        { "name": "release",       "configurePreset": "dev",   "configuration": "RelWithDebInfo" },
+        { "name": "avoid-debug",   "configurePreset": "avoid", "configuration": "Debug" },
+        { "name": "avoid-release", "configurePreset": "avoid", "configuration": "RelWithDebInfo" }
     ],
     "testPresets": [
-        { "name": "debug", "configurePreset": "dev", "configuration": "Debug", "output": { "outputOnFailure": true } }
+        { "name": "debug",       "configurePreset": "dev",   "configuration": "Debug", "output": { "outputOnFailure": true } },
+        { "name": "avoid-debug", "configurePreset": "avoid", "configuration": "Debug", "output": { "outputOnFailure": true } }
     ]
 }

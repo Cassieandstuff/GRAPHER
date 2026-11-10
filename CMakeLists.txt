@@ -62,6 +62,44 @@ if(GRAPHER_QT)
     endif()
 endif()
 
+# ── grapher-avoid (routing backend) ───────────────────────────────────────────
+# libavoid from adaptagrams (LGPL-2.1+), built as a DLL (avoid.dll) so programs of any license can link it: ship the DLL
+# and GRAPHER_AVOID_LICENSE beside the program, and don't stop anyone replacing the DLL with their own build.
+option(GRAPHER_AVOID "Build the libavoid routing backend (grapher::avoid); fetches adaptagrams" OFF)
+if(GRAPHER_AVOID)
+    include(FetchContent)
+    FetchContent_Declare(adaptagrams
+        GIT_REPOSITORY https://github.com/mjwybrow/adaptagrams.git
+        GIT_TAG        840ebcff20dbba36ad03a2160edf7cbaf9859984   # 2025-10-29
+        UPDATE_DISCONNECTED ON
+        # Our one change to libavoid (export VertID for DLL use); the script is the published patch.
+        PATCH_COMMAND  ${CMAKE_COMMAND} -DSRC=<SOURCE_DIR> -P "${CMAKE_CURRENT_SOURCE_DIR}/avoid/patches/export-vertid.cmake")
+    FetchContent_MakeAvailable(adaptagrams)   # no CMakeLists of its own: this only fetches it
+    set(AVOID_DIR "${adaptagrams_SOURCE_DIR}/cola/libavoid")
+    file(GLOB AVOID_SOURCES "${AVOID_DIR}/*.cpp")
+    add_library(avoid SHARED ${AVOID_SOURCES})
+    target_include_directories(avoid PUBLIC
+        $<BUILD_INTERFACE:${adaptagrams_SOURCE_DIR}/cola>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/avoid/compat>)   # <afx.h> stand-in for its MSVC debug asserts
+    target_compile_definitions(avoid PRIVATE LIBAVOID_EXPORTS _USE_MATH_DEFINES)
+    target_compile_features(avoid PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(avoid PRIVATE /w /utf-8)   # third-party: not ours to warn about
+    endif()
+    set(GRAPHER_AVOID_LICENSE "${AVOID_DIR}/LICENSE.LGPL" CACHE INTERNAL "libavoid's license text, to ship beside avoid.dll")
+
+    set(GRAPHER_AVOID_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/avoid/API/grapher/avoid/AvoidRouter.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/avoid/src/AvoidRouter.cpp")
+    add_library(grapher-avoid STATIC ${GRAPHER_AVOID_FILES})
+    add_library(grapher::avoid ALIAS grapher-avoid)
+    target_include_directories(grapher-avoid PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/avoid/API>)
+    target_link_libraries(grapher-avoid PUBLIC grapher::grapher PRIVATE avoid)
+    if(MSVC)
+        target_compile_options(grapher-avoid PRIVATE /W4 /utf-8)
+    endif()
+endif()
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 if(GRAPHER_BUILD_TESTS)
     enable_testing()
@@ -71,4 +109,12 @@ if(GRAPHER_BUILD_TESTS)
         target_compile_options(grapher-test PRIVATE /utf-8)
     endif()
     add_test(NAME grapher-test COMMAND grapher-test)
+    if(GRAPHER_AVOID)
+        add_executable(grapher-avoid-test tests/avoid_test.cpp)
+        target_link_libraries(grapher-avoid-test PRIVATE grapher::avoid)
+        if(MSVC)
+            target_compile_options(grapher-avoid-test PRIVATE /utf-8)
+        endif()
+        add_test(NAME grapher-avoid-test COMMAND grapher-avoid-test)
+    endif()
 endif()

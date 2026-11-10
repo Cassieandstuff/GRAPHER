@@ -315,8 +315,10 @@ const WirePaths& Canvas::Wires() const
 
     const std::hash<std::string_view> hs;
     std::size_t key = Mix(reinterpret_cast<std::uintptr_t>(schema_), fast);
+    key = Mix(key, reinterpret_cast<std::uintptr_t>(router.get()));
     key = Mix(key, (o.avoidNodes ? 1u : 0u) | (o.spreadPorts ? 2u : 0u));
-    for (float f : {o.clearance, o.bendCost, o.shareCost, o.cornerRadius, o.curveRadius}) key = Mix(key, Bits(f));
+    for (float f : {o.clearance, o.bendCost, o.shareCost, o.crossCost, o.laneSpacing, o.cornerRadius, o.curveRadius})
+        key = Mix(key, Bits(f));
     for (const Node& n : graph_->nodes) {
         key = Mix(key, hs(n.id));
         for (float f : {n.frame.x, n.frame.y, n.frame.w, n.frame.h}) key = Mix(key, Bits(f));
@@ -329,7 +331,8 @@ const WirePaths& Canvas::Wires() const
     if (wiresValid_ && key == wiresKey_) return wires_;
 
     const auto start = std::chrono::steady_clock::now();
-    wires_           = RouteWires(*graph_, *schema_, o);
+    // Mid-drag on a slow graph the plain shapes come from the built-in router; a backend gets the settled geometry.
+    wires_           = (router && !fast) ? router->Route(*graph_, *schema_, o) : RouteWires(*graph_, *schema_, o);
     if (!fast) routeMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     wiresKey_   = key;
     wiresValid_ = true;
