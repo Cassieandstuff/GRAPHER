@@ -407,7 +407,9 @@ bool Canvas::PointerUp(Vec2 at, Button)
         e.id   = NewId();
         e.from = active_;
         e.to   = to;
-        e.type = schema_->edgeTypes.empty() ? std::string{} : schema_->edgeTypes.front().id;
+        const Node* fromNode = graph_->FindNode(active_);
+        const Node* toNode   = graph_->FindNode(to);
+        e.type = schema_->EdgeFor(fromNode ? fromNode->type : std::string{}, toNode ? toNode->type : std::string{});
         graph_->edges.push_back(e);
         Changed();
         return true;
@@ -467,7 +469,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         }
     }
 
-    // Edges, under the nodes.
+    // Edges, under the nodes; their labels go on top of everything, so a short edge between two cards still reads.
+    std::vector<DrawCmd> labels;
     const float arrow = std::clamp(9.f * z, 5.f, 12.f);
     for (const Edge& e : graph_->edges) {
         const Node* a = graph_->FindNode(e.from);
@@ -485,8 +488,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
             const Vec2  mid = path[path.size() / 2];
             const float fs  = s.fontSize * z * 0.9f;
             const float w   = std::max(40.f, fs * 0.55f * static_cast<float>(e.label.size()) + 8.f);
-            c.push_back(FillRect{{mid.x - w * 0.5f, mid.y - fs * 0.8f, w, fs * 1.6f}, s.background, {}, 0.f, 3.f});
-            c.push_back(Text{{mid.x - w * 0.5f, mid.y - fs * 0.8f, w, fs * 1.6f}, e.label, fs, s.muted, false, false, false, Align::Center});
+            labels.push_back(FillRect{{mid.x - w * 0.5f, mid.y - fs * 0.8f, w, fs * 1.6f}, s.background, {}, 0.f, 3.f});
+            labels.push_back(Text{{mid.x - w * 0.5f, mid.y - fs * 0.8f, w, fs * 1.6f}, e.label, fs, s.muted, false, false, false, Align::Center});
         }
     }
 
@@ -514,6 +517,19 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         const Rect      r    = cam.ToScreen(n.frame);
         if (!r.Intersects(Rect{0, 0, viewport.x, viewport.y})) return;
 
+        if (t.shape == NodeShape::Pill) {
+            c.push_back(FillRect{r, s.nodeFill, sel ? s.selection : (hov ? s.text : t.band), sel ? 2.f : 1.5f, r.h * 0.5f});
+            std::string text;
+            for (const FieldDef& f : t.fields) {
+                const std::string& v = n.Field(f.id);
+                if (!f.onCard || v.empty()) continue;
+                if (!text.empty()) text += " · ";
+                text += v;
+            }
+            if (s.fontSize * z >= 4.f)
+                c.push_back(Text{{r.x + r.h * 0.4f, r.y, std::max(0.f, r.w - r.h * 0.8f), r.h}, text.empty() ? t.label : text,
+                                 s.fontSize * z, text.empty() ? s.muted : s.text, true, false, false, Align::Center});
+        } else {
         c.push_back(FillRect{r, note ? s.noteFill : s.nodeFill, sel ? s.selection : (hov ? s.muted : s.nodeStroke),
                              sel ? 2.f : 1.f, s.corner * z});
         const float rad = s.corner * z;
@@ -569,6 +585,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                 }
             }
         }
+        }   // card / note
 
         if (sel || hov) {
             const float hr = HandleRadius(s, z);
@@ -583,6 +600,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
     if (chrome)
         for (const Node& n : graph_->nodes)
             if (selNodes_.contains(n.id)) drawNode(n);
+
+    c.insert(c.end(), labels.begin(), labels.end());
 
     if (chrome && mode_ == Mode::Marquee && started_)
         c.push_back(FillRect{Rect::FromPoints(downAt_, pointer_), s.marquee, s.selection, 1.f});

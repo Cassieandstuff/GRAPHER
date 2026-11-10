@@ -29,6 +29,7 @@ struct FieldDef {
 enum class NodeShape {
     Card,   ///< a title, a type line, its fields, then the body as a summary
     Note,   ///< a text card: the body fills it
+    Pill,   ///< a small capsule that edges run through: its on-card field values on one line, joined by " · "
 };
 
 struct NodeType {
@@ -42,6 +43,7 @@ struct NodeType {
     std::vector<FieldDef> fields;
     std::string           titleField = "name";   ///< the field the card's title shows; the type label when empty
     std::string           bodyLabel  = "Summary";
+    std::string           defaultEdge;   ///< an EdgeType id a new edge to or from this type gets; empty = the schema's first
 };
 
 enum class EdgeLine { Curve, Straight, Elbow };
@@ -57,10 +59,13 @@ struct EdgeType {
 
 struct Schema {
     std::vector<NodeType> nodeTypes;
-    std::vector<EdgeType> edgeTypes;   ///< the first is what a newly drawn edge gets
+    std::vector<EdgeType> edgeTypes;   ///< the first is what a newly drawn edge gets, unless an end's type says otherwise
 
     [[nodiscard]] const NodeType* FindNode(std::string_view id) const;
     [[nodiscard]] const EdgeType* FindEdge(std::string_view id) const;
+    /// @brief The edge type a new edge between these node types gets: the source's default, else the target's, else the
+    ///        first edge type; empty when there are none.
+    [[nodiscard]] std::string EdgeFor(std::string_view fromType, std::string_view toType) const;
 };
 
 } // namespace grapher

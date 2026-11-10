@@ -160,6 +160,35 @@ void TestDraw()
     CHECK(all.size.x == 500.f + 80.f && all.size.y == 120.f + 80.f);
 }
 
+void TestTransitionsAndDefaults()
+{
+    grapher::Schema s = MakeSchema();
+    s.edgeTypes.insert(s.edgeTypes.begin(), {"flow", "flows into"});
+    s.edgeTypes.push_back({"relates", "relates to"});
+    s.nodeTypes[1].defaultEdge = "relates";   // note
+    grapher::NodeType via;
+    via.id     = "via";
+    via.label  = "Comes in via";
+    via.shape  = grapher::NodeShape::Pill;
+    via.fields = {{"how", "How", grapher::FieldKind::Tag}, {"through", "Through"}};
+    s.nodeTypes.push_back(via);
+
+    CHECK(s.EdgeFor("repo", "repo") == "flow");
+    CHECK(s.EdgeFor("repo", "note") == "relates");   // either end's default wins over the first type
+    CHECK(s.EdgeFor("note", "repo") == "relates");
+    s.nodeTypes[1].defaultEdge = "missing";
+    CHECK(s.EdgeFor("note", "repo") == "flow");      // an unknown default falls back
+
+    grapher::Graph g;
+    g.nodes.push_back({"p", "via", {0, 0, 170, 40}, {{"how", "vcpkg"}, {"through", "PORTER"}}});
+    grapher::Canvas canvas(g, s);
+    canvas.SetViewport({800, 600});
+    bool pillText = false;
+    for (const auto& c : canvas.Draw().cmds)
+        if (const auto* t = std::get_if<grapher::Text>(&c); t && t->text == "vcpkg · PORTER") pillText = true;
+    CHECK(pillText);
+}
+
 } // namespace
 
 int main()
@@ -169,6 +198,7 @@ int main()
     TestCamera();
     TestGestures();
     TestDraw();
+    TestTransitionsAndDefaults();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

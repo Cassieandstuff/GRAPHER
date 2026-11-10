@@ -63,6 +63,13 @@ const EdgeType* Schema::FindEdge(std::string_view id) const
     return nullptr;
 }
 
+std::string Schema::EdgeFor(std::string_view fromType, std::string_view toType) const
+{
+    for (std::string_view t : {fromType, toType})
+        if (const NodeType* n = FindNode(t); n && !n->defaultEdge.empty() && FindEdge(n->defaultEdge)) return n->defaultEdge;
+    return edgeTypes.empty() ? std::string{} : edgeTypes.front().id;
+}
+
 // ── Graph ────────────────────────────────────────────────────────────────────
 
 const std::string& Node::Field(std::string_view key) const
