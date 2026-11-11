@@ -222,10 +222,11 @@ void CanvasWidget::placeOverlays()
 void CanvasWidget::openSearch(const QString& query)
 {
     if (!searchBox_) {
-        searchBox_ = new QFrame(this);
-        searchBox_->setObjectName(QStringLiteral("grapherSearch"));
-        searchBox_->setFrameShape(QFrame::StyledPanel);
-        searchBox_->setAutoFillBackground(true);
+        auto* frame = new QFrame(this);
+        frame->setObjectName(QStringLiteral("grapherSearch"));
+        frame->setFrameShape(QFrame::StyledPanel);
+        frame->setAutoFillBackground(true);
+        searchBox_ = frame;
         auto* layout = new QVBoxLayout(searchBox_);
         layout->setContentsMargins(6, 6, 6, 6);
         query_ = new QLineEdit(searchBox_);

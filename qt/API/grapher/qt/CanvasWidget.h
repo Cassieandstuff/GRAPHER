@@ -107,7 +107,7 @@ private:
     void closeSearch(bool keep);
 
     QWidget*                                          minimap_   = nullptr;
-    QFrame*                                           searchBox_ = nullptr;
+    QWidget*                                          searchBox_ = nullptr;
     QLineEdit*                                        query_     = nullptr;
     QListWidget*                                      hits_      = nullptr;
     QLabel*                                           count_     = nullptr;
