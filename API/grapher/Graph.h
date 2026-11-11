@@ -103,6 +103,8 @@ struct Edge {
     std::string label;
     std::string fromPort;   ///< an Out port of `from`; empty = the node as a whole
     std::string toPort;     ///< an In port of `to`; empty = the node as a whole
+    /// @brief Opaque labels a kit's rules select on (`*[write] > edge:binding`), as Node::tags are for nodes.
+    std::vector<std::string> tags;
     friend bool operator==(const Edge&, const Edge&) = default;
 };
 

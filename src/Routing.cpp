@@ -472,8 +472,7 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
             }
             (*memory)[e.id] = static_cast<std::uint8_t>(sa * 4 + sb);
         }
-        const EdgeType* t = schema.FindEdge(e.type);
-        Wire wire{&e, ia->second, ib->second, sa, sb, {}, {}, t ? t->line : EdgeLine::Curve};
+        Wire wire{&e, ia->second, ib->second, sa, sb, {}, {}, o.LineFor(e.type, schema)};
         if (const PortSlot* s = slotOf(ia->second, e.fromPort)) {
             wire.sa      = SideOfPort(s->side);
             wire.pa      = {s->at, s->normal};

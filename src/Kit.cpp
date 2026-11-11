@@ -29,8 +29,89 @@ void Kit::PutNodeKind(NodeKind kind)
 namespace {
 
 /// @brief The part tree every node kind gets from a Schema: today's card, as parts.
+PartSpec TextPart(std::string id, std::string color, float size)
+{
+    PartSpec p{PartKind::Text, std::move(id)};
+    p.color = std::move(color);
+    p.size  = size;
+    return p;
+}
+
+// A group: a tinted frame with a title bar holding its title (an arrow and a count where its type has them) and its
+// on-card fields.
+NodeKind DefaultGroupKind(const NodeType& t, const Style& s)
+{
+    NodeKind k;
+    k.id               = t.id;
+    k.card.fill        = Color{t.band.r, t.band.g, t.band.b, s.groupFill}.ToHex();
+    k.card.stroke      = "band";
+    k.card.strokeWidth = 1.25f;
+    k.card.corner      = s.corner;
+    PartSpec bar{PartKind::Header, "header"};
+    bar.fill = Color{t.band.r, t.band.g, t.band.b, static_cast<std::uint8_t>(std::min(255, s.groupFill * 2))}.ToHex();
+    PartSpec title = TextPart("title", "$text", s.fontSize);
+    if (!t.titleField.empty()) title.from = "field:" + t.titleField;
+    title.placeholder      = "Untitled {type}";
+    title.placeholderColor = "$muted";
+    title.scale            = 1.1f;
+    title.bold             = true;
+    std::string format = "{value}";
+    if (t.groupMode == GroupMode::Members && !t.fixed) format = "{arrow}" + format;
+    if (t.showCount) format += " ({count})";
+    title.format       = format;
+    PartSpec detail    = TextPart("detail", "$muted", s.fontSize);
+    detail.from        = "fields";
+    bar.content        = {title, detail};
+    k.card.content     = {bar};
+    return k;
+}
+
+// A pill: a capsule with its on-card fields on one line, bold and centred (its type's label, muted, when it has none).
+NodeKind DefaultPillKind(const NodeType& t, const Style& s)
+{
+    NodeKind k;
+    k.id               = t.id;
+    k.card.fill        = "$nodeFill";
+    k.card.stroke      = "band";
+    k.card.strokeWidth = 1.5f;
+    k.card.corner      = s.corner;
+    PartSpec text      = TextPart("text", "$text", s.fontSize);
+    text.from             = "fields:all";
+    text.placeholder      = "{type}";
+    text.placeholderColor = "$muted";
+    text.bold             = true;
+    text.align            = "center";
+    k.card.content        = {text};
+    return k;
+}
+
+// A dial's ring in its band; the needle and hub in the text colour; gold diamond handles; labels outside the rim and the
+// reading under the hub.
+PartSpec DefaultRim()
+{
+    PartSpec rim{PartKind::Rim, "rim"};
+    rim.stroke = "band";
+    rim.width  = 3.f;
+    PartSpec needle{PartKind::Bar, "needle"};
+    needle.color = "$text";
+    needle.width = 2.f;
+    PartSpec handle{PartKind::Glyph, "handle"};
+    handle.glyph  = "diamond";
+    handle.color  = "#dcb43c";
+    handle.size   = 5.f;
+    PartSpec label = TextPart("label", "$text", 0.f);
+    label.size.reset();
+    label.scale = 0.9f;
+    PartSpec reading = TextPart("reading", "$muted", 0.f);
+    reading.size.reset();
+    rim.content = {needle, handle, label, reading};
+    return rim;
+}
+
 NodeKind DefaultKind(const NodeType& t, const Style& s)
 {
+    if (t.shape == NodeShape::Group) return DefaultGroupKind(t, s);
+    if (t.shape == NodeShape::Pill) return DefaultPillKind(t, s);
     NodeKind k;
     k.id               = t.id;
     PartSpec& card     = k.card;
@@ -62,6 +143,7 @@ NodeKind DefaultKind(const NodeType& t, const Style& s)
     header.top     = 0.8f;
     header.content = {title, type};
     card.content   = {accent, header, PartSpec{PartKind::Body, "body"}};
+    if (t.shape == NodeShape::Dial) card.content.push_back(DefaultRim());
     return k;
 }
 
@@ -111,6 +193,14 @@ void Apply(const PartSpec& patch, PartSpec& to)
     set(patch.bold, to.bold);
     set(patch.italic, to.italic);
     set(patch.align, to.align);
+    set(patch.shape, to.shape);
+    set(patch.format, to.format);
+    set(patch.pin, to.pin);
+    set(patch.glyph, to.glyph);
+    set(patch.hollow, to.hollow);
+    set(patch.side, to.side);
+    set(patch.length, to.length);
+    set(patch.direction, to.direction);
 }
 
 void ApplyPin(const PinSpec& patch, PinSpec& to)
@@ -148,6 +238,53 @@ void ApplyRow(const RowSpec& patch, RowSpec& to)
     set(patch.step, to.step);
     set(patch.reorder, to.reorder);
     for (const auto& [g, a] : patch.on) to.on[g] = a;
+}
+
+void ApplyEdge(const EdgeSpec& patch, EdgeSpec& to)
+{
+    auto set = [](const auto& from, auto& into) {
+        if (from) into = from;
+    };
+    // `line` is the kind's alone: the route follows it, and a rule must not reroute a wire by its state.
+    set(patch.width, to.width);
+    set(patch.widen, to.widen);
+    set(patch.dash, to.dash);
+    set(patch.dotted, to.dotted);
+    set(patch.onTop, to.onTop);
+    set(patch.arrow, to.arrow);
+    set(patch.arrowSize, to.arrowSize);
+    set(patch.color, to.color);
+    set(patch.pinColor, to.pinColor);
+    set(patch.opacity, to.opacity);
+    set(patch.labelColor, to.labelColor);
+    set(patch.labelFill, to.labelFill);
+    set(patch.labelScale, to.labelScale);
+}
+
+constexpr std::pair<std::string_view, EdgeLine> kEdgeLines[] = {{"curve", EdgeLine::Curve}, {"straight", EdgeLine::Straight}, {"elbow", EdgeLine::Elbow}};
+
+std::string_view LineName(EdgeLine l)
+{
+    for (const auto& [name, v] : kEdgeLines)
+        if (v == l) return name;
+    return "curve";
+}
+
+EdgeKind DefaultEdgeKind(const EdgeType& t)
+{
+    EdgeKind k;
+    k.id               = t.id;
+    k.spec.line        = std::string(LineName(t.line));
+    k.spec.width       = t.width;
+    k.spec.color       = t.color.ToHex();
+    if (t.dashed) k.spec.dash = true;
+    if (t.dotted) k.spec.dotted = true;
+    if (t.onTop) k.spec.onTop = true;
+    if (t.portColor) k.spec.pinColor = true;
+    k.spec.arrow      = t.arrow ? "end" : "none";
+    k.spec.labelColor = "$muted";
+    k.spec.labelFill  = "$background";
+    return k;
 }
 
 int AlignOf(const std::optional<std::string>& a, int fallback)
@@ -337,7 +474,8 @@ std::optional<Selector> ParseSelector(std::string_view text)
             static constexpr std::pair<std::string_view, std::uint32_t> kStates[] = {
                 {"selected", StateSelected}, {"hovered", StateHovered}, {"dimmed", StateDimmed},
                 {"alias", StateAlias},       {"collapsed", StateCollapsed}, {"inGroup", StateInGroup},
-                {"wired", StateWired},       {"unwired", StateUnwired}};
+                {"wired", StateWired},       {"unwired", StateUnwired},     {"lit", StateLit},
+                {"merged", StateMerged}};
             const auto it = std::find_if(std::begin(kStates), std::end(kStates), [&](const auto& p) { return p.first == state; });
             if (it == std::end(kStates)) return std::nullopt;
             out.states |= it->second;
@@ -375,6 +513,37 @@ Kit KitFromSchema(const Schema& schema, const Style& style)
     selected.patch.stroke      = "$selection";
     selected.patch.strokeWidth = 2.f;
     kit.rules = {hovered, selected};
+    for (const NodeType& t : schema.nodeTypes) {
+        if (t.shape != NodeShape::Group && t.shape != NodeShape::Pill) continue;
+        Rule hov{Selector{t.id, {}, StateHovered}, {}};
+        hov.patch.stroke = "$text";
+        Rule sel{Selector{t.id, {}, StateSelected}, {}};
+        sel.patch.stroke      = "$selection";
+        sel.patch.strokeWidth = 2.f;
+        kit.rules.push_back(std::move(hov));
+        kit.rules.push_back(std::move(sel));
+    }
+    // Edges: each type as it draws; touching the selection, in its colour and a little wider; selected, wider still;
+    // standing for several that join a closed group, dashed.
+    std::vector<EdgeType> edgeTypes = schema.edgeTypes;
+    edgeTypes.insert(edgeTypes.begin(), EdgeType{});   // an unknown type
+    for (const EdgeType& t : edgeTypes) {
+        kit.edges.push_back(DefaultEdgeKind(t));
+        const std::string part = "edge:" + t.id;
+        Rule lit{Selector{{}, {}, StateLit, part}, {}};
+        lit.edge.color    = "$selection";
+        lit.edge.pinColor = false;
+        lit.edge.widen    = 0.7f;
+        Rule sel{Selector{{}, {}, StateSelected, part}, {}};
+        sel.edge.color    = "$selection";
+        sel.edge.pinColor = false;
+        sel.edge.widen    = 1.f;
+        Rule merged{Selector{{}, {}, StateMerged, part}, {}};
+        merged.edge.dash = true;
+        kit.rules.push_back(std::move(lit));
+        kit.rules.push_back(std::move(sel));
+        kit.rules.push_back(std::move(merged));
+    }
     for (const RowStyle& rs : schema.rowStyles) {
         RowKind k;
         k.id = rs.id;
@@ -418,6 +587,7 @@ Kit MergeKits(const Kit& under, const Kit& over)
     };
     merge(out.pins, over.pins);
     merge(out.rows, over.rows);
+    merge(out.edges, over.edges);
     out.rules.insert(out.rules.end(), over.rules.begin(), over.rules.end());
     for (const auto& [k, v] : over.reserved) out.reserved[k] = v;
     out.revision = under.revision + over.revision;
@@ -473,8 +643,30 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
     look.minWidth    = kind->minWidth.value_or(0.f);
     look.maxWidth    = kind->maxWidth.value_or(0.f);
     look.fitWidth    = kind->fitWidth.value_or(false);
-    for (const PartSpec& p : root.content) {
-        if (!shows(p)) continue;
+    static constexpr std::pair<std::string_view, PortGlyph> kPartGlyphs[] = {
+        {"circle", PortGlyph::Circle}, {"square", PortGlyph::Square}, {"diamond", PortGlyph::Diamond}, {"arrow", PortGlyph::Arrow}};
+    auto textOf = [&](const PartSpec& c) {
+        LookText text;
+        text.id          = c.id;
+        text.from        = c.from.value_or(std::string());
+        text.placeholder = c.placeholder.value_or(std::string());
+        const FontSpec* font = nullptr;
+        if (c.font)
+            if (const auto it = kit.fonts.find(*c.font); it != kit.fonts.end()) font = &it->second;
+        text.size    = c.size ? *c.size : font && font->size ? *font->size : m.fontSize;
+        text.bold    = c.bold ? *c.bold : font && font->bold ? *font->bold : false;
+        text.italic  = c.italic ? *c.italic : font && font->italic ? *font->italic : false;
+        text.scale   = c.scale.value_or(1.f);
+        text.box     = c.box.value_or(1.3f);
+        text.advance = c.advance.value_or(1.35f);
+        text.color            = Faded(color(c.color, Color{226, 228, 233}), opacity);
+        text.placeholderColor = Faded(color(c.placeholderColor, text.color), opacity);
+        const std::string align = c.align.value_or("left");
+        text.align              = align == "center" ? 1 : align == "right" ? 2 : 0;
+        text.format             = c.format.value_or(std::string());
+        return text;
+    };
+    auto partOf = [&](const auto& self, const PartSpec& p) -> LookPart {
         LookPart part;
         part.kind        = p.kind;
         part.id          = p.id;
@@ -487,29 +679,34 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
         part.height      = p.height.value_or(0.f);
         part.dash        = p.dash.value_or(false);
         part.on          = p.on;
+        part.color       = Faded(color(p.color, part.color), opacity);
+        if (p.glyph)
+            for (const auto& [name, g] : kPartGlyphs)
+                if (name == *p.glyph) part.glyph = g;
+        part.size   = p.size.value_or(0.f);
+        part.length = p.length.value_or(0.f);
+        part.hollow = p.hollow.value_or(false);
+        part.out    = p.direction.value_or("in") == "out";
+        part.side   = p.side.value_or("left") == "right" ? 1 : 0;
+        part.pin    = p.pin.value_or(std::string());
+        // A text or a chip is its own line; a header's and a rim's lines are their text parts.
+        if (p.kind == PartKind::Text || p.kind == PartKind::Chip) part.texts.push_back(textOf(p));
         for (const PartSpec& c : p.content) {
-            if (c.kind != PartKind::Text || !shows(c)) continue;
-            LookText text;
-            text.id          = c.id;
-            text.from        = c.from.value_or(std::string());
-            text.placeholder = c.placeholder.value_or(std::string());
-            const FontSpec* font = nullptr;
-            if (c.font)
-                if (const auto it = kit.fonts.find(*c.font); it != kit.fonts.end()) font = &it->second;
-            text.size    = c.size ? *c.size : font && font->size ? *font->size : m.fontSize;
-            text.bold    = c.bold ? *c.bold : font && font->bold ? *font->bold : false;
-            text.italic  = c.italic ? *c.italic : font && font->italic ? *font->italic : false;
-            text.scale   = c.scale.value_or(1.f);
-            text.box     = c.box.value_or(1.3f);
-            text.advance = c.advance.value_or(1.35f);
-            text.color            = Faded(color(c.color, Color{226, 228, 233}), opacity);
-            text.placeholderColor = Faded(color(c.placeholderColor, text.color), opacity);
-            const std::string align = c.align.value_or("left");
-            text.align              = align == "center" ? 1 : align == "right" ? 2 : 0;
-            part.texts.push_back(std::move(text));
+            if (!shows(c)) continue;
+            if (c.kind == PartKind::Text) part.texts.push_back(textOf(c));
+            else part.content.push_back(self(self, c));
         }
-        look.parts.push_back(std::move(part));
+        return part;
+    };
+    for (const PartSpec& p : root.content) {
+        if (!shows(p)) continue;
+        look.parts.push_back(partOf(partOf, p));
+        if (p.kind == PartKind::Pins && p.id == "ends") {
+            look.endPins = true;
+            look.endPin  = p.pin.value_or(std::string());
+        }
     }
+    look.shape = root.shape.value_or("box") == "pill" ? 1 : 0;
     // A header of a stated height is where the rows start: pins, hits and docks read it from the metrics.
     for (const LookPart& p : look.parts)
         if (p.kind == PartKind::Header && p.height > 0.f && m.header <= 0.f) m.header = p.height;
@@ -558,6 +755,52 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
         row.reorder    = spec.reorder.value_or(std::string());
         row.on         = spec.on;
     }
+    return look;
+}
+
+} // namespace grapher
+
+namespace grapher {
+
+const EdgeKind* Kit::FindEdge(std::string_view id) const
+{
+    const auto it = std::find_if(edges.begin(), edges.end(), [&](const EdgeKind& k) { return k.id == id; });
+    return it == edges.end() ? nullptr : &*it;
+}
+
+EdgeLook ResolveEdgeLook(const Kit& kit, const EdgeType& type, const std::vector<std::string>& tags, std::uint32_t states)
+{
+    const EdgeKind* kind = kit.FindEdge(type.id);
+    if (!kind) kind = kit.FindEdge("");
+    EdgeSpec        spec = kind ? kind->spec : DefaultEdgeKind(type).spec;
+    const std::string part = "edge:" + (kind ? kind->id : type.id);
+    std::vector<const Rule*> order;
+    for (const Rule& r : kit.rules)
+        if (r.select.part == part) order.push_back(&r);
+    std::stable_sort(order.begin(), order.end(), [](const Rule* a, const Rule* b) { return Specificity(a->select) < Specificity(b->select); });
+    for (const Rule* r : order)
+        if (Matches(r->select, type.id, tags, states)) ApplyEdge(r->edge, spec);
+    auto color = [&](const std::optional<std::string>& expr, Color fallback) {
+        if (!expr) return fallback;
+        return ResolveColor(*expr, type.color, kit).value_or(fallback);
+    };
+    EdgeLook look;
+    if (spec.line)
+        for (const auto& [name, v] : kEdgeLines)
+            if (name == *spec.line) look.line = v;
+    look.opacity    = spec.opacity.value_or(1.f);
+    look.color      = Faded(color(spec.color, type.color), look.opacity);
+    look.pinColor   = spec.pinColor.value_or(false);
+    look.width      = spec.width.value_or(1.5f) + spec.widen.value_or(0.f);
+    look.arrowSize  = spec.arrowSize.value_or(9.f);
+    look.dash       = spec.dash.value_or(false);
+    look.dotted     = spec.dotted.value_or(false);
+    look.onTop      = spec.onTop.value_or(false);
+    const std::string arrow = spec.arrow.value_or("end");
+    look.arrow      = arrow == "none" ? 0 : arrow == "start" ? 2 : arrow == "both" ? 3 : 1;
+    look.labelColor = Faded(color(spec.labelColor, look.labelColor), look.opacity);
+    look.labelFill  = color(spec.labelFill, look.labelFill);
+    look.labelScale = spec.labelScale.value_or(0.9f);
     return look;
 }
 

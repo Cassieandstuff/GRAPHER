@@ -65,6 +65,11 @@ enum class HitKind {
     Handle,    ///< a dial's handle for one of its rows; Hit::row names it
 };
 
+/// @brief The ports a closed group shows at its two ends when its kit's look says so (a `pins` part with id `ends`): its
+///        merged wires end on them. They are drawn, not edited: a press on one is a press on the group.
+inline constexpr std::string_view kGroupIn  = "grapher:in";
+inline constexpr std::string_view kGroupOut = "grapher:out";
+
 struct Hit {
     HitKind     kind = HitKind::None;
     std::string id;     ///< the node or edge
@@ -256,6 +261,9 @@ public:
     [[nodiscard]] const NodeLook& LookOf(const Node& node, std::uint32_t states = 0) const;
     /// @brief How many looks have been resolved since the canvas began (a statistic: a steady frame resolves none).
     [[nodiscard]] std::size_t ResolvedLooks() const { return resolved_; }
+    /// @return how edge `e` draws in `states` (StateSelected, StateLit, StateMerged, StateDimmed): its kit's edge kind with
+    ///         the rules on it, or the one its EdgeType makes. Resolved once per (type, tags, states) and kept.
+    [[nodiscard]] const EdgeLook& EdgeLookOf(const Edge& e, std::uint32_t states = 0) const;
     /// @brief The choices of a row whose kind edits it from a list the host keeps (a `reference` editor, or a `choice` row
     ///        with none of its own).
     std::function<std::vector<std::string>(const Node& node, const Row& row)> choicesFor;
@@ -549,7 +557,7 @@ private:
     /// @brief The KitState bits the node's own situation sets (dimmed, an alias, in a group); the gesture's come on top.
     [[nodiscard]] std::uint32_t StatesOf(const Node& n) const;
     /// @return the part of a card's look under world height `wy` ("header" or "body"); empty for other shapes
-    [[nodiscard]] std::string PartAt(const Node& n, float wy) const;
+    [[nodiscard]] std::string PartAt(const Node& n, Vec2 world) const;
     [[nodiscard]] float MeasureText(std::string_view text, float size, bool bold) const;
     /// @return the action the kit binds `gesture` to where `hit` landed (its pin, then its row, its part, its card); empty for none
     [[nodiscard]] std::string BindingFor(const Hit& hit, std::string_view gesture) const;
@@ -560,6 +568,10 @@ private:
     [[nodiscard]] const RowLook& RowLookOf(const Node& n, const Row& row) const;
     /// @return the kit's pin look for port `def` of `n`, wired or not; nullptr when its type has no pin kind
     [[nodiscard]] const PinLook* PinLookOf(const Node& n, const PortDef& def, bool wired) const;
+    /// @brief The same from `n`'s look already in hand (one lookup per node, not per pin).
+    [[nodiscard]] const PinLook* PinLookIn(const NodeLook& look, const Node& n, const PortDef& def, bool wired) const;
+    /// @return `n`'s look when the kit has pin kinds, else nullptr: what PinLookIn needs, looked up once per node
+    [[nodiscard]] const NodeLook* PinTableOf(const Node& n) const;
     /// @return where a reordered row would go: its index in Node::rows, kept within its list
     [[nodiscard]] int ReorderTarget(const Node& n, std::string_view rowId, Vec2 at) const;
     Hit                          downHit_;     ///< what the press landed on
@@ -583,6 +595,8 @@ private:
     mutable std::map<std::string, CardMetrics, std::less<>> kitCards_;   ///< node types whose geometry differs from the Style's
     mutable std::unordered_set<std::string> fitWidth_;   ///< node types whose cards fit their width
     mutable std::unordered_map<std::string, NodeLook, LookHash, std::equal_to<>> looks_;
+    mutable std::unordered_map<std::string, EdgeLook, LookHash, std::equal_to<>> edgeLooks_;
+    mutable std::map<std::string, EdgeLine, std::less<>> kitLines_;   ///< edge types a kit routes otherwise than the Schema
     mutable std::string          lookKey_;
     mutable std::size_t          resolved_ = 0;
 };
