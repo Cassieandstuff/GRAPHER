@@ -1429,6 +1429,40 @@ void TestLayoutGraph()
     CHECK(!kept.Inflated(-1.f).Intersects(F1b));
 }
 
+void TestFrameGroupsUnchanged()
+{
+    // Architect Designer's folders are frame groups: geometric membership, no arrow, no closing, no parents set, and the
+    // graph drawn as it is.
+    const grapher::Schema s = GroupSchema();
+    grapher::Graph        g;
+    g.nodes.push_back({"G", "folder", {0, 0, 400, 300}});
+    g.nodes.push_back({"m", "box", {50, 60, 100, 60}});
+    g.nodes.push_back({"x", "box", {600, 60, 100, 60}});
+    grapher::Canvas c(g, s);
+    c.SetViewport({1000, 600});
+    int toggles = 0;
+    c.onCollapseChanged = [&](std::string_view, bool) { ++toggles; };
+    CHECK(!grapher::IsMemberGroup(g.nodes[0], s) && grapher::ParentGroup(g, s, g.nodes[1]) == "G");
+    CHECK(c.FrameOf("G") == g.nodes[0].frame);
+
+    const grapher::Rect r = c.ScreenRectOf("G");
+    c.PointerDown({r.x + 5, r.y + 5}, grapher::Button::Left, {});
+    c.PointerUp({r.x + 5, r.y + 5}, grapher::Button::Left);
+    c.SetAllCollapsed(true);
+    CHECK(toggles == 0 && c.CollapsedGroups().empty() && !c.IsHidden("m"));
+    bool arrow = false;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* t = std::get_if<grapher::Text>(&cmd); t && t->text.starts_with("\xe2\x96")) arrow = true;
+    CHECK(!arrow);
+
+    // Dropped inside, a node slides in by geometry and no parent is set.
+    const grapher::Vec2 at = c.ScreenRectOf("x").Center(), into = r.Center();
+    c.PointerDown(at, grapher::Button::Left, {});
+    c.PointerMove(at + (into - at) * 0.5f);
+    c.PointerUp(into, grapher::Button::Left);
+    CHECK(g.nodes[2].parent.empty() && grapher::ParentGroup(g, s, g.nodes[2]) == "G" && g.nodes[0].frame.Holds(g.nodes[2].frame));
+}
+
 } // namespace
 
 int main()
@@ -1466,6 +1500,7 @@ int main()
     TestMemberGroups();
     TestAliasesAndHolding();
     TestLayoutGraph();
+    TestFrameGroupsUnchanged();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;
