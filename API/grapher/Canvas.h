@@ -406,6 +406,8 @@ private:
     mutable std::vector<Rect>                     boxes_;      ///< per edge: its wire's bounds, world units
     mutable std::unordered_set<std::string>       wiredPorts_; ///< "node\x1fport" for every port a wire uses
     mutable std::unordered_map<std::string_view, std::size_t> index_;   ///< node id -> index
+    mutable std::vector<std::vector<std::uint32_t>> incident_;   ///< per shown node: the shown edges touching it
+    mutable std::size_t                             dragKey_ = 0;   ///< the cache key a large graph's drag began with
     mutable bool                                  useView_ = false;
     mutable Graph                                 view_;
     mutable std::vector<char>                     dashed_;    ///< per shown edge: it stands for wires into a closed group

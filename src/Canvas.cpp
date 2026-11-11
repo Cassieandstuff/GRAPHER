@@ -1269,19 +1269,32 @@ void Canvas::Sync() const
                           (plain ? 1u : 0u) | (patch ? 2u : 0u) | (local ? 4u : 0u) | (dragging && mode_ == Mode::Moving && hasDocks_ ? 8u : 0u));
     key = Mix(key, reinterpret_cast<std::uintptr_t>(graph_));
     key = Mix(Mix(Mix(key, optionsKey), static_cast<std::size_t>(schema_->revision)), viewRev_);
-    for (const Node& n : graph_->nodes) {
-        key = Mix(Mix(Mix(key, hs(n.id)), hs(n.type)), n.parent.empty() ? 0 : hs(n.parent));
-        if (!n.dock.parent.empty())
-            key = Mix(Mix(Mix(key, hs(n.dock.parent)), hs(n.dock.row)),
-                      static_cast<std::size_t>(n.dock.order) * 16 + static_cast<std::size_t>(n.dock.side) * 2 + (n.dock.flush ? 1 : 0));
-        for (float f : {n.frame.x, n.frame.y, n.frame.w, n.frame.h}) key = Mix(key, Bits(f));
-        for (const PortDef& p : n.ports)
-            key = Mix(Mix(key, hs(p.id)), static_cast<std::size_t>(p.side) * 8 + static_cast<std::size_t>(p.dir) * 2 + (p.onHeader ? 1 : 0));
+    // During a drag only the canvas changes the graph, and only the dragged frames: after its first step the key is the
+    // one the drag began with, mixed with those, instead of every node and edge hashed again.
+    const bool shortcut = local && dragKey_ != 0;
+    if (!shortcut) {
+        for (const Node& n : graph_->nodes) {
+            key = Mix(Mix(Mix(key, hs(n.id)), hs(n.type)), n.parent.empty() ? 0 : hs(n.parent));
+            if (!n.dock.parent.empty())
+                key = Mix(Mix(Mix(key, hs(n.dock.parent)), hs(n.dock.row)),
+                          static_cast<std::size_t>(n.dock.order) * 16 + static_cast<std::size_t>(n.dock.side) * 2 + (n.dock.flush ? 1 : 0));
+            for (float f : {n.frame.x, n.frame.y, n.frame.w, n.frame.h}) key = Mix(key, Bits(f));
+            for (const PortDef& p : n.ports)
+                key = Mix(Mix(key, hs(p.id)), static_cast<std::size_t>(p.side) * 8 + static_cast<std::size_t>(p.dir) * 2 + (p.onHeader ? 1 : 0));
+        }
+        for (const Edge& e : graph_->edges) {
+            for (const std::string* s : {&e.id, &e.from, &e.to, &e.type, &e.fromPort, &e.toPort}) key = Mix(key, hs(*s));
+            const EdgeType* t = schema_->FindEdge(e.type);
+            key = Mix(key, t ? static_cast<std::size_t>(t->line) + 1 : 0);
+        }
     }
-    for (const Edge& e : graph_->edges) {
-        for (const std::string* s : {&e.id, &e.from, &e.to, &e.type, &e.fromPort, &e.toPort}) key = Mix(key, hs(*s));
-        const EdgeType* t = schema_->FindEdge(e.type);
-        key = Mix(key, t ? static_cast<std::size_t>(t->line) + 1 : 0);
+    if (local) {
+        if (!shortcut) dragKey_ = key;
+        key = dragKey_;
+        for (const auto& [id, frame] : origin_)
+            if (const Node* n = graph_->FindNode(id)) key = Mix(Mix(key, Bits(n->frame.x)), Bits(n->frame.y));
+    } else {
+        dragKey_ = 0;
     }
     if (wiresValid_ && key == wiresKey_) {
         synced_      = graph_;
@@ -1298,7 +1311,7 @@ void Canvas::Sync() const
     if (local) {
         // Only the wires of the dragged nodes (and of the open groups around them, which grow with them) reroute, among
         // the nodes they join; the rest keep their settled paths.
-        std::unordered_set<std::string_view> moving, joined;
+        std::unordered_set<std::string_view> moving;
         for (const auto& [id, frame] : origin_) moving.insert(id);
         bool rebuilt = false;
         if (useView_) {
@@ -1337,18 +1350,24 @@ void Canvas::Sync() const
                     if (const auto it = index_.find(id); it != index_.end())
                         for (std::size_t a = viewUp_[it->second]; a != static_cast<std::size_t>(-1); a = viewUp_[a]) moving.insert(view_.nodes[a].id);
         }
+        // The touched wires come from each moving node's own list, not a pass over every edge.
         const Graph&             shown = Shown();
         Graph                    sub;
-        std::vector<std::size_t> touched;
-        for (std::size_t i = 0; i < shown.edges.size(); ++i)
-            if (const Edge& e = shown.edges[i]; moving.contains(e.from) || moving.contains(e.to)) {
-                touched.push_back(i);
-                sub.edges.push_back(e);
-                joined.insert(e.from);
-                joined.insert(e.to);
-            }
-        for (const Node& n : shown.nodes)
-            if (joined.contains(n.id)) sub.nodes.push_back(n);
+        std::vector<std::size_t> touched, ends;
+        for (const std::string_view id : moving)
+            if (const auto it = index_.find(id); it != index_.end() && it->second < incident_.size())
+                touched.insert(touched.end(), incident_[it->second].begin(), incident_[it->second].end());
+        std::ranges::sort(touched);
+        touched.erase(std::unique(touched.begin(), touched.end()), touched.end());
+        for (const std::size_t i : touched) {
+            const Edge& e = shown.edges[i];
+            sub.edges.push_back(e);
+            for (const std::string* end : {&e.from, &e.to})
+                if (const auto it = index_.find(*end); it != index_.end()) ends.push_back(it->second);
+        }
+        std::ranges::sort(ends);
+        ends.erase(std::unique(ends.begin(), ends.end()), ends.end());
+        for (const std::size_t i : ends) sub.nodes.push_back(shown.nodes[i]);
         for (auto& [id, path] : RouteWires(sub, *schema_, o, &sides_)) wires_[id] = std::move(path);
         if (!rebuilt && paths_.size() == shown.edges.size()) {
             // A drag changes no node or edge, only frames: the tables keep their shape, and only the touched wires'
@@ -1421,10 +1440,13 @@ void Canvas::Sync() const
     paths_.assign(shown.edges.size(), nullptr);
     boxes_.assign(shown.edges.size(), Rect{});
     wiredPorts_.clear();
+    incident_.assign(nodes, {});
     for (std::size_t i = 0; i < shown.edges.size(); ++i) {
         const Edge& e = shown.edges[i];
         if (!e.fromPort.empty()) wiredPorts_.insert(PortKey(e.from, e.fromPort));
         if (!e.toPort.empty()) wiredPorts_.insert(PortKey(e.to, e.toPort));
+        for (const std::string* end : {&e.from, &e.to})
+            if (const auto it = index_.find(*end); it != index_.end()) incident_[it->second].push_back(static_cast<std::uint32_t>(i));
         SetPath(i);
     }
 }
@@ -1450,6 +1472,7 @@ bool Canvas::PointerDown(Vec2 at, Button button, Modifiers mods)
     downAt_ = pointer_ = at;
     started_ = false;
     origin_.clear();
+    dragKey_ = 0;   // a new gesture: the next drag keys from scratch
 
     if (button != Button::Left) {
         mode_      = panWithButtons ? Mode::Panning : Mode::Idle;
@@ -1636,6 +1659,7 @@ bool Canvas::PointerMove(Vec2 at, Modifiers mods)
 bool Canvas::PointerUp(Vec2 at, Button)
 {
     PointerMove(at, Modifiers{snapDial_, false, false});   // the last move keeps the snap the drag had
+    dragKey_ = 0;   // the drop may settle, re-parent or dock: key it in full
     const Mode mode = mode_;
     mode_           = Mode::Idle;
 
