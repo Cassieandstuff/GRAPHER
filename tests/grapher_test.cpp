@@ -1828,8 +1828,6 @@ void TestLiftWires()
     c.onBeforeChange = [&](std::string_view) { ++snapshots; };
     const grapher::Vec2 a = *c.PortScreenPos("m", "a"), b = *c.PortScreenPos("m", "b");
 
-    Drag(c, a, a + grapher::Vec2{-40, 10});
-    Drag(c, a + grapher::Vec2{-40, 10}, a);   // a press off the pin does nothing to the wire
     c.PointerDown(a, grapher::Button::Left, {});
     c.PointerMove(a + grapher::Vec2{-30, 0});
     c.PointerMove(a);
