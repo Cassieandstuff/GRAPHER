@@ -2536,7 +2536,7 @@ void TestKitPrefixAndPalette()
     s.edgeTypes = {{"wire:ref", "ref", {9, 9, 9}}, {"plainWire", "plain", {33, 33, 33}}};
     s.edgeTypes[1].portColor = true;
 
-    const char* json = R"({
+    const char* json = R"K({
         "palettes": {"groups": ["#ff0000", "#00ff00", "#0000ff"]},
         "nodes": {
             "card:*":      {"band": "palette(groups, tag:hue)", "fill": "darker(band, 200)", "stroke": "band"},
@@ -2549,7 +2549,7 @@ void TestKitPrefixAndPalette()
             {"select": "card:*:selected", "stroke": "#ffffff"},
             {"select": "card:Combat:selected", "stroke": "#000000"}
         ]
-    })";
+    })K";
     std::string error;
     const auto  parsed = grapher::ParseKit(json, error);
     CHECK((parsed && error.empty()));
@@ -2559,7 +2559,7 @@ void TestKitPrefixAndPalette()
     const auto back = grapher::ParseKit(grapher::WriteKit(kit), error);
     CHECK((back && *back == kit && kit.palettes.at("groups").size() == 3 && kit.FindNode("card:Pinned")->card.band == "#123456"));
     for (const char* bad : {R"({"palettes": {"p": ["#zz"]}})", R"({"palettes": {"p": "#fff"}})",
-                            R"({"nodes": {"x": {"band": "palette(nope, tag:hue)"}}})", R"({"nodes": {"x": {"band": "palette(p, hue)"}}})"}) {
+                            R"K({"nodes": {"x": {"band": "palette(nope, tag:hue)"}}})K", R"K({"nodes": {"x": {"band": "palette(p, hue)"}}})K"}) {
         error.clear();
         CHECK((!grapher::ParseKit(bad, error) && !error.empty()));
     }
