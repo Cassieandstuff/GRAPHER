@@ -1536,6 +1536,34 @@ void TestLayoutDocks()
     CHECK((B.x == A.Right() + o.gaps.column && !B.Intersects(W) && !A.Intersects(W)));
 }
 
+void TestFitBelowMinZoom()
+{
+    // A fit wins over the zoom-out limit: a graph too wide for it still fits whole. Zooming out then stops at that fit, and
+    // a fit that needs less leaves the limit as it was.
+    const grapher::Schema s = FolderSchema();
+    grapher::Graph        g;
+    g.nodes.push_back({"a", "box", {0, 0, 100, 60}});
+    g.nodes.push_back({"b", "box", {50000, 0, 100, 60}});
+    grapher::Canvas c(g, s);
+    c.SetViewport({1000, 600});
+    c.minZoom = 0.1f;
+    c.Frame();
+    const float fit = c.camera.zoom;
+    CHECK(fit < c.minZoom);
+    for (const char* id : {"a", "b"}) {
+        const grapher::Rect r = c.ScreenRectOf(id);
+        CHECK((r.x >= 0.f && r.Right() <= 1000.f && r.y >= 0.f && r.Bottom() <= 600.f));
+    }
+    CHECK(c.ZoomFloor() == fit);
+    CHECK_FALSE(c.Wheel({500, 300}, -3.f));   // already as far out as it goes
+    CHECK(c.Wheel({500, 300}, 5.f));
+    CHECK(c.camera.zoom > fit);
+    for (int k = 0; k < 40; ++k) c.Wheel({500, 300}, -1.f);
+    CHECK(std::abs(c.camera.zoom - fit) < 1e-6f);   // back to the fit, and no further
+    c.Frame({"a"});
+    CHECK((c.camera.zoom >= c.minZoom && c.ZoomFloor() == c.minZoom));
+}
+
 void TestFixedGroupAndHover()
 {
     // A fixed member group is the canvas: a press on its header neither picks, moves nor closes it, and "close all" passes
@@ -2121,6 +2149,7 @@ int main()
     TestAliasesAndHolding();
     TestLayoutGraph();
     TestLayoutDocks();
+    TestFitBelowMinZoom();
     TestFixedGroupAndHover();
     TestFrameGroupsUnchanged();
     TestDocks();

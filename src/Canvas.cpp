@@ -638,7 +638,9 @@ void Canvas::Frame(const NodeSet& ids, float margin, float zoomCap)
     }
     const float zx = (viewport_.x - 2 * margin) / std::max(b->w, 1.f);
     const float zy = (viewport_.y - 2 * margin) / std::max(b->h, 1.f);
-    camera.zoom    = std::clamp(std::min({zx, zy, zoomCap}), minZoom, maxZoom);
+    // A fit wins over the zoom-out limit: it shows the whole of what it frames however small that makes it.
+    camera.zoom    = std::max(std::min({zx, zy, zoomCap, maxZoom}), 1e-4f);
+    fitZoom_       = camera.zoom;
     const Vec2 c   = b->Center();
     camera.pan     = {viewport_.x * 0.5f - c.x * camera.zoom, viewport_.y * 0.5f - c.y * camera.zoom};
 }
@@ -647,7 +649,7 @@ void Canvas::CenterOn(std::string_view nodeId, std::optional<float> zoom)
 {
     const Node* n = ShownNode(nodeId);
     if (!n) return;
-    if (zoom) camera.zoom = std::clamp(*zoom, minZoom, maxZoom);
+    if (zoom) camera.zoom = std::clamp(*zoom, ZoomFloor(), maxZoom);
     const Vec2 c = n->frame.Center();
     camera.pan   = {viewport_.x * 0.5f - c.x * camera.zoom, viewport_.y * 0.5f - c.y * camera.zoom};
 }
@@ -672,7 +674,7 @@ void Canvas::PanBy(Vec2 pixels) { camera.pan = camera.pan + pixels; }
 bool Canvas::ZoomAbout(float factor, Vec2 anchor)
 {
     const float before = camera.zoom;
-    const float after  = std::clamp(before * factor, minZoom, maxZoom);
+    const float after  = std::clamp(before * factor, std::min(ZoomFloor(), before), maxZoom);
     if (after == before) return false;
     const Vec2 world = camera.ToWorld(anchor);
     camera.zoom      = after;
