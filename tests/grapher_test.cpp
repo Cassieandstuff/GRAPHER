@@ -2507,7 +2507,8 @@ void TestKitCache()
 
 void TestLargeGraphKit()
 {
-    // TestLargeGraph's 20,000 cards, with a kit: twelve kinds, forty rules, tags on every card. Same budgets.
+    // TestLargeGraph's 20,000 cards, with a kit: twelve kinds, forty rules, tags on every card; pin, row and edge kinds,
+    // a group kind with a title bar, and every tenth card a pill with parts. Same budgets.
     grapher::Schema s;
     grapher::Kit    kit;
     kit.tokens = {{"body", "#2e3036"}, {"hi", "#5ca0ff"}};
@@ -2545,9 +2546,50 @@ void TestLargeGraphKit()
         kit.rules.push_back(r);
     }
     grapher::NodeType folder{"folder", "Folder"};
-    folder.shape = grapher::NodeShape::Group;
+    folder.shape     = grapher::NodeShape::Group;
+    folder.showCount = true;
     s.nodeTypes.push_back(folder);
+    grapher::NodeType trans{"trans", "Transition", {200, 120, 60}};
+    trans.shape  = grapher::NodeShape::Pill;
+    trans.fields = {{"event", "Event"}, {"cond", "Condition"}};
+    trans.ports  = {{"in", "", "num"}, {"out", "", "num", grapher::PortDir::Out}};
+    s.nodeTypes.push_back(trans);
     s.edgeTypes.push_back({"data", "data"});
+    // K3: an edge kind with a rule, the folders' title bar, the pills' parts.
+    kit.edges                 = {{"data", {}}};
+    kit.edges[0].spec.width   = 2.f;
+    kit.edges[0].spec.color   = "$hi";
+    kit.edges[0].spec.arrow   = "end";
+    grapher::Rule lit{*grapher::ParseSelector("*:lit > edge:data"), {}};
+    lit.edge.widen = 1.f;
+    kit.rules.push_back(lit);
+    grapher::NodeKind folderKind;
+    folderKind.id          = "folder";
+    folderKind.card.fill   = "alpha(band, 0.1)";
+    folderKind.card.stroke = "band";
+    grapher::PartSpec titleBar{grapher::PartKind::Header, "header"};
+    titleBar.fill = "darker(band, 150)";
+    grapher::PartSpec folderTitle{grapher::PartKind::Text, "title"};
+    folderTitle.from   = "field:name";
+    folderTitle.format = "{value} ({count})";
+    folderTitle.bold   = true;
+    titleBar.content        = {folderTitle};
+    folderKind.card.content = {titleBar};
+    kit.nodes.push_back(folderKind);
+    grapher::NodeKind transKind;
+    transKind.id          = "trans";
+    transKind.card.fill   = "$body";
+    transKind.card.stroke = "band";
+    grapher::PartSpec glyph{grapher::PartKind::Glyph, "event"};
+    glyph.glyph = "diamond";
+    glyph.color = "#d9733f";
+    grapher::PartSpec name{grapher::PartKind::Text, "name"};
+    name.from = "field:event";
+    grapher::PartSpec cond{grapher::PartKind::Chip, "cond"};
+    cond.from  = "field:cond";
+    cond.color = "#8fd3e8";
+    transKind.card.content = {glyph, name, cond};
+    kit.nodes.push_back(transKind);
     grapher::Graph g;
     g.nodes.reserve(20100);
     constexpr int cols = 200, rows = 100;
@@ -2555,8 +2597,13 @@ void TestLargeGraphKit()
         g.nodes.push_back({"g" + std::to_string(y), "folder", {-20.f, y * 140.f - 30.f, cols * 240.f, 120.f}});
         for (int x = 0; x < cols; ++x) {
             const int k = y * cols + x;
-            g.nodes.push_back({"n" + std::to_string(k), "card" + std::to_string(k % 12), {x * 240.f, y * 140.f, 160.f, 80.f}});
-            g.nodes.back().fields = {{"name", "Card"}};
+            if (k % 10 == 9) {
+                g.nodes.push_back({"n" + std::to_string(k), "trans", {x * 240.f, y * 140.f, 160.f, 24.f}});
+                g.nodes.back().fields = {{"event", "Jump"}, {"cond", "if x"}};
+            } else {
+                g.nodes.push_back({"n" + std::to_string(k), "card" + std::to_string(k % 12), {x * 240.f, y * 140.f, 160.f, 80.f}});
+                g.nodes.back().fields = {{"name", "Card"}};
+            }
             g.nodes.back().tags   = {"t" + std::to_string(k % 5), "class:C" + std::to_string(k % 7)};
             g.nodes.back().rows   = {{"r", "speed", "1.5", "fact"}};
             if (x > 0) g.edges.push_back({"e" + std::to_string(k), "n" + std::to_string(k - 1), "n" + std::to_string(k), "data", "", "out", "in"});
@@ -2589,9 +2636,9 @@ void TestLargeGraphKit()
     (void)c.Draw();
     const double dragMs = ms(t0);
     c.PointerUp(grab + grapher::Vec2{30, 15}, grapher::Button::Left);
-    std::printf("  20k graph with a kit (pins and rows): %zu looks resolved (%zu after the hover moved); draw %.2f ms, hit test %.3f ms, drag step %.2f ms\n",
+    std::printf("  20k graph with a kit (pins, rows, edges, groups, pills): %zu looks resolved (%zu after the hover moved); draw %.2f ms, hit test %.3f ms, drag step %.2f ms\n",
                 looks, c.ResolvedLooks(), drawMs, hitMs, dragMs);
-    CHECK((looks > 0 && looks <= 12 * 5 * 7 && hits > 0));
+    CHECK((looks > 0 && looks <= 14 * 5 * 7 && hits > 0));
     // Like for like (printed, not gated): the same graph with no kit, and the kit without its pin or its row kinds; then
     // nearer, where rows draw (at 0.35 a card shows its title only).
     auto timeDraw = [&](const grapher::Kit* k, float zoom) {
@@ -2816,6 +2863,240 @@ void TestKitEditsAndReorder()
     CHECK(!p.Last<grapher::ReorderRow>());
 }
 
+
+// ── Kits: groups, pills, the dial, edges ─────────────────────────────────────
+constexpr const char* kPartKit = R"KIT({
+    "tokens": { "hi": "#5ca0ff" },
+    "edges": {
+        "data": { "line": "elbow", "width": 3, "arrow": "both", "color": "#ff0000", "labelColor": "#00ff00" },
+        "flow": { "pinColor": true, "dotted": true, "arrow": "none" }
+    },
+    "nodes": {
+        "folder": { "fill": "#10203040", "stroke": "band",
+                    "parts": [ { "part": "header", "fill": "#334455",
+                                 "content": [ { "part": "text", "id": "title", "from": "field:name", "format": "{arrow}{value} · {count}",
+                                                "color": "#ffffff", "bold": true },
+                                              { "part": "text", "id": "detail", "from": "fields", "color": "#aaaaaa" } ] },
+                               { "part": "pins", "id": "ends", "pin": "flow", "visible": false } ] },
+        "trans": { "fill": "#202020", "stroke": "#808080",
+                   "parts": [ { "part": "bar", "id": "bar", "width": 4, "color": "band" },
+                              { "part": "glyph", "id": "event", "glyph": "diamond", "color": "#d9733f" },
+                              { "part": "text", "id": "name", "from": "field:event", "color": "$hi" },
+                              { "part": "chip", "id": "cond", "from": "field:cond", "color": "#8fd3e8", "on": { "click": "editCond" } },
+                              { "part": "stub", "id": "stub", "side": "right", "length": 20, "direction": "out", "color": "#ffffff" } ] },
+        "dial": { "parts": [ { "part": "rim", "id": "rim", "stroke": "#112233", "width": 5,
+                               "content": [ { "part": "bar", "id": "needle", "color": "#00ffff", "width": 3 },
+                                            { "part": "glyph", "id": "handle", "glyph": "square", "color": "#ff00ff", "size": 6 },
+                                            { "part": "text", "id": "label", "color": "#ffff00" },
+                                            { "part": "text", "id": "reading", "color": "#00ff00" } ] } ] }
+    },
+    "rules": [
+        { "select": "folder:collapsed", "shape": "pill" },
+        { "select": "folder:collapsed > ends", "visible": true },
+        { "select": "trans[noEvent] > event", "hollow": true },
+        { "select": "*[write] > edge:data", "color": "#0000ff" },
+        { "select": "*:selected > edge:data", "widen": 2 },
+        { "select": "*:merged > edge:flow", "dash": true, "dotted": false }
+    ]
+})KIT";
+
+struct PartRig {
+    grapher::Schema                  s;
+    grapher::Graph                   g;
+    grapher::Kit                     kit;
+    std::unique_ptr<grapher::Canvas> c;
+    std::vector<grapher::Intent>     intents;
+    PartRig()
+    {
+        s.portTypes = {{"num", "Number", {90, 200, 200}}, {"flow", "Flow", {200, 200, 90}}};
+        grapher::NodeType box{"box", "Box", {100, 100, 200}};
+        box.fields = {{"name", "Name"}};
+        box.ports  = {{"in", "In", "num", grapher::PortDir::In, grapher::PortSide::Left},
+                      {"out", "Out", "num", grapher::PortDir::Out, grapher::PortSide::Right},
+                      {"fl", "Flow", "flow", grapher::PortDir::Out, grapher::PortSide::Right}};
+        grapher::NodeType folder{"folder", "Folder", {160, 90, 200}};
+        folder.shape      = grapher::NodeShape::Group;
+        folder.groupMode  = grapher::GroupMode::Members;
+        folder.showCount  = true;
+        folder.titleField = "name";
+        folder.fields     = {{"name", "Name"}, {"note", "Note"}};
+        grapher::NodeType trans{"trans", "Transition", {200, 120, 60}};
+        trans.shape  = grapher::NodeShape::Pill;
+        trans.fields = {{"event", "Event"}, {"cond", "Condition"}};
+        grapher::NodeType dial{"dial", "Dial", {140, 100, 220}};
+        dial.shape = grapher::NodeShape::Dial;
+        s.nodeTypes = {box, folder, trans, dial};
+        s.edgeTypes = {{"data", "data"}, {"flow", "flow"}};
+
+        g.nodes.push_back({"a", "box", {0, 0, 200, 120}});
+        g.nodes.back().fields = {{"name", "A"}};
+        g.nodes.push_back({"G", "folder", {400, 0, 10, 10}});
+        g.nodes.back().fields = {{"name", "G"}, {"note", "n"}};
+        g.nodes.push_back({"b1", "box", {420, 60, 160, 80}});
+        g.nodes.back().parent = "G";
+        g.nodes.push_back({"b2", "box", {420, 200, 160, 80}});
+        g.nodes.back().parent = "G";
+        g.nodes.push_back({"t", "trans", {0, 300, 240, 24}});
+        g.nodes.back().fields = {{"event", "Jump"}, {"cond", "if x"}};
+        g.nodes.push_back({"t2", "trans", {0, 360, 240, 24}});
+        g.nodes.back().fields = {{"cond", "if y"}};
+        g.nodes.back().tags   = {"noEvent"};
+        grapher::Node dl{"dl", "dial", {700, 300, 260, 260}};
+        dl.dial  = {false, 0.f, 1.f, 0.3f, "speed"};
+        dl.ports = {{"c0", "", "", grapher::PortDir::Out, grapher::PortSide::Right}};
+        dl.rows  = {{"c0", "Walk", "0", "", "c0"}};
+        g.nodes.push_back(dl);
+        g.edges.push_back({"w1", "a", "b1", "data", "lbl", "out", "in"});
+        g.edges.back().tags = {"write"};
+        g.edges.push_back({"w2", "a", "b2", "flow", "", "fl", "in"});
+        std::string error;
+        kit = *grapher::ParseKit(kPartKit, error);
+        c   = std::make_unique<grapher::Canvas>(g, s);
+        c->editMode = grapher::EditMode::Propose;
+        c->SetViewport({1400, 900});
+        c->SetKit(&kit);
+        c->onIntent = [this](const grapher::Intent& i) { intents.push_back(i); };
+        c->Frame();
+    }
+    template <class T> std::vector<const T*> All(const grapher::DrawList& list) const
+    {
+        std::vector<const T*> out;
+        for (const auto& cmd : list.cmds)
+            if (const auto* x = std::get_if<T>(&cmd)) out.push_back(x);
+        return out;
+    }
+};
+
+void TestKitEdges()
+{
+    PartRig r;
+    // The JSON reads edge kinds and edge rules and writes them back the same; a rule can't change a line, and bad words fail.
+    std::string error;
+    const auto  back = grapher::ParseKit(grapher::WriteKit(r.kit), error);
+    CHECK((back && *back == r.kit && r.kit.edges.size() == 2 && r.kit.rules[3].select.part == "edge:data"));
+    for (const char* bad : {R"({"rules": [{"select": "* > edge:data", "line": "curve"}]})", R"({"edges": {"x": {"arrow": "sideways"}}})",
+                            R"({"edges": {"x": {"line": "wiggly"}}})", R"({"nodes": {"x": {"shape": "blob"}}})",
+                            R"({"nodes": {"x": {"parts": [{"part": "stub", "side": "up"}]}}})"}) {
+        error.clear();
+        CHECK((!grapher::ParseKit(bad, error) && !error.empty()));
+    }
+    // Resolved: the kind, its tag rule (over the selection's colour), the selection's widening (the kit's, after the Schema's).
+    const grapher::Edge& w1 = r.g.edges[0];
+    const grapher::EdgeLook& plain = r.c->EdgeLookOf(w1);
+    CHECK((plain.line == grapher::EdgeLine::Elbow && plain.width == 3.f && plain.arrow == 3 && plain.color == grapher::Color{0, 0, 255}));
+    const grapher::EdgeLook& chosen = r.c->EdgeLookOf(w1, grapher::StateSelected);
+    CHECK((chosen.width == 5.f && chosen.color == grapher::Color{0, 0, 255}));
+    CHECK((r.c->EdgeLookOf(r.g.edges[1]).pinColor && r.c->EdgeLookOf(r.g.edges[1]).dotted && r.c->EdgeLookOf(r.g.edges[1]).arrow == 0));
+    // The line is the kind's: routing reads it from the options, the Schema otherwise.
+    grapher::RoutingOptions o;
+    o.lines["data"] = grapher::EdgeLine::Elbow;
+    CHECK((o.LineFor("data", r.s) == grapher::EdgeLine::Elbow && o.LineFor("flow", r.s) == grapher::EdgeLine::Curve));
+    // Drawn: the wire in its colour and width, an arrowhead at each end, its label in the kind's colour; the flow wire in its
+    // pin's colour, dotted, with no arrowhead.
+    const auto list  = r.c->Draw();
+    std::vector<grapher::Vec2> route;
+    int heads = 0;
+    bool label = false, flow = false;
+    for (const auto* p : r.All<grapher::Polyline>(list)) {
+        if (p->color == grapher::Color{0, 0, 255} && p->width == 3.f) route = p->points;
+        flow = flow || (p->color == grapher::Color{200, 200, 90} && p->dotted && p->width == 1.5f);
+    }
+    for (const auto* p : r.All<grapher::Polygon>(list)) heads += p->fill == grapher::Color{0, 0, 255};
+    for (const auto* t : r.All<grapher::Text>(list)) label = label || (t->text == "lbl" && t->color == grapher::Color{0, 255, 0});
+    CHECK((route.size() >= 2 && heads == 2 && label && flow));
+    // A rule never reroutes: selected, the same path, wider.
+    r.c->SelectEdge("w1");
+    bool same = false;
+    for (const auto* p : r.All<grapher::Polyline>(r.c->Draw())) same = same || (p->width == 5.f && p->points == route);
+    CHECK(same);
+}
+
+void TestKitGroups()
+{
+    PartRig r;
+    // Open: the body's tint, the title bar, the title by its format (arrow, name, count), the detail line.
+    auto list = r.c->Draw();
+    bool body = false, bar = false, title = false, detail = false;
+    for (const auto* f : r.All<grapher::FillRect>(list)) {
+        body = body || (f->fill == grapher::Color{0x10, 0x20, 0x30, 0x40} && f->stroke == grapher::Color{160, 90, 200});
+        bar  = bar || f->fill == grapher::Color{0x33, 0x44, 0x55};
+    }
+    for (const auto* t : r.All<grapher::Text>(list)) {
+        title  = title || (t->text == "\u25be G \u00b7 2" && t->color == grapher::Color{255, 255, 255} && t->bold);
+        detail = detail || (t->text == "n" && t->color == grapher::Color{0xaa, 0xaa, 0xaa});
+    }
+    CHECK((body && bar && title && detail));
+    CHECK(!r.c->PortScreenPos("G", grapher::kGroupIn));   // open, it shows no end pins
+    // Closed: a pill (its corner half its height), the title's arrow turned, and two end pins its merged wires end on.
+    r.c->SetCollapsed("G", true);
+    list = r.c->Draw();
+    const grapher::Rect gr = r.c->ScreenRectOf("G");
+    bool pill = false, closedTitle = false;
+    for (const auto* f : r.All<grapher::FillRect>(list))
+        pill = pill || (f->rect == gr && std::abs(f->radius - gr.h * 0.5f) < 0.01f);
+    for (const auto* t : r.All<grapher::Text>(list)) closedTitle = closedTitle || t->text == "\u25b8 G \u00b7 2";
+    CHECK((pill && closedTitle));
+    const auto in  = r.c->PortScreenPos("G", grapher::kGroupIn);
+    const auto out = r.c->PortScreenPos("G", grapher::kGroupOut);
+    CHECK((in && out && std::abs(in->x - gr.x) < 0.5f && std::abs(out->x - gr.Right()) < 0.5f));
+    // Both wires into it end on its In pin: the data wire (merged: dashed by the Schema's rule) and the flow wire (dashed,
+    // not dotted, by the kit's).
+    bool dataEnd = false, flowEnd = false;
+    for (const auto* p : r.All<grapher::Polyline>(list)) {
+        if (p->points.size() < 2 || !in || grapher::Distance(p->points.back(), *in) > 10.f) continue;
+        dataEnd = dataEnd || (p->color == grapher::Color{0, 0, 255} && p->dashed);
+        flowEnd = flowEnd || (p->color == grapher::Color{200, 200, 90} && p->dashed && !p->dotted);
+    }
+    CHECK((dataEnd && flowEnd));
+    // An end pin is shown, not edited: a press on it is a press on the group.
+    CHECK((in && r.c->HitTest(*in).kind != grapher::HitKind::Port));
+}
+
+void TestKitPillsAndDial()
+{
+    PartRig r;
+    const auto          list = r.c->Draw();
+    const grapher::Rect t    = r.c->ScreenRectOf("t");
+    const grapher::Rect t2   = r.c->ScreenRectOf("t2");
+    // A pill lays its parts along its line: the bar in its band, the event diamond, the name, the condition chip, a stub out
+    // of its right end.
+    bool barIn = false, chip = false, filled = false, hollow = false, stub = false, name = false, cond = false;
+    grapher::Rect chipBox;
+    for (const auto* f : r.All<grapher::FillRect>(list)) {
+        barIn = barIn || (f->fill == grapher::Color{200, 120, 60} && t.Contains(f->rect.Center()) && f->rect.Center().x < t.x + t.h);
+        if (f->fill == grapher::Color{0x8f, 0xd3, 0xe8, 40} && t.Contains(f->rect.Center())) chip = true, chipBox = f->rect;
+    }
+    for (const auto* p : r.All<grapher::Polygon>(list)) {
+        filled = filled || (p->fill == grapher::Color{0xd9, 0x73, 0x3f} && t.Contains(p->points.front()));
+        hollow = hollow || (p->fill == grapher::Color{0x20, 0x20, 0x20} && t2.Contains(p->points[1]));   // noEvent: outlined
+    }
+    for (const auto* p : r.All<grapher::Polyline>(list))
+        stub = stub || (p->color == grapher::Color{255, 255, 255} && p->points.size() == 2 && p->points[0].x >= t.Right() - 0.5f &&
+                        p->points[1].x > p->points[0].x);
+    for (const auto* x : r.All<grapher::Text>(list)) {
+        name = name || (x->text == "Jump" && x->color == grapher::Color{0x5c, 0xa0, 0xff});
+        cond = cond || (x->text == "if x" && x->align == grapher::Align::Center);
+    }
+    CHECK((barIn && chip && filled && hollow && stub && name && cond));
+    // Its parts come in order, left to right, and a press on the chip runs the chip's binding.
+    CHECK(chip && chipBox.x > t.x + t.h * 0.4f);
+    r.c->PointerDown(chipBox.Center(), grapher::Button::Left, {});
+    r.c->PointerUp(chipBox.Center(), grapher::Button::Left);
+    const auto* edit = r.intents.empty() ? nullptr : std::get_if<grapher::InvokeAction>(&r.intents.back().change);
+    CHECK((edit && edit->action == "editCond" && edit->part == "cond" && edit->node == "t"));
+    // The dial's rim: the ring, the needle and hub, the square handles, the labels and the reading in the kit's colours.
+    bool ring = false, needle = false, handle = false, labelText = false, reading = false;
+    for (const auto* p : r.All<grapher::Polyline>(list)) {
+        ring   = ring || (p->color == grapher::Color{0x11, 0x22, 0x33} && p->points.size() > 30);
+        needle = needle || (p->color == grapher::Color{0, 255, 255} && p->width == 3.f);
+    }
+    for (const auto* f : r.All<grapher::FillRect>(list)) handle = handle || f->fill == grapher::Color{255, 0, 255};
+    for (const auto* x : r.All<grapher::Text>(list)) {
+        labelText = labelText || (x->text.starts_with("Walk") && x->color == grapher::Color{255, 255, 0});
+        reading   = reading || (x->text.starts_with("speed") && x->color == grapher::Color{0, 255, 0});
+    }
+    CHECK((ring && needle && handle && labelText && reading));
+}
 } // namespace
 
 int main()
@@ -2862,6 +3143,9 @@ int main()
     TestKitPinsAndRows();
     TestKitActions();
     TestKitEditsAndReorder();
+    TestKitEdges();
+    TestKitGroups();
+    TestKitPillsAndDial();
     TestLargeGraphKit();
     TestFixedGroupAndHover();
     TestFrameGroupsUnchanged();
