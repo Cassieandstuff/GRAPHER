@@ -1317,7 +1317,7 @@ void TestMemberGroups()
 
     // Closed: what it holds goes, and the wires into it end on it, merged into one dashed wire.
     c.SetCollapsed("F1", true);
-    CHECK(toggled.size() == 1 && toggled[0] == std::pair<std::string, bool>{"F1", true});
+    CHECK((toggled.size() == 1 && toggled[0] == std::pair<std::string, bool>{"F1", true}));
     CHECK(c.IsHidden("a") && c.IsHidden("F2") && !c.IsHidden("F1") && c.FrameOf("F1").h == head && c.FrameOf("a") == grapher::Rect{});
     int wires = 0, dashed = 0;
     for (const auto& cmd : c.Draw().cmds)

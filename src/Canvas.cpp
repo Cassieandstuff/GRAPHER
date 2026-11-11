@@ -816,9 +816,13 @@ void Canvas::BuildView() const
     const std::size_t     n     = view_.nodes.size();
     std::unordered_map<std::string_view, const NodeType*> types;
     for (const NodeType& t : schema_->nodeTypes) types.emplace(t.id, &t);
+    // The ids as owned strings: the nodes move out of view_ below, and the index must outlive that.
+    std::vector<std::string> ids;
+    ids.reserve(n);
+    for (const Node& node : view_.nodes) ids.push_back(node.id);
     std::unordered_map<std::string_view, std::size_t> at;
     at.reserve(n);
-    for (std::size_t i = 0; i < n; ++i) at.emplace(view_.nodes[i].id, i);
+    for (std::size_t i = 0; i < n; ++i) at.emplace(ids[i], i);
     std::vector<char> member(n, 0);
     for (std::size_t i = 0; i < n; ++i) {
         const auto t = types.find(view_.nodes[i].type);
@@ -911,7 +915,7 @@ void Canvas::BuildView() const
         const std::size_t full = at.at(view_.nodes[i].id);
         shownDepth[i]          = depth[full];
         if (up[full] != kNone) {
-            viewUp_[i] = shownAt.at(view_.nodes[up[full]].id);
+            viewUp_[i] = shownAt.at(ids[up[full]]);
             viewKids_[viewUp_[i]].push_back(i);
         }
         if (member[full] && !collapsed_.contains(view_.nodes[i].id)) fitOrder_.push_back(i);

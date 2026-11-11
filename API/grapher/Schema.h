@@ -41,6 +41,12 @@ enum class NodeShape {
     Dot,
 };
 
+/// @brief What a group holds.
+enum class GroupMode {
+    Frame,     ///< the nodes inside its frame, as JSON Canvas groups do; moving a node in or out changes it
+    Members,   ///< the nodes whose Node::parent names it; its frame wraps them below its header, and it can collapse
+};
+
 /// @brief How a kind of row looks: a key's colour, a binding's prefix, a muted unset value.
 struct RowStyle {
     std::string           id;
@@ -69,12 +75,6 @@ struct NodeType {
     GroupMode             groupMode = GroupMode::Frame;   ///< a group's: what it holds
     bool                  showCount = false;   ///< a group's header says how many nodes it holds, nested ones included
     friend bool operator==(const NodeType&, const NodeType&) = default;
-};
-
-/// @brief What a group holds.
-enum class GroupMode {
-    Frame,     ///< the nodes inside its frame, as JSON Canvas groups do; moving a node in or out changes it
-    Members,   ///< the nodes whose Node::parent names it; its frame wraps them below its header, and it can collapse
 };
 
 enum class EdgeLine { Curve, Straight, Elbow };
