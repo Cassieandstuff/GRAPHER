@@ -1,6 +1,7 @@
 #include <grapher/avoid/AvoidRouter.h>
 
 #include <grapher/Groups.h>
+#include <grapher/Ports.h>
 
 #include <libavoid/libavoid.h>
 
@@ -15,6 +16,7 @@ namespace grapher::avoid {
 namespace {
 
 constexpr unsigned kAnySide = 1;   ///< the pin class every side's pins share: libavoid picks the best free one
+constexpr unsigned kFirstPort = 2;  ///< a port's pins are class kFirstPort + its index among the node's ports
 constexpr int      kCubicSteps = 8;
 
 struct SidePins {
@@ -41,6 +43,54 @@ void AddPins(Avoid::ShapeRef* shape)
 }
 
 Avoid::Rectangle RectOf(const Rect& r) { return Avoid::Rectangle(Avoid::Point(r.x, r.y), Avoid::Point(r.Right(), r.Bottom())); }
+
+Avoid::ConnDirFlags DirOf(PortSide s)
+{
+    switch (s) {
+    case PortSide::Left: return Avoid::ConnDirLeft;
+    case PortSide::Right: return Avoid::ConnDirRight;
+    case PortSide::Top: return Avoid::ConnDirUp;
+    default: return Avoid::ConnDirDown;
+    }
+}
+
+/// @brief One port's pin, as libavoid takes it: offsets from the shape's top-left, the far edge as ATTACH_POS_MAX_OFFSET.
+struct PortPin {
+    unsigned            cls = 0;
+    double              x = 0, y = 0;
+    Avoid::ConnDirFlags dir = Avoid::ConnDirNone;
+    std::string         port;
+    bool operator==(const PortPin&) const = default;
+};
+
+std::vector<PortPin> PortPins(const Node& n, const Schema& schema, const CardMetrics& m)
+{
+    std::vector<PortPin> out;
+    const auto slots = LayoutPorts(n, schema, m);
+    for (std::size_t k = 0; k < slots.size(); ++k) {
+        const PortSlot& s = slots[k];
+        PortPin p{kFirstPort + static_cast<unsigned>(k), s.at.x - n.frame.x, s.at.y - n.frame.y, DirOf(s.side), s.def.id};
+        if (s.side == PortSide::Left) p.x = Avoid::ATTACH_POS_MIN_OFFSET;
+        if (s.side == PortSide::Right) p.x = Avoid::ATTACH_POS_MAX_OFFSET;
+        if (s.side == PortSide::Top) p.y = Avoid::ATTACH_POS_MIN_OFFSET;
+        if (s.side == PortSide::Bottom) p.y = Avoid::ATTACH_POS_MAX_OFFSET;
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
+/// @brief A port's pins carry any number of wires (an output feeds many inputs), so they are not exclusive.
+void AddPortPins(Avoid::ShapeRef* shape, const std::vector<PortPin>& pins)
+{
+    for (const PortPin& p : pins) new Avoid::ShapeConnectionPin(shape, p.cls, p.x, p.y, false, 0.0, p.dir);
+}
+
+const PortPin* FindPin(const std::vector<PortPin>& pins, std::string_view port)
+{
+    for (const PortPin& p : pins)
+        if (p.port == port) return &p;
+    return nullptr;
+}
 
 /// @brief Where a wire meets a group, which is no obstacle and so has no shape or pins: the middle of the group's side
 ///        that faces the wire's other end, leaving outward.
@@ -88,12 +138,14 @@ std::vector<Vec2> Flatten(const Avoid::Polygon& poly)
 
 struct AvoidRouter::Impl {
     struct Shape {
-        Avoid::ShapeRef* ref = nullptr;
-        Rect             frame;
+        Avoid::ShapeRef*     ref = nullptr;
+        Rect                 frame;
+        std::vector<PortPin> pins;   ///< its ports' pins, offsets from its top-left: a change rebuilds the shape
     };
     struct Conn {
         Avoid::ConnRef* ref = nullptr;
         std::string     from, to;
+        std::string     fromPort, toPort;
         EdgeLine        line = EdgeLine::Curve;
         bool            groupEnd[2] = {false, false};   ///< the source / target end is a group's side, not a shape
         Avoid::Point    at[2];                         ///< where a group end sits
@@ -138,6 +190,15 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
         if (IsGroup(n, schema)) groups.insert(n.id);
     }
 
+    // Each node's port pins. A shape whose pins moved (its ports changed, or a resize moved them) is rebuilt.
+    std::unordered_map<std::string_view, std::vector<PortPin>> pins;
+    std::unordered_set<std::string_view>                       rebuild;
+    for (const Node& n : graph.nodes) {
+        auto p = PortPins(n, schema, o.card);
+        if (const auto it = m.shapes.find(n.id); it != m.shapes.end() && it->second.pins != p) rebuild.insert(n.id);
+        pins.emplace(n.id, std::move(p));
+    }
+
     // Connectors that no longer exist, or whose ends changed, go first: a shape is never deleted under a connector.
     std::unordered_map<std::string, const Edge*> wanted;
     for (const Edge& e : graph.edges)
@@ -145,6 +206,8 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
     for (auto it = m.conns.begin(); it != m.conns.end();) {
         const auto w = wanted.find(it->first);
         if (w == wanted.end() || w->second->from != it->second.from || w->second->to != it->second.to ||
+            w->second->fromPort != it->second.fromPort || w->second->toPort != it->second.toPort ||
+            rebuild.contains(it->second.from) || rebuild.contains(it->second.to) ||
             groups.contains(it->second.from) != it->second.groupEnd[0] || groups.contains(it->second.to) != it->second.groupEnd[1]) {
             router.deleteConnector(it->second.ref);
             it = m.conns.erase(it);
@@ -155,7 +218,7 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
 
     // Shapes: drop the gone (and the nodes that became groups), move the moved, add the new.
     for (auto it = m.shapes.begin(); it != m.shapes.end();) {
-        if (!nodes.contains(it->first) || groups.contains(it->first)) {
+        if (!nodes.contains(it->first) || groups.contains(it->first) || rebuild.contains(it->first)) {
             router.deleteShape(it->second.ref);
             it = m.shapes.erase(it);
         } else {
@@ -169,7 +232,8 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
             Avoid::Rectangle rect = RectOf(n.frame);
             auto*            ref  = new Avoid::ShapeRef(&router, rect);
             AddPins(ref);
-            m.shapes.emplace(n.id, Impl::Shape{ref, n.frame});
+            AddPortPins(ref, pins.at(n.id));
+            m.shapes.emplace(n.id, Impl::Shape{ref, n.frame, pins.at(n.id)});
         } else if (!(it->second.frame == n.frame)) {
             router.moveShape(it->second.ref, RectOf(n.frame));
             it->second.frame = n.frame;
@@ -180,11 +244,21 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
     for (const auto& [id, e] : wanted) {
         const EdgeType*   t    = schema.FindEdge(e->type);
         const EdgeLine    line = t ? t->line : EdgeLine::Curve;
-        const std::string ends[2] = {e->from, e->to};
+        const std::string ends[2]  = {e->from, e->to};
+        const std::string ports[2] = {e->fromPort, e->toPort};
         Avoid::Point      at[2];
         auto endOf = [&](int k) {
             const std::string& self = ends[k];
-            if (!groups.contains(self)) return Avoid::ConnEnd(m.shapes.at(self).ref, kAnySide);
+            const PortPin*     pin  = ports[k].empty() ? nullptr : FindPin(pins.at(self), ports[k]);
+            if (!groups.contains(self)) return Avoid::ConnEnd(m.shapes.at(self).ref, pin ? pin->cls : kAnySide);
+            if (pin) {
+                // A group has no shape: its port is a fixed point on its outline.
+                const auto slots = LayoutPorts(*nodes.at(self), schema, o.card);
+                if (const PortSlot* s = FindSlot(slots, ports[k])) {
+                    at[k] = Avoid::Point(s->at.x, s->at.y);
+                    return Avoid::ConnEnd(at[k], pin->dir);
+                }
+            }
             return GroupEnd(nodes.at(self)->frame, nodes.at(ends[1 - k])->frame, at[k]);
         };
         auto it = m.conns.find(id);
@@ -192,7 +266,7 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
             const Avoid::ConnEnd src = endOf(0), dst = endOf(1);
             auto* ref = new Avoid::ConnRef(&router, src, dst);
             ref->setRoutingType(TypeOf(line));
-            Impl::Conn c{ref, e->from, e->to, line, {groups.contains(e->from), groups.contains(e->to)}, {at[0], at[1]}};
+            Impl::Conn c{ref, e->from, e->to, e->fromPort, e->toPort, line, {groups.contains(e->from), groups.contains(e->to)}, {at[0], at[1]}};
             m.conns.emplace(id, c);
             continue;
         }

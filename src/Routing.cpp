@@ -343,7 +343,18 @@ struct Wire {
     Side        sa, sb;
     Port        pa, pb;
     EdgeLine    line;
+    bool        pinnedA = false, pinnedB = false;   ///< the end is on a port: its place is fixed, it doesn't spread
 };
+
+Side SideOfPort(PortSide s)
+{
+    switch (s) {
+    case PortSide::Left: return Left;
+    case PortSide::Right: return Right;
+    case PortSide::Top: return Top;
+    default: return Bottom;
+    }
+}
 
 } // namespace
 
@@ -358,13 +369,33 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
         solid.push_back(IsGroup(graph.nodes[k], schema) ? 0 : 1);
     }
 
+    // Ports are laid out once per node that has a wire on one.
+    std::unordered_map<std::size_t, std::vector<PortSlot>> slots;
+    auto slotOf = [&](std::size_t node, const std::string& port) -> const PortSlot* {
+        if (port.empty()) return nullptr;
+        auto it = slots.find(node);
+        if (it == slots.end()) it = slots.emplace(node, LayoutPorts(graph.nodes[node], schema, o.card)).first;
+        return FindSlot(it->second, port);
+    };
+
     std::vector<Wire> wires;
     for (const Edge& e : graph.edges) {
         const auto ia = index.find(e.from), ib = index.find(e.to);
         if (ia == index.end() || ib == index.end() || ia->second == ib->second) continue;
-        const auto [sa, sb] = FacingSides(frames[ia->second], frames[ib->second]);
-        const EdgeType* t   = schema.FindEdge(e.type);
-        wires.push_back({&e, ia->second, ib->second, sa, sb, {}, {}, t ? t->line : EdgeLine::Curve});
+        auto [sa, sb] = FacingSides(frames[ia->second], frames[ib->second]);
+        const EdgeType* t = schema.FindEdge(e.type);
+        Wire wire{&e, ia->second, ib->second, sa, sb, {}, {}, t ? t->line : EdgeLine::Curve};
+        if (const PortSlot* s = slotOf(ia->second, e.fromPort)) {
+            wire.sa      = SideOfPort(s->side);
+            wire.pa      = {s->at, s->normal};
+            wire.pinnedA = true;
+        }
+        if (const PortSlot* s = slotOf(ib->second, e.toPort)) {
+            wire.sb      = SideOfPort(s->side);
+            wire.pb      = {s->at, s->normal};
+            wire.pinnedB = true;
+        }
+        wires.push_back(wire);
     }
 
     // Ports: the ends on one side of a node spread along it, ordered by where their other end sits, so they leave
@@ -381,8 +412,8 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
             const Vec2 c = frames[other].Center();
             return (s == Left || s == Right) ? c.y : c.x;
         };
-        sides[{wire.a, wire.sa}].push_back({w, true, key(wire.b, wire.sa)});
-        sides[{wire.b, wire.sb}].push_back({w, false, key(wire.a, wire.sb)});
+        if (!wire.pinnedA) sides[{wire.a, wire.sa}].push_back({w, true, key(wire.b, wire.sa)});
+        if (!wire.pinnedB) sides[{wire.b, wire.sb}].push_back({w, false, key(wire.a, wire.sb)});
     }
     for (auto& [nodeSide, ends] : sides) {
         std::stable_sort(ends.begin(), ends.end(), [](const End& x, const End& y) { return x.key < y.key; });

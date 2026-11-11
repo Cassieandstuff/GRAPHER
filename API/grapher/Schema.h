@@ -4,7 +4,9 @@
 ///        knowing the domain. A behavior editor fills it from a class schema; an architecture tool from a JSON file.
 
 #include <grapher/Geometry.h>
+#include <grapher/Port.h>
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,6 +26,7 @@ struct FieldDef {
     FieldKind                kind = FieldKind::Text;
     std::vector<std::string> choices;     ///< Tag: the suggested values
     bool                     onCard = true;   ///< drawn on the node's card (an inspector shows every field)
+    friend bool operator==(const FieldDef&, const FieldDef&) = default;
 };
 
 enum class NodeShape {
@@ -33,6 +36,8 @@ enum class NodeShape {
     /// @brief A frame that holds other nodes, drawn behind them with its title in a header strip. Membership is
     ///        geometric (grapher/Groups.h): moving the group moves what it holds, and wires pass over it.
     Group,
+    /// @brief A small round node with no text, its ports on its outline: a reroute point a wire passes through.
+    Dot,
 };
 
 struct NodeType {
@@ -47,6 +52,8 @@ struct NodeType {
     std::string           titleField = "name";   ///< the field the card's title shows; the type label when empty
     std::string           bodyLabel  = "Summary";
     std::string           defaultEdge;   ///< an EdgeType id a new edge to or from this type gets; empty = the schema's first
+    std::vector<PortDef>  ports;         ///< every node of the type has these; a node's own ports follow (Node::ports)
+    friend bool operator==(const NodeType&, const NodeType&) = default;
 };
 
 enum class EdgeLine { Curve, Straight, Elbow };
@@ -58,17 +65,38 @@ struct EdgeType {
     EdgeLine    line   = EdgeLine::Curve;
     bool        dashed = false;
     bool        arrow  = true;   ///< an arrowhead at the target end
+    /// @brief A wire of this type takes the colour of the type its Out port carries (PortTypeOf), when it has one.
+    bool        portColor = false;
+    friend bool operator==(const EdgeType&, const EdgeType&) = default;
 };
 
 struct Schema {
-    std::vector<NodeType> nodeTypes;
-    std::vector<EdgeType> edgeTypes;   ///< the first is what a newly drawn edge gets, unless an end's type says otherwise
+    std::vector<NodeType>   nodeTypes;
+    std::vector<EdgeType>   edgeTypes;   ///< the first is what a newly drawn edge gets, unless an end's type says otherwise
+    std::vector<PortType>   portTypes;
+    std::vector<Conversion> conversions;
+    SubtypeFlow             subtypeFlow = SubtypeFlow::OutIsA;
+    /// @brief Bump after changing the types in place (a type defined at runtime), so a canvas drops what it cached.
+    ///        PutNodeType bumps it.
+    std::uint64_t           revision = 0;
 
     [[nodiscard]] const NodeType* FindNode(std::string_view id) const;
     [[nodiscard]] const EdgeType* FindEdge(std::string_view id) const;
+    [[nodiscard]] const PortType* FindPortType(std::string_view id) const;
     /// @brief The edge type a new edge between these node types gets: the source's default, else the target's, else the
     ///        first edge type; empty when there are none.
     [[nodiscard]] std::string EdgeFor(std::string_view fromType, std::string_view toType) const;
+
+    /// @brief Whether port type `type` is `base`: the same, or `base` is among its `bases`, at any depth.
+    [[nodiscard]] bool IsA(std::string_view type, std::string_view base) const;
+    /// @brief Whether a wire may run from an Out port of type `out` to an In port of type `in`: an untyped end takes
+    ///        anything; else the types are the same, or one is the other by `subtypeFlow`, or a Conversion says so.
+    [[nodiscard]] bool CanConnect(std::string_view out, std::string_view in) const;
+
+    /// @brief Add a node type, or replace the one with its id (a type defined at runtime from data); bumps `revision`.
+    void PutNodeType(NodeType type);
+
+    friend bool operator==(const Schema&, const Schema&) = default;
 };
 
 } // namespace grapher

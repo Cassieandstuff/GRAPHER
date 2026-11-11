@@ -6,8 +6,11 @@
 ///        its type's style: an elbow keeps its corners (slightly rounded), a curve rounds them wide, a straight line
 ///        keeps them sharp. A curve or straight line that is already clear keeps its plain shape.
 ///        A group (NodeShape::Group) is no obstacle: wires run over it, though one can end on its outline.
+///        An end on a port (Edge::fromPort / toPort) starts or ends at that port's pin (grapher/Ports.h), leaving along
+///        its side; only the ends on a node as a whole spread.
 
 #include <grapher/Graph.h>
+#include <grapher/Ports.h>
 #include <grapher/Schema.h>
 
 #include <string>
@@ -28,6 +31,7 @@ struct RoutingOptions {
     float laneSpacing  = 8.f;    ///< the gap between parallel wires a backend spreads apart
     float cornerRadius = 10.f;   ///< an elbow's corners
     float curveRadius  = 40.f;   ///< a detouring curve's corners
+    CardMetrics card;            ///< where ports sit on a card (a canvas fills it from its Style)
     friend bool operator==(const RoutingOptions&, const RoutingOptions&) = default;
 };
 

@@ -5,8 +5,11 @@ core knows no UI toolkit; backends paint its draw lists.
 
 | Header | Contents |
 |---|---|
-| `grapher/Schema.h` | `NodeType` (fields, shape: card / note / pill / group, colour, drillable, default edge), `EdgeType` (line, dash, arrow), `Schema` |
-| `grapher/Graph.h` | `Node`, `Edge`, `Graph` — a value type, so undo is a copy |
+| `grapher/Schema.h` | `NodeType` (fields, ports, shape: card / note / pill / group, colour, drillable, default edge), `EdgeType` (line, dash, arrow), `Schema` (with port types, conversions, `CanConnect`) |
+| `grapher/Port.h` | `PortType` (colour, glyph, bases), `PortDef` (direction, side, wire limit, the field it shows), `Conversion` |
+| `grapher/Ports.h` | where a node's ports sit (`LayoutPorts`), the height a card needs (`CardHeight`) |
+| `grapher/SchemaJson.h` | the schema as JSON: `ParseSchema`, `ParseNodeType` (a type defined at runtime), `WriteSchema` |
+| `grapher/Graph.h` | `Node` (with ports of its own), `Edge` (port to port, or node to node), `Graph` — a value type, so undo is a copy |
 | `grapher/Groups.h` | group membership: a node belongs to the smallest group whose frame holds it (`ParentGroup`, `GroupMembers`) |
 | `grapher/Routing.h` | `RouteWires` — ports spread along node sides; wires that would cut through a node routed around it (orthogonal A*), drawn in their edge type's style |
 | `grapher/Canvas.h` | `Camera`, `Canvas` — gestures (select, move, resize, connect, marquee, pan, zoom) and `Draw()` |
@@ -17,6 +20,21 @@ header, resize grip and connect handle pick it; its empty interior is empty canv
 (which takes a group only when it holds all of it). Dragging a group moves everything it holds; a node dropped or added
 with its centre in a group's frame slides wholly inside it (when it fits), and dragging its centre out takes it out.
 Neither router treats a group as an obstacle: wires run over it, and a wire can end on its outline.
+
+**Ports** are the named, typed places a wire connects to. A node type declares them in the schema (`NodeType::ports`),
+and a node can add its own (`Node::ports`: a list whose length is data, a block with a variable number of inputs). A
+wire runs from an Out port to an In port (`Edge::fromPort` / `toPort`); an edge with no ports joins the nodes as a
+whole, as before. Whether a wire may run is the schema's to say, from data: the port types are the same; or one is the
+other through its `bases` (`subtypeFlow` says which end may be the more specific: a value flows into a port of its own
+type or a base of it, while a pointer of a class takes a node of that class or a subclass); or a listed `Conversion`
+allows it. An In port takes one wire unless `maxWires` says otherwise, and a new wire into a full port replaces the
+oldest. On a card, left and right ports stack in rows under the header (an input and an output can share a row), a port
+`onHeader` sits on the title line, and top and bottom ports spread along their side; a port bound to a `field` shows its
+value while unwired. Drag from a pin to a pin, or onto a node to land on its first port that takes the wire; while you
+drag, the ports it may land on are ringed. A node with ports has no connect handle. Both routers end wires on the pins.
+
+The schema can be written as JSON (`grapher/SchemaJson.h` documents the format), so node types can come from data at
+runtime: parse one with `ParseNodeType` and add it with `Schema::PutNodeType`.
 
 | `grapher/DrawList.h` | what a backend paints: rects, polylines, polygons, circles, text, in screen pixels |
 | `grapher/Style.h` | background, grid and card chrome |
@@ -35,7 +53,7 @@ Include only `<grapher/Grapher.h>` (plus a backend header).
 
 ```cmake
 set(GRAPHER_QT ON CACHE BOOL "" FORCE)   # only if you want the Qt backend; you provide Qt6
-FetchContent_Declare(GRAPHER GIT_REPOSITORY https://github.com/Cassieandstuff/Grapher.git GIT_TAG main)
+FetchContent_Declare(GRAPHER GIT_REPOSITORY https://github.com/Cassieandstuff/GRAPHER.git GIT_TAG main)
 FetchContent_MakeAvailable(GRAPHER)
 target_link_libraries(MyTarget PRIVATE grapher::grapher grapher::qt)
 ```

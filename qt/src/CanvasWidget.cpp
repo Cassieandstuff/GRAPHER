@@ -86,7 +86,7 @@ void Paint(QPainter& p, const DrawList& list)
                 p.setPen(Q(t.color));
                 const QString text  = QString::fromUtf8(t.text.data(), static_cast<qsizetype>(t.text.size()));
                 const QRectF  box   = Q(t.box);
-                const int     align = (t.align == Align::Center ? Qt::AlignHCenter : Qt::AlignLeft);
+                const int     align = t.align == Align::Center ? Qt::AlignHCenter : (t.align == Align::Right ? Qt::AlignRight : Qt::AlignLeft);
                 if (t.wrap) {
                     p.save();
                     p.setClipRect(box);
@@ -133,7 +133,8 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent* e)
     if (canvas_.Busy()) return;
     switch (canvas_.HitTest(V(e->position())).kind) {
     case HitKind::Resize: setCursor(Qt::SizeFDiagCursor); break;
-    case HitKind::Connect: setCursor(Qt::CrossCursor); break;
+    case HitKind::Connect:
+    case HitKind::Port: setCursor(Qt::CrossCursor); break;
     case HitKind::Edge: setCursor(Qt::PointingHandCursor); break;
     default: unsetCursor(); break;
     }

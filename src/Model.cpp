@@ -70,6 +70,51 @@ std::string Schema::EdgeFor(std::string_view fromType, std::string_view toType) 
     return edgeTypes.empty() ? std::string{} : edgeTypes.front().id;
 }
 
+const PortType* Schema::FindPortType(std::string_view id) const
+{
+    for (const PortType& t : portTypes)
+        if (t.id == id) return &t;
+    return nullptr;
+}
+
+bool Schema::IsA(std::string_view type, std::string_view base) const
+{
+    if (type == base) return true;
+    // Breadth-first up the bases; `seen` keeps a cycle in bad data from looping.
+    std::vector<std::string_view> todo{type}, seen{type};
+    for (std::size_t i = 0; i < todo.size(); ++i) {
+        const PortType* t = FindPortType(todo[i]);
+        if (!t) continue;
+        for (const std::string& b : t->bases) {
+            if (b == base) return true;
+            if (std::find(seen.begin(), seen.end(), b) != seen.end()) continue;
+            seen.push_back(b);
+            todo.push_back(b);
+        }
+    }
+    return false;
+}
+
+bool Schema::CanConnect(std::string_view out, std::string_view in) const
+{
+    if (out.empty() || in.empty()) return true;
+    if (subtypeFlow == SubtypeFlow::OutIsA ? IsA(out, in) : IsA(in, out)) return true;
+    for (const Conversion& c : conversions)
+        if (c.from == out && c.to == in) return true;
+    return false;
+}
+
+void Schema::PutNodeType(NodeType type)
+{
+    ++revision;
+    for (NodeType& t : nodeTypes)
+        if (t.id == type.id) {
+            t = std::move(type);
+            return;
+        }
+    nodeTypes.push_back(std::move(type));
+}
+
 // ── Graph ────────────────────────────────────────────────────────────────────
 
 const std::string& Node::Field(std::string_view key) const

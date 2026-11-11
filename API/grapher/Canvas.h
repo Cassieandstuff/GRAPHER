@@ -8,12 +8,14 @@
 #include <grapher/DrawList.h>
 #include <grapher/Graph.h>
 #include <grapher/Groups.h>
+#include <grapher/Ports.h>
 #include <grapher/Routing.h>
 #include <grapher/Schema.h>
 #include <grapher/Style.h>
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -47,13 +49,15 @@ enum class HitKind {
     None,
     Node,      ///< a node's body
     Resize,    ///< a node's resize grip
-    Connect,   ///< a node's connect handle
+    Connect,   ///< a node's connect handle (a node without ports)
     Edge,
+    Port,      ///< a port's pin; Hit::port names it
 };
 
 struct Hit {
     HitKind     kind = HitKind::None;
-    std::string id;   ///< the node or edge
+    std::string id;     ///< the node or edge
+    std::string port;   ///< Port: the port on node `id`
 };
 
 using NodeSet = std::set<std::string, std::less<>>;
@@ -114,7 +118,18 @@ public:
     std::string AddNode(std::string_view type, Vec2 worldCenter);
     /// @return false when nothing was selected
     bool DeleteSelection();
+    /// @brief Wire two ports (or a node as a whole, with an empty port id), in either order: the Out end becomes the
+    ///        edge's `from`. A port already at its MaxWires loses its oldest wire to the new one. The edge type is the
+    ///        Out port type's `edge`, else Schema::EdgeFor.
+    /// @return the new edge's id; empty when CanWire refuses
+    std::string Connect(std::string_view nodeA, std::string_view portA, std::string_view nodeB, std::string_view portB);
     /// @}
+
+    /// @brief Whether Connect would wire these: two distinct nodes; with ports, one In and one Out whose types the schema
+    ///        lets connect (Schema::CanConnect); and no edge between the same ends already.
+    [[nodiscard]] bool CanWire(std::string_view nodeA, std::string_view portA, std::string_view nodeB, std::string_view portB) const;
+    /// @return the pin of `port` on `nodeId` in screen pixels, or nullopt when there is none
+    [[nodiscard]] std::optional<Vec2> PortScreenPos(std::string_view nodeId, std::string_view port) const;
 
     /// @brief Fit every node in the viewport (zoom capped at 1).
     void Frame();
@@ -140,6 +155,10 @@ private:
     ///       reroutes everything through the backend. Without a backend, a slow built-in route drags with plain shapes.
     [[nodiscard]] const WirePaths& Wires() const;
     [[nodiscard]] const NodeType& TypeOf(const Node& n) const;
+    [[nodiscard]] std::vector<PortSlot> SlotsOf(const Node& n) const;
+    /// @brief The port of `to` a wire dragged from `port` of `from` lands on when dropped on `to` as a whole: the first
+    ///        that can take it, preferring one with room. Empty when none can.
+    [[nodiscard]] std::string LandingPort(const Node& from, std::string_view port, const Node& to) const;
     [[nodiscard]] float Snap(float v) const;
     void Changed();
     void SelectionChanged();
@@ -161,6 +180,8 @@ private:
     Vec2        panAtDown_;
     std::string active_;            ///< the node a resize or connect starts from
     std::string connectTo_;
+    std::string activePort_;        ///< the port a connect starts from; empty = the node's connect handle
+    std::string connectPort_;       ///< the port of connectTo_ it would end on
     std::vector<std::pair<std::string, Rect>> origin_;   ///< frames at the start of a move or resize
     NodeSet     carried_;           ///< moving because a selected group holds them, not because they are selected
 

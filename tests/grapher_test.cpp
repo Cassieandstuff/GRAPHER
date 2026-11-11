@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -541,6 +542,369 @@ void TestGroupRouting()
     CHECK(!Crosses(grapher::RouteWires(g, s, {}).at("ab"), g.nodes[2].frame));
 }
 
+// ── Ports ────────────────────────────────────────────────────────────────────
+
+bool Near(grapher::Vec2 a, grapher::Vec2 b) { return grapher::Distance(a, b) < 0.01f; }
+
+constexpr grapher::Color kFloat{200, 200, 200};
+constexpr grapher::Color kRgba{230, 120, 40};
+
+/// @brief A small material-like library: Value (a float out on its title line), Mix (two colours and a number in, a
+///        colour out) and Flag (a bool in). Floats are numbers, and a float converts to a colour.
+grapher::Schema PortSchema()
+{
+    grapher::Schema s;
+    s.portTypes = {{"number", "Number"},
+                   {"float", "Float", kFloat, grapher::PortGlyph::Circle, {"number"}},
+                   {"rgba", "Colour", kRgba, grapher::PortGlyph::Diamond},
+                   {"bool", "Bool"}};
+    s.conversions = {{"float", "rgba"}};
+    grapher::NodeType mix{"mix", "Mix"};
+    mix.width  = 200.f;
+    mix.height = 120.f;
+    mix.ports  = {{"a", "A", "rgba"}, {"b", "B", "rgba"}, {"t", "T", "number"}, {"out", "Out", "rgba", grapher::PortDir::Out}};
+    grapher::NodeType value{"value", "Value"};
+    value.width  = 160.f;
+    value.height = 80.f;
+    value.ports  = {{"out", "", "float", grapher::PortDir::Out, grapher::PortSide::Auto, -1, "", true}};
+    grapher::NodeType flag{"flag", "Flag"};
+    flag.ports = {{"in", "In", "bool"}};
+    s.nodeTypes = {mix, value, flag};
+    s.edgeTypes = {{"data", "data"}};
+    return s;
+}
+
+void TestPortTypes()
+{
+    grapher::Schema s = PortSchema();
+    CHECK(s.IsA("float", "number"));
+    CHECK(!s.IsA("number", "float"));
+    CHECK(s.CanConnect("float", "number"));    // a float flows into a number input
+    CHECK(!s.CanConnect("number", "float"));
+    CHECK(s.CanConnect("float", "rgba"));      // by the listed conversion
+    CHECK(!s.CanConnect("rgba", "float"));     // conversions run one way
+    CHECK(!s.CanConnect("bool", "rgba"));
+    CHECK(s.CanConnect("", "bool") && s.CanConnect("bool", ""));   // an untyped end takes anything
+
+    s.subtypeFlow = grapher::SubtypeFlow::InIsA;   // a reference graph: a pointer to a number takes a float
+    CHECK(s.CanConnect("number", "float"));
+    CHECK(!s.CanConnect("float", "number"));
+
+    s.portTypes.push_back({"x", "X", {}, grapher::PortGlyph::Circle, {"y"}});
+    s.portTypes.push_back({"y", "Y", {}, grapher::PortGlyph::Circle, {"x"}});
+    CHECK(s.IsA("x", "y") && !s.IsA("x", "number"));   // a cycle in the bases ends
+
+    const auto before = s.revision;
+    grapher::NodeType mix = *s.FindNode("mix");
+    mix.label = "Blend";
+    s.PutNodeType(mix);
+    CHECK(s.nodeTypes.size() == 3 && s.FindNode("mix")->label == "Blend" && s.revision == before + 1);
+    s.PutNodeType({"noise", "Noise"});
+    CHECK(s.nodeTypes.size() == 4 && s.revision == before + 2);
+}
+
+void TestPortLayout()
+{
+    const grapher::Schema      s = PortSchema();
+    const grapher::CardMetrics m;   // Style's defaults: padding 10, title 15, text 12
+    const float header = 8.f + 15.f * 1.35f + 12.f * 1.5f, row = 12.f * 1.4f;
+    CHECK(std::abs(m.Header() - header) < 0.001f && std::abs(m.Row() - row) < 0.001f);
+
+    grapher::Node n{"m", "mix", {0, 0, 200, 120}};
+    auto slots = grapher::LayoutPorts(n, s, m);
+    CHECK(slots.size() == 4);
+    if (slots.size() != 4) return;
+    CHECK(slots[0].side == grapher::PortSide::Left && Near(slots[0].at, {0, header + row * 0.5f}));
+    CHECK(Near(slots[1].at, {0, header + row * 1.5f}));
+    CHECK(Near(slots[2].at, {0, header + row * 2.5f}));
+    CHECK(slots[3].side == grapher::PortSide::Right && Near(slots[3].at, {200, header + row * 0.5f}));   // pairs with A
+    CHECK(Near(slots[3].normal, {1, 0}) && Near(slots[0].normal, {-1, 0}));
+    CHECK(slots[0].row == (grapher::Rect{0, header, 200, row}));
+    CHECK(grapher::PortRows(n, s) == 3);
+    CHECK(std::abs(grapher::CardHeight(n, s, m) - (header + row * 3 + 10.f)) < 0.001f);
+
+    grapher::Node v{"v", "value", {50, 20, 160, 80}};
+    slots = grapher::LayoutPorts(v, s, m);
+    CHECK(slots.size() == 1 && Near(slots[0].at, {210, 20 + 8.f + 15.f * 0.65f}) && slots[0].row.h == 0.f);   // the title line
+    CHECK(grapher::PortRows(v, s) == 0);
+
+    // A node's own ports follow its type's; one with a type port's id replaces it in place.
+    n.ports = {{"c", "C", "rgba"}, {"a", "Alpha", "float"}, {"top", "", "", grapher::PortDir::In, grapher::PortSide::Top}};
+    slots   = grapher::LayoutPorts(n, s, m);
+    CHECK(slots.size() == 6);
+    if (slots.size() != 6) return;
+    CHECK(slots[0].def.id == "a" && slots[0].def.label == "Alpha" && slots[0].def.type == "float");
+    CHECK(slots[4].def.id == "c" && Near(slots[4].at, {0, header + row * 3.5f}));
+    CHECK(slots[5].def.id == "top" && Near(slots[5].at, {100, 0}) && Near(slots[5].normal, {0, -1}));
+    CHECK(grapher::PortRows(n, s) == 4);
+
+    // Off a card, a side's ports spread along it.
+    grapher::Schema pill = s;
+    pill.nodeTypes[0].shape = grapher::NodeShape::Pill;
+    n.ports.clear();
+    slots = grapher::LayoutPorts(n, pill, m);
+    CHECK(slots.size() == 4 && Near(slots[0].at, {0, 30}) && Near(slots[1].at, {0, 60}) && Near(slots[3].at, {200, 60}));
+}
+
+int CountEdges(const grapher::Graph& g, std::string_view to, std::string_view port)
+{
+    int n = 0;
+    for (const grapher::Edge& e : g.edges) n += e.to == to && e.toPort == port;
+    return n;
+}
+
+const grapher::Edge* EdgeInto(const grapher::Graph& g, std::string_view to, std::string_view port)
+{
+    for (const grapher::Edge& e : g.edges)
+        if (e.to == to && e.toPort == port) return &e;
+    return nullptr;
+}
+
+void Drag(grapher::Canvas& c, grapher::Vec2 from, grapher::Vec2 to)
+{
+    c.PointerDown(from, grapher::Button::Left, {});
+    c.PointerMove(from + (to - from) * 0.5f);
+    c.PointerMove(to);
+    c.PointerUp(to, grapher::Button::Left);
+}
+
+void TestPortGestures()
+{
+    const grapher::Schema s = PortSchema();
+    grapher::Graph g;
+    g.nodes.push_back({"v1", "value", {0, 0, 160, 80}});
+    g.nodes.push_back({"v2", "value", {0, 200, 160, 80}});
+    g.nodes.push_back({"m", "mix", {400, 0, 200, 120}});
+    g.nodes.push_back({"m2", "mix", {400, 300, 200, 120}});
+    g.nodes.push_back({"f", "flag", {800, 0, 160, 100}});
+    grapher::Canvas c(g, s);
+    c.SetViewport({1200, 800});   // identity camera: screen = world
+    int snapshots = 0;
+    c.onBeforeChange = [&](std::string_view) { ++snapshots; };
+
+    const auto v1out = c.PortScreenPos("v1", "out"), ma = c.PortScreenPos("m", "a");
+    CHECK(v1out && ma && !c.PortScreenPos("v1", "nope"));
+    if (!v1out || !ma) return;
+    const grapher::Hit hit = c.HitTest(*v1out);
+    CHECK(hit.kind == grapher::HitKind::Port && hit.id == "v1" && hit.port == "out");
+    CHECK(c.HitTest(c.ScreenRectOf("m").Center()).kind == grapher::HitKind::Node);
+    CHECK(c.HitTest({c.ScreenRectOf("m").Right(), c.ScreenRectOf("m").Center().y}).kind != grapher::HitKind::Connect);   // no handle
+
+    // Port to port: a float into a colour input, through the conversion.
+    Drag(c, *v1out, *ma);
+    CHECK(g.edges.size() == 1 && snapshots == 1);
+    if (g.edges.size() != 1) return;
+    CHECK(g.edges[0].from == "v1" && g.edges[0].fromPort == "out" && g.edges[0].to == "m" && g.edges[0].toPort == "a");
+    CHECK(g.edges[0].type == "data");
+
+    CHECK(!c.CanWire("v1", "out", "m", "a"));    // the same wire twice
+    CHECK(!c.CanWire("m", "out", "v1", "out"));   // two outputs
+    CHECK(!c.CanWire("v1", "out", "f", "in"));    // a float is no bool
+    CHECK(!c.CanWire("m", "a", "m", "out"));      // a node to itself
+    CHECK(c.CanWire("m", "t", "v1", "out"));      // either order: the output end leads
+
+    // A full input gives its wire up to the new one; an output feeds any number.
+    CHECK(!c.Connect("v2", "out", "m", "a").empty());
+    CHECK(CountEdges(g, "m", "a") == 1 && EdgeInto(g, "m", "a")->from == "v2");
+    CHECK(!c.Connect("m", "b", "v2", "out").empty());   // dragged the other way round
+    const grapher::Edge* mb = EdgeInto(g, "m", "b");
+    CHECK(mb && mb->from == "v2" && mb->fromPort == "out");
+    CHECK(c.Connect("v1", "out", "f", "in").empty() && g.edges.size() == 2);
+
+    // Dropped on a node as a whole: the first input that takes it, one with room before a full one.
+    const grapher::Vec2 body = c.ScreenRectOf("m2").Center();
+    const auto v2out = c.PortScreenPos("v2", "out");
+    Drag(c, *v2out, body);
+    CHECK(CountEdges(g, "m2", "a") == 1);
+    Drag(c, *v1out, body);
+    CHECK(CountEdges(g, "m2", "b") == 1 && EdgeInto(g, "m2", "b")->from == "v1");
+    Drag(c, *v1out, c.ScreenRectOf("f").Center());   // nothing on Flag takes a float
+    CHECK(CountEdges(g, "f", "in") == 0);
+
+    // From an input to an output, ringing the ports it may land on while it drags.
+    const auto m2t = c.PortScreenPos("m2", "t");
+    c.PointerDown(*m2t, grapher::Button::Left, {});
+    c.PointerMove(*m2t - grapher::Vec2{40, 0});
+    c.PointerMove(*v1out);
+    int rings = 0;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* ring = std::get_if<grapher::Circle>(&cmd); ring && ring->stroke == c.style.selection && ring->fill.a == 0) ++rings;
+    CHECK(rings == 2);   // the two Values' outputs
+    c.PointerUp(*v1out, grapher::Button::Left);
+    const grapher::Edge* m2t_edge = EdgeInto(g, "m2", "t");
+    CHECK(m2t_edge && m2t_edge->from == "v1" && m2t_edge->fromPort == "out");
+
+    // A new card is tall enough for its ports.
+    const std::string added = c.AddNode("mix", {700, 600});
+    const grapher::Node* n  = g.FindNode(added);
+    CHECK(n && n->frame.h >= grapher::CardHeight(*n, s, grapher::MetricsOf(c.style)));
+}
+
+void TestPortDrawAndRouting()
+{
+    const grapher::Schema s = PortSchema();
+    grapher::Graph g;
+    g.nodes.push_back({"v", "value", {0, 0, 160, 80}});
+    g.nodes.push_back({"m", "mix", {400, 100, 200, 120}});
+    g.edges.push_back({"e", "v", "m", "data", "", "out", "a"});
+    grapher::Canvas c(g, s);
+    c.SetViewport({800, 600});
+    const auto out = c.PortScreenPos("v", "out"), a = c.PortScreenPos("m", "a"), b = c.PortScreenPos("m", "b");
+
+    // The wire runs from pin to pin, whatever side the nodes face each other on.
+    const auto w = grapher::RouteWires(g, s, {});
+    CHECK(w.contains("e"));
+    if (!w.contains("e") || !out || !a || !b) return;
+    CHECK(Near(w.at("e").front(), *out) && Near(w.at("e").back(), *a));
+    g.nodes[1].frame.y = -300;   // now above: a node-level end would take the top side, a port end stays put
+    const auto w2 = grapher::RouteWires(g, s, {});
+    CHECK(Near(w2.at("e").back(), *c.PortScreenPos("m", "a")));
+    g.nodes[1].frame.y = 100;
+
+    // Pins: filled in their type's colour while wired, hollow otherwise; an rgba port is a diamond.
+    bool wiredFloat = false, wiredDiamond = false, hollowDiamond = false;
+    for (const auto& cmd : c.Draw().cmds) {
+        if (const auto* p = std::get_if<grapher::Circle>(&cmd); p && Near(p->center, *out)) wiredFloat = p->fill == kFloat;
+        if (const auto* p = std::get_if<grapher::Polygon>(&cmd); p && p->points.size() == 4) {
+            const grapher::Vec2 mid = (p->points[0] + p->points[2]) * 0.5f;
+            if (Near(mid, *a)) wiredDiamond = p->fill == kRgba;
+            if (Near(mid, *b)) hollowDiamond = p->fill == c.style.nodeFill;
+        }
+    }
+    CHECK(wiredFloat && wiredDiamond && hollowDiamond);
+
+    // A row shows its port's label; a port bound to a field shows the value while unwired.
+    grapher::Schema lit = s;
+    lit.nodeTypes[0].fields = {{"amount", "Amount"}};
+    lit.nodeTypes[0].ports[2].field = "amount";
+    g.nodes[1].fields["amount"] = "0.5";
+    c.SetSchema(lit);
+    bool label = false, literal = false, repeated = false;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* t = std::get_if<grapher::Text>(&cmd)) {
+            label    = label || t->text == "B";
+            literal  = literal || t->text == "T  0.5";
+            repeated = repeated || t->text == "Amount";   // not listed again as a field
+        }
+    CHECK(label && literal && !repeated);
+}
+
+void TestRerouteAndWireColour()
+{
+    // A reroute dot carries whatever is wired into it: a float through it reaches a number input but not a bool one,
+    // and a wire whose type says so takes its port type's colour, through the reroute too.
+    grapher::Schema s = PortSchema();
+    grapher::NodeType dot{"reroute", "Reroute"};
+    dot.shape  = grapher::NodeShape::Dot;
+    dot.width  = dot.height = 16.f;
+    dot.ports  = {{"in", ""}, {"out", "", "", grapher::PortDir::Out}};
+    dot.ports[1].typeFrom = "in";
+    s.nodeTypes.push_back(dot);
+    s.edgeTypes[0].portColor = true;
+    grapher::Graph g;
+    g.nodes.push_back({"v", "value", {0, 0, 160, 80}});
+    g.nodes.push_back({"r", "reroute", {250, 100, 16, 16}});
+    g.nodes.push_back({"m", "mix", {400, 0, 200, 120}});
+    g.nodes.push_back({"f", "flag", {400, 300, 160, 100}});
+    grapher::Canvas c(g, s);
+    c.SetViewport({800, 600});
+
+    CHECK(grapher::PortTypeOf(g, s, g.nodes[1], "out").empty());   // nothing in yet: it takes anything
+    CHECK(c.CanWire("r", "out", "f", "in"));
+    CHECK(!c.Connect("v", "out", "r", "in").empty());
+    CHECK(grapher::PortTypeOf(g, s, g.nodes[1], "out") == "float");
+    CHECK(!c.CanWire("r", "out", "f", "in"));   // a float is no bool
+    CHECK(c.CanWire("r", "out", "m", "t"));
+    const std::string e = c.Connect("r", "out", "m", "t");
+    CHECK(!e.empty());
+
+    // Two wires between the same two nodes, on different ports.
+    CHECK(!c.Connect("r", "out", "m", "a").empty());
+    int between = 0;
+    for (const grapher::Edge& x : g.edges) between += x.from == "r" && x.to == "m";
+    CHECK(between == 2);
+
+    // Both wires out of the reroute draw in the float's colour; the dot is a disc in its band colour.
+    int floatWires = 0;
+    bool disc = false;
+    for (const auto& cmd : c.Draw().cmds) {
+        if (const auto* p = std::get_if<grapher::Polyline>(&cmd); p && p->color == kFloat && p->points.size() > 2) ++floatWires;
+        if (const auto* d = std::get_if<grapher::Circle>(&cmd); d && grapher::Distance(d->center, {258, 108}) < 0.01f && d->radius == 8.f)
+            disc = true;
+    }
+    CHECK(floatWires == 3 && disc);   // v -> r, r -> m.t, r -> m.a
+}
+
+void TestSchemaJson()
+{
+    const char* text = R"({
+        "subtypeFlow": "in-is-a",
+        "portTypes": [ { "id": "float", "color": "#a0a0a0", "bases": ["number"], "edge": "data" },
+                       { "id": "number", "label": "Number" } ],
+        "conversions": [ { "from": "float", "to": "rgba" } ],
+        "nodes": [ { "id": "mix", "label": "Mix é", "band": "#4f8cff", "width": 220, "shape": "card",
+                     "fields": [ { "id": "amount", "kind": "tag", "choices": ["a", "b"], "onCard": false } ],
+                     "ports": [ { "id": "a", "type": "float" },
+                                { "id": "out", "label": "", "dir": "out", "side": "bottom", "maxWires": 0, "onHeader": true,
+                                  "typeFrom": "a" } ] },
+                   { "id": "dot", "shape": "dot" } ],
+        "edges": [ { "id": "data", "color": "#112233", "line": "elbow", "dashed": true, "arrow": false, "portColor": true } ]
+    })";
+    const auto s = grapher::ParseSchema(text);
+    CHECK(s.has_value());
+    if (!s) {
+        std::fprintf(stderr, "  %s\n", s.error().c_str());
+        return;
+    }
+    CHECK(s->subtypeFlow == grapher::SubtypeFlow::InIsA);
+    CHECK(s->portTypes.size() == 2 && s->portTypes[0].label == "float" && s->portTypes[0].bases == std::vector<std::string>{"number"});
+    CHECK(s->portTypes[0].color == (grapher::Color{0xa0, 0xa0, 0xa0}) && s->portTypes[0].edge == "data");
+    CHECK(s->conversions.size() == 1 && s->conversions[0].to == "rgba");
+    const grapher::NodeType* mix = s->FindNode("mix");
+    CHECK(mix && mix->label == "Mix \xc3\xa9" && mix->width == 220.f && mix->height == 120.f);
+    if (!mix) return;
+    CHECK(mix->fields.size() == 1 && mix->fields[0].kind == grapher::FieldKind::Tag && !mix->fields[0].onCard && mix->fields[0].label == "amount");
+    CHECK(mix->ports.size() == 2 && mix->ports[0].label == "a" && mix->ports[0].dir == grapher::PortDir::In && mix->ports[0].maxWires == -1);
+    CHECK(mix->ports[1].label.empty() && mix->ports[1].dir == grapher::PortDir::Out && mix->ports[1].side == grapher::PortSide::Bottom);
+    CHECK(mix->ports[1].maxWires == 0 && mix->ports[1].onHeader && mix->ports[1].typeFrom == "a");
+    CHECK(s->FindNode("dot") && s->FindNode("dot")->shape == grapher::NodeShape::Dot);
+    CHECK(s->edgeTypes.size() == 1 && s->edgeTypes[0].line == grapher::EdgeLine::Elbow && s->edgeTypes[0].dashed && !s->edgeTypes[0].arrow);
+    CHECK(s->edgeTypes[0].portColor);
+
+    // Written and read back, a schema is the same; defaults are left out.
+    for (const grapher::Schema& each : {*s, PortSchema(), MakeSchema(), GroupSchema()}) {
+        const std::string written = grapher::WriteSchema(each);
+        const auto        back    = grapher::ParseSchema(written);
+        CHECK(back.has_value() && *back == each);
+    }
+    CHECK(grapher::WriteSchema(MakeSchema()).find("\"width\"") == std::string::npos);
+
+    // What can't be read says where and why.
+    auto bad = grapher::ParseSchema("{\n  \"nodes\": [ }");
+    CHECK(!bad && bad.error().find("line 2") != std::string::npos);
+    bad = grapher::ParseSchema(R"({"nodes": [ {"id": "x", "shape": "blob"} ]})");
+    CHECK(!bad && bad.error().find("blob") != std::string::npos && bad.error().find("node type x") != std::string::npos);
+    bad = grapher::ParseSchema(R"({"nodes": [ {"label": "x"} ]})");
+    CHECK(!bad && bad.error().find("has no id") != std::string::npos);
+    bad = grapher::ParseSchema(R"({"nodes": [ {"id": "x", "ports": [ {"id": "p", "dir": "sideways"} ]} ]})");
+    CHECK(!bad && bad.error().find("sideways") != std::string::npos);
+    bad = grapher::ParseSchema(R"({"nodes": [ {"id": "x", "width": "wide"} ]})");
+    CHECK(!bad && bad.error().find("width") != std::string::npos);
+    CHECK(!grapher::ParseSchema("[]"));
+
+    // A node type defined at runtime, from data.
+    grapher::Schema lib = PortSchema();
+    const auto noise = grapher::ParseNodeType(R"({"id": "noise", "ports": [ {"id": "out", "dir": "out", "type": "float"} ]})");
+    CHECK(noise.has_value());
+    if (!noise) return;
+    lib.PutNodeType(*noise);
+    grapher::Graph g;
+    g.nodes.push_back({"n", "noise", {0, 0, 160, 80}});
+    g.nodes.push_back({"m", "mix", {300, 0, 200, 120}});
+    grapher::Canvas c(g, lib);
+    CHECK(!c.Connect("n", "out", "m", "t").empty());
+}
+
 } // namespace
 
 int main()
@@ -564,6 +928,12 @@ int main()
     TestGroupGestures();
     TestGroupDraw();
     TestGroupRouting();
+    TestPortTypes();
+    TestPortLayout();
+    TestPortGestures();
+    TestPortDrawAndRouting();
+    TestRerouteAndWireColour();
+    TestSchemaJson();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

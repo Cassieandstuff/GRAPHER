@@ -246,6 +246,40 @@ void TestGroupsAreNoObstacles()
     CHECK(w.contains("cG") && OnOutline(w.at("cG").back(), g.nodes[2].frame));
 }
 
+void TestPortEnds()
+{
+    // A wire on a port starts and ends on that port's pin, and stays on it as the node is resized or gains ports.
+    grapher::Schema s = MakeSchema();
+    grapher::NodeType mix{"mix", "Mix"};
+    mix.ports = {{"a", "A"}, {"b", "B"}, {"out", "Out", "", grapher::PortDir::Out}};
+    s.nodeTypes.push_back(mix);
+    grapher::Graph g;
+    g.nodes.push_back({"m", "mix", {0, 0, 200, 120}});
+    g.nodes.push_back({"n", "mix", {400, 200, 200, 120}});
+    g.edges.push_back({"e", "m", "n", "elbow", "", "out", "b"});
+    auto router = grapher::avoid::MakeRouter();
+    const grapher::RoutingOptions o;
+    auto pin = [&](const grapher::Node& node, std::string_view port) {
+        const auto slots = grapher::LayoutPorts(node, s, o.card);
+        return grapher::FindSlot(slots, port)->at;
+    };
+    auto check = [&](const char* when) {
+        const auto w = router->Route(g, s, o);
+        const bool ok = w.contains("e") && grapher::Distance(w.at("e").front(), pin(g.nodes[0], "out")) < 0.5f &&
+                        grapher::Distance(w.at("e").back(), pin(g.nodes[1], "b")) < 0.5f;
+        if (!ok) std::fprintf(stderr, "  port ends off their pins %s\n", when);
+        CHECK(ok);
+    };
+    check("at first");
+    g.nodes[0].frame.w = 260;   // its right side moves out: the Out pin follows
+    check("after a resize");
+    g.nodes[1].ports = {{"c", "C"}};   // a port of its own: the pins are rebuilt
+    check("after a port is added");
+    g.edges[0].toPort = "c";
+    const auto w = router->Route(g, s, o);
+    CHECK(w.contains("e") && grapher::Distance(w.at("e").back(), pin(g.nodes[1], "c")) < 0.5f);
+}
+
 } // namespace
 
 int main()
@@ -260,6 +294,7 @@ int main()
     TestNestsParallelElbows();
     TestCanvasUsesBackend();
     TestGroupsAreNoObstacles();
+    TestPortEnds();
     TestDragKeepsRoutes(false);
     TestDragKeepsRoutes(true);
     if (g_failed) {

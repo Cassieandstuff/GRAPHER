@@ -40,7 +40,7 @@ struct Circle {
     float strokeWidth = 0.f;
 };
 
-enum class Align { Left, Center };
+enum class Align { Left, Center, Right };
 
 /// @brief Text confined to `box`. Single-line text is elided to fit; wrapped text is clipped at the box.
 /// @note The box's height is the line height for single-line text; `size` is the font's pixel size.

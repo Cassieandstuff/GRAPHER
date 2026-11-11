@@ -4,6 +4,7 @@
 ///        edges between them. A value type, so a host can snapshot it for undo by copying.
 
 #include <grapher/Geometry.h>
+#include <grapher/Port.h>
 
 #include <map>
 #include <set>
@@ -20,6 +21,9 @@ struct Node {
     std::map<std::string, std::string, std::less<>> fields;
     std::string body;   ///< free text (a summary, pseudo-code, notes)
     std::string link;   ///< where the node's own graph lives (host-defined); empty = none yet
+    /// @brief Ports of this node alone, after its type's (a list's elements, a block's extra inputs). One with the id of
+    ///        a type port replaces it in place.
+    std::vector<PortDef> ports;
 
     /// @return the field's value, or an empty string
     [[nodiscard]] const std::string& Field(std::string_view key) const;
@@ -32,6 +36,8 @@ struct Edge {
     std::string to;     ///< a Node id
     std::string type;   ///< an EdgeType id
     std::string label;
+    std::string fromPort;   ///< an Out port of `from`; empty = the node as a whole
+    std::string toPort;     ///< an In port of `to`; empty = the node as a whole
     friend bool operator==(const Edge&, const Edge&) = default;
 };
 
