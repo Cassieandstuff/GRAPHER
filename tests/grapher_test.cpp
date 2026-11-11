@@ -2313,7 +2313,7 @@ std::string GoldenPicture(const grapher::Kit* kit = nullptr)
 
 /// @brief The hash of GoldenPicture as the canvas drew it before kits (GRAPHER main 74eef96): a kit-less canvas must keep
 ///        drawing exactly that.
-constexpr std::uint64_t kGoldenPicture = 0;
+constexpr std::uint64_t kGoldenPicture = 0x6428cc89fdddaad2ull;
 
 void TestGoldenPicture()
 {
