@@ -2396,7 +2396,7 @@ void TestKitJson()
     // Mistakes say where they are.
     for (const char* bad : {R"({"rules": [{"select": "box[", "fill": "#fff"}]})", R"({"nodes": {"x": {"fill": "$nope"}}})",
                             R"({"nodes": {"x": {"parts": [{"part": "wing"}]}}})", R"({"nodes": {"x": {"parts": [{"part": "text", "align": "up"}]}}})",
-                            R"({"rules": [{"select": "box:sleepy"}]})", R"([1, 2])"}) {
+                            R"({"rules": [{"select": "box[t]:sleepy"}]})", R"([1, 2])"}) {
         error.clear();
         CHECK((!grapher::ParseKit(bad, error) && !error.empty()));
     }
