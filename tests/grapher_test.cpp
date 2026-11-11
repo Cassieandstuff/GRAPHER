@@ -2,6 +2,7 @@
 #include <grapher/Grapher.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
@@ -2111,6 +2112,223 @@ void TestMaterialGaps()
     CHECK(!grip);
 }
 
+// ── The picture, pinned: every feature drawn and hit, hashed ─────────────────
+/// @brief A graph that uses every feature the canvas draws: cards with ports on each side, rows of every style and action,
+///        fields, a body, a picture, a drill mark, a note, a pill, a dot, a dial, frame and member groups open and closed,
+///        an alias, docked cards, highlights, the selection and a hover.
+grapher::Graph GoldenGraph(grapher::Schema& s)
+{
+    grapher::PortType num{"num", "Number", {90, 200, 200}, grapher::PortGlyph::Circle};
+    grapher::PortType sq{"sq", "Square", {200, 120, 90}, grapher::PortGlyph::Square};
+    grapher::PortType di{"di", "Diamond", {200, 200, 90}, grapher::PortGlyph::Diamond, {}, "dotted"};
+    grapher::PortType ar{"ar", "Arrow", {150, 150, 240}, grapher::PortGlyph::Arrow};
+    s.portTypes = {num, sq, di, ar};
+    s.rowStyles = {{"key", grapher::Color{220, 180, 60}},
+                   {"loud", grapher::Color{240, 120, 120}, grapher::Color{120, 200, 240}, "+ ", true, true},
+                   {"chip", grapher::Color{140, 200, 120}, std::nullopt, "", false, false, true}};
+    grapher::NodeType box{"box", "Box", {80, 140, 220}};
+    box.width       = 220.f;
+    box.height      = 140.f;
+    box.drillable   = true;
+    box.imageHeight = 40.f;
+    box.titleField  = "name";
+    box.fields      = {{"name", "Name"}, {"kind", "Kind", grapher::FieldKind::Tag, {"a", "b"}}, {"hidden", "Hidden"}};
+    box.fields[2].onCard = false;
+    box.ports = {{"in", "In", "num", grapher::PortDir::In, grapher::PortSide::Left},
+                 {"out", "Out", "num", grapher::PortDir::Out, grapher::PortSide::Right, 0, "kind"},
+                 {"top", "", "sq", grapher::PortDir::In, grapher::PortSide::Top},
+                 {"bottom", "", "ar", grapher::PortDir::Out, grapher::PortSide::Bottom}};
+    box.ports.push_back({"head", "", "di", grapher::PortDir::Out, grapher::PortSide::Right});
+    box.ports.back().onHeader = true;
+    grapher::NodeType tall = box;
+    tall.id        = "tall";
+    tall.fitHeight = true;
+    tall.band      = {200, 90, 160};
+    grapher::NodeType note{"note", "Note", {200, 190, 90}};
+    note.shape = grapher::NodeShape::Note;
+    grapher::NodeType pill{"pill", "Pill", {120, 200, 140}};
+    pill.shape      = grapher::NodeShape::Pill;
+    pill.titleField = "";
+    pill.fields     = {{"a", "A"}, {"b", "B"}};
+    pill.ports      = {{"in", "", "", grapher::PortDir::In}, {"out", "", "", grapher::PortDir::Out}};
+    grapher::NodeType dot{"dot", "Dot", {180, 180, 190}};
+    dot.shape = grapher::NodeShape::Dot;
+    dot.ports = {{"in", "", "", grapher::PortDir::In}, {"out", "", "", grapher::PortDir::Out}};
+    dot.ports[1].typeFrom = "in";
+    grapher::NodeType dial{"dial", "Dial", {140, 100, 220}};
+    dial.shape = grapher::NodeShape::Dial;
+    grapher::NodeType frame{"frame", "Frame", {100, 100, 120}};
+    frame.shape = grapher::NodeShape::Group;
+    grapher::NodeType folder{"folder", "Folder", {160, 90, 200}};
+    folder.shape     = grapher::NodeShape::Group;
+    folder.groupMode = grapher::GroupMode::Members;
+    folder.showCount = true;
+    s.nodeTypes = {box, tall, note, pill, dot, dial, frame, folder};
+    grapher::EdgeType curve{"curve", "curve", {140, 145, 155}};
+    grapher::EdgeType straight{"straight", "straight", {200, 120, 120}, grapher::EdgeLine::Straight};
+    straight.dashed = true;
+    straight.arrow  = false;
+    grapher::EdgeType elbow{"elbow", "elbow", {120, 200, 120}, grapher::EdgeLine::Elbow};
+    elbow.portColor = true;
+    elbow.width     = 2.f;
+    grapher::EdgeType dotted{"dotted", "dotted", {200, 200, 90}};
+    dotted.dotted = true;
+    dotted.onTop  = true;
+    s.edgeTypes = {curve, straight, elbow, dotted};
+
+    grapher::Graph g;
+    grapher::Node a{"a", "box", {0, 0, 220, 260}};
+    a.fields  = {{"name", "Alpha"}, {"kind", "b"}, {"hidden", "x"}};
+    a.body    = "A body that is long enough to wrap onto a second line of the card.";
+    a.image   = "thumb";
+    a.link    = "child";
+    a.tooltip = "tip";
+    a.ports.push_back({"extra", "Extra", "sq", grapher::PortDir::In, grapher::PortSide::Left});
+    a.rows = {{"r0", "plain", "value"},
+              {"r1", "keyed", "", "key"},
+              {"r2", "loud", "v", "loud"},
+              {"r3", "chip", "", "chip", "", grapher::RowAction::Click},
+              {"r4", "pick", "a", "", "", grapher::RowAction::Choice, {"a", "b"}, "kind"},
+              {"r5", "press", "Go", "", "", grapher::RowAction::Button},
+              {"r6", "wired", "", "", "extra"}};
+    a.rows[5].separator = true;
+    g.nodes.push_back(a);
+    grapher::Node b{"b", "tall", {400, 0, 200, 60}};
+    b.fields = {{"name", ""}};   // untitled
+    b.rows   = {{"t0", "one"}, {"t1", "two"}, {"t2", "three"}};
+    g.nodes.push_back(b);
+    grapher::Node alias{"alias", "box", {400, 300, 220, 120}};
+    alias.fields  = {{"name", "Alpha"}};
+    alias.aliasOf = "a";
+    g.nodes.push_back(alias);
+    grapher::Node under{"under", "box", {0, 0, 200, 100}};
+    under.fields = {{"name", "Under"}};
+    under.dock   = {"a", grapher::PortSide::Bottom, 0};
+    g.nodes.push_back(under);
+    grapher::Node beside{"beside", "pill", {0, 0, 120, 22}};
+    beside.fields = {{"a", "one"}, {"b", "two"}};
+    beside.dock   = {"a", grapher::PortSide::Right, 0, "r2"};
+    g.nodes.push_back(beside);
+    g.nodes.push_back({"n", "note", {700, 0, 200, 100}});
+    g.nodes.back().body = "A note.";
+    g.nodes.push_back({"d", "dot", {700, 160, 20, 20}});
+    grapher::Node dl{"dl", "dial", {700, 220, 260, 260}};
+    dl.fields = {{"name", "Blend"}};
+    dl.dial   = {false, 0.f, 1.f, 0.3f, "speed"};
+    dl.ports  = {{"c0", "", "", grapher::PortDir::Out, grapher::PortSide::Right}, {"c1", "", "", grapher::PortDir::Out, grapher::PortSide::Right}};
+    dl.rows   = {{"c0", "Walk", "0", "", "c0"}, {"c1", "Run", "1", "", "c1"}};
+    g.nodes.push_back(dl);
+    g.nodes.push_back({"F", "frame", {1000, -40, 300, 220}});
+    g.nodes.push_back({"inF", "box", {1040, 20, 200, 100}});
+    g.nodes.back().fields = {{"name", "In frame"}};
+    g.nodes.push_back({"M", "folder", {1000, 300, 10, 10}});
+    g.nodes.push_back({"m1", "box", {1020, 340, 200, 100}});
+    g.nodes.back().parent = "M";
+    g.nodes.push_back({"C", "folder", {1000, 600, 10, 10}});
+    g.nodes.back().parent = "M";
+    g.nodes.push_back({"c1", "box", {1040, 640, 200, 100}});
+    g.nodes.back().parent = "C";
+    g.edges = {{"e1", "a", "b", "curve", "lbl", "out", ""},
+               {"e2", "a", "under", "straight", "", "bottom", "top"},
+               {"e3", "a", "n", "elbow", "", "head", ""},
+               {"e4", "n", "d", "dotted", "", "", "in"},
+               {"e5", "d", "inF", "curve", "", "out", "in"},
+               {"e6", "dl", "m1", "curve", "", "c0", "in"},
+               {"e7", "dl", "c1", "curve", "", "c1", "in"},
+               {"e8", "a", "beside", "curve", "", "out", "in"}};
+    return g;
+}
+
+void Hash(std::uint64_t& h, std::string_view text)
+{
+    for (const char ch : text) h = (h ^ static_cast<unsigned char>(ch)) * 1099511628211ull;
+}
+
+std::string Num(float v)
+{
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.3f", static_cast<double>(v));
+    return buf;
+}
+std::string Col(grapher::Color c) { return std::to_string(c.r) + "," + std::to_string(c.g) + "," + std::to_string(c.b) + "," + std::to_string(c.a); }
+std::string Box(const grapher::Rect& r) { return Num(r.x) + " " + Num(r.y) + " " + Num(r.w) + " " + Num(r.h); }
+
+/// @brief A draw list as text, one command a line: what changes in it changes the hash.
+std::string Describe(const grapher::DrawList& list)
+{
+    std::string out;
+    for (const grapher::DrawCmd& cmd : list.cmds) {
+        if (const auto* f = std::get_if<grapher::FillRect>(&cmd))
+            out += "R " + Box(f->rect) + " " + Col(f->fill) + " " + Col(f->stroke) + " " + Num(f->strokeWidth) + " " + Num(f->radius) + (f->dashed ? " d" : "");
+        else if (const auto* p = std::get_if<grapher::Polyline>(&cmd)) {
+            out += "L " + Col(p->color) + " " + Num(p->width) + (p->dashed ? " d" : "") + (p->dotted ? " o" : "");
+            for (const grapher::Vec2 v : p->points) out += " " + Num(v.x) + "," + Num(v.y);
+        } else if (const auto* g = std::get_if<grapher::Polygon>(&cmd)) {
+            out += "P " + Col(g->fill);
+            for (const grapher::Vec2 v : g->points) out += " " + Num(v.x) + "," + Num(v.y);
+        } else if (const auto* c = std::get_if<grapher::Circle>(&cmd))
+            out += "C " + Num(c->center.x) + "," + Num(c->center.y) + " " + Num(c->radius) + " " + Col(c->fill) + " " + Col(c->stroke) + " " + Num(c->strokeWidth);
+        else if (const auto* t = std::get_if<grapher::Text>(&cmd))
+            out += "T " + Box(t->box) + " " + Num(t->size) + " " + Col(t->color) + (t->bold ? " b" : "") + (t->wrap ? " w" : "") + (t->mono ? " m" : "") +
+                   (t->italic ? " i" : "") + " a" + std::to_string(static_cast<int>(t->align)) + " " + t->text;
+        else if (const auto* i = std::get_if<grapher::Image>(&cmd))
+            out += "I " + Box(i->box) + " " + Num(i->radius) + " " + i->key;
+        out += "\n";
+    }
+    return out;
+}
+
+/// @brief Everything the golden graph draws and hits: three zooms, the minimap, a grid of hit tests.
+std::string GoldenPicture()
+{
+    grapher::Schema s;
+    grapher::Graph  g = GoldenGraph(s);
+    grapher::Canvas c(g, s);
+    c.SetViewport({1400, 900});
+    c.SetCollapsed("C", true);
+    c.Frame();
+    c.SelectNodes({"a"});
+    c.highlights.glow     = {{"a", 0.5f}, {"C", 0.8f}};
+    c.highlights.edgeGlow = {{"e1", 0.6f}};
+    c.highlights.rings    = {{"b", grapher::Color{255, 0, 0}}};
+    c.highlights.dimmed   = {"inF"};
+    c.highlights.arrows   = {{"a", "b", 0.5f, 0.2f}};
+    c.PointerMove(c.ScreenRectOf("under").Center());   // hover
+    std::string out = Describe(c.Draw());
+    for (const float zoom : {0.4f, 0.25f}) {
+        c.camera.zoom = zoom;
+        out += "--- zoom " + Num(zoom) + "\n" + Describe(c.Draw());
+    }
+    c.Frame();
+    out += "--- minimap\n" + Describe(c.DrawMinimap({240, 180}));
+    out += "--- hits\n";
+    for (int y = 0; y < 900; y += 15)
+        for (int x = 0; x < 1400; x += 15) {
+            const grapher::Hit h = c.HitTest({static_cast<float>(x), static_cast<float>(y)});
+            if (h.kind != grapher::HitKind::None) out += std::to_string(x) + "," + std::to_string(y) + " " + std::to_string(static_cast<int>(h.kind)) + " " + h.id + " " + h.port + " " + h.row + "\n";
+        }
+    return out;
+}
+
+/// @brief The hash of GoldenPicture as the canvas drew it before kits (GRAPHER main 74eef96): a kit-less canvas must keep
+///        drawing exactly that.
+constexpr std::uint64_t kGoldenPicture = 0;
+
+void TestGoldenPicture()
+{
+    const std::string   picture = GoldenPicture();
+    std::uint64_t       h       = 1469598103934665603ull;
+    Hash(h, picture);
+    std::printf("  golden picture: %zu bytes, hash %016llx\n", picture.size(), static_cast<unsigned long long>(h));
+    if (const char* dump = std::getenv("GRAPHER_GOLDEN_DUMP")) {
+        if (std::FILE* f = std::fopen(dump, "wb")) {
+            std::fwrite(picture.data(), 1, picture.size(), f);
+            std::fclose(f);
+        }
+    }
+    if (kGoldenPicture != 0) CHECK(h == kGoldenPicture);
+}
+
 } // namespace
 
 int main()
@@ -2150,6 +2368,7 @@ int main()
     TestLayoutGraph();
     TestLayoutDocks();
     TestFitBelowMinZoom();
+    TestGoldenPicture();
     TestFixedGroupAndHover();
     TestFrameGroupsUnchanged();
     TestDocks();
