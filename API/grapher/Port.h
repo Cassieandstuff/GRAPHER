@@ -41,6 +41,8 @@ struct PortType {
     PortGlyph                glyph = PortGlyph::Circle;
     std::vector<std::string> bases;   ///< the types this one is (is-a), each a PortType id; see Schema::subtypeFlow
     std::string              edge;    ///< an EdgeType id a wire from a port of this type gets; empty = Schema::EdgeFor
+    /// @brief The kit's pin kind its pins draw as (a role many types share); empty = the kind its id finds.
+    std::string              pin;
     friend bool operator==(const PortType&, const PortType&) = default;
 };
 

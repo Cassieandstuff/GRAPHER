@@ -81,6 +81,11 @@ struct PartSpec {
     std::optional<std::string> side;        ///< a stub's end: left, right
     std::optional<float>       length;      ///< a stub's, world units
     std::optional<std::string> direction;   ///< a stub's arrow: in (toward the node), out
+
+    // From K4:
+    /// @brief The card root's: what `band` is for this node, a colour expression over its type's band (a fixed colour, a
+    ///        `palette(...)` slot). A rule may patch it, so one tag can pin a colour.
+    std::optional<std::string> band;
     friend bool operator==(const PartSpec&, const PartSpec&) = default;
 };
 
@@ -107,8 +112,8 @@ struct NodeKind {
     friend bool operator==(const NodeKind&, const NodeKind&) = default;
 };
 
-/// @brief How a kind of pin looks and what its gestures do. A pin kind is named by a PortType id: the Schema keeps what
-///        connects to what, the kit how it looks. Every field is optional, so a rule's patch sets only what it names.
+/// @brief How a kind of pin looks and what its gestures do. A port type draws as the pin kind its PortType::pin names,
+///        else the one its id finds (Kit::FindPin): the Schema keeps what connects to what, the kit how it looks. Every field is optional, so a rule's patch sets only what it names.
 struct PinSpec {
     std::optional<std::string> glyph;    ///< circle, square, diamond, arrow; unset = the port type's
     std::optional<float>       size;     ///< the pin's radius, world units; unset = the canvas's (4.5 at zoom 1, kept 2.5–6 px)
@@ -121,7 +126,7 @@ struct PinSpec {
     friend bool operator==(const PinSpec&, const PinSpec&) = default;
 };
 struct PinKind {
-    std::string id;   ///< a PortType id
+    std::string id;   ///< what a PortType's `pin` (else its id) names; may end in `*`
     PinSpec     spec;
     friend bool operator==(const PinKind&, const PinKind&) = default;
 };
@@ -158,7 +163,9 @@ struct EdgeSpec {
     std::optional<std::string> arrow;      ///< none, end, start, both
     std::optional<float>       arrowSize;  ///< world units (9 by default, kept 5–12 px at that size)
     std::optional<std::string> color;      ///< a colour expression
-    std::optional<bool>        pinColor;   ///< the colour of the type its Out port carries, when it has one (else `color`)
+    /// @brief The colour of the type its Out port carries, when it has one (else `color`): its pin kind's, as that node
+    ///        shows it, when the kit gives one a colour; else the PortType's.
+    std::optional<bool>        pinColor;
     std::optional<float>       opacity;
     std::optional<std::string> labelColor, labelFill;
     std::optional<float>       labelScale;   ///< a label's size, in the canvas's font sizes
@@ -171,7 +178,8 @@ struct EdgeKind {
 };
 
 /// @brief `kind? ([tag])* (:state)* (> part)?`, for example `box[class:Blend]:selected > header`; `*` or nothing = any kind.
-///        A part may be `pin:<pin kind>` or `row:<row kind>`, and then the rule's pin or row fields patch it; or
+///        A kind may hold `:` (`card:Combat`); a trailing `:name` is a state when it names one. A kind ending in `*`
+///        (`card:*`) is every kind with that prefix, and an exact kind is more specific than it. A part may be `pin:<pin kind>` or `row:<row kind>`, and then the rule's pin or row fields patch it; or
 ///        `edge:<edge kind>`, whose kind, tags and states are then the edge's own (Edge::tags; selected, lit, merged,
 ///        dimmed).
 struct Selector {
@@ -206,8 +214,14 @@ struct Rule {
     friend bool operator==(const Rule&, const Rule&) = default;
 };
 
+/// @brief A kit's node, pin and edge kinds are found by id: the kind with that id, else the longest prefix kind whose id
+///        ends in `*` (`card:*` for `card:Combat`, `*` for any). One kind can then stand for types a host makes from data
+///        (one per category, per class, per value type). Row kinds are found by id alone.
 struct Kit {
     std::map<std::string, std::string, std::less<>> tokens;   ///< colour expressions by name ($name)
+    /// @brief Lists of colour expressions by name, read by `palette(name, tag:key)`: a node's tag `key:<value>` picks an
+    ///        entry, the value as a number when it is one, else a stable hash of its text, modulo the list's length.
+    std::map<std::string, std::vector<std::string>, std::less<>> palettes;
     std::map<std::string, FontSpec, std::less<>>    fonts;
     MetricsSpec                                     metrics;
     std::vector<NodeKind>                           nodes;
@@ -222,6 +236,7 @@ struct Kit {
 
     [[nodiscard]] const NodeKind* FindNode(std::string_view id) const;
     [[nodiscard]] const EdgeKind* FindEdge(std::string_view id) const;
+    [[nodiscard]] const PinKind*  FindPin(std::string_view id) const;
     /// @brief Add a node kind, or replace the one with its id (a kind defined at runtime from data); bumps `revision`.
     void PutNodeKind(NodeKind kind);
     friend bool operator==(const Kit&, const Kit&) = default;
@@ -237,8 +252,12 @@ struct Kit {
 
 /// @return the selector, or nullopt when it does not read as one
 [[nodiscard]] std::optional<Selector> ParseSelector(std::string_view text);
-/// @return the colour an expression gives, with `band` for `band` and the kit's tokens; nullopt when it does not read
-[[nodiscard]] std::optional<Color> ResolveColor(std::string_view expr, Color band, const Kit& kit);
+/// @return the colour an expression gives, with `band` for `band`, the kit's tokens and palettes, and `tags` for a
+///         palette's key (none: a palette gives `band`); nullopt when it does not read
+[[nodiscard]] std::optional<Color> ResolveColor(std::string_view expr, Color band, const Kit& kit, const std::vector<std::string>& tags = {});
+
+/// @return whether kind id `kind` stands for `id`: the same, or a prefix kind (`card:*`) whose prefix starts it
+[[nodiscard]] bool KindCovers(std::string_view kind, std::string_view id);
 
 /// @brief A text line of a resolved look.
 struct LookText {
@@ -306,6 +325,7 @@ struct LookPart {
 ///        (kit, kind, tags, state) and kept.
 struct NodeLook {
     CardMetrics              metrics;
+    Color                    band;   ///< what `band` resolved to: the type's, or the card's `band` expression
     Color                    fill, stroke;
     float                    strokeWidth = 1.f, corner = 6.f;
     bool                     dash = false;
@@ -329,7 +349,9 @@ struct NodeLook {
 /// @brief Resolve the look of an edge of `type` with `tags` in `states`, under `kit` (its rules in application order).
 [[nodiscard]] EdgeLook ResolveEdgeLook(const Kit& kit, const EdgeType& type, const std::vector<std::string>& tags, std::uint32_t states);
 
-/// @brief `over` laid on `under`: its tokens, fonts and metrics win, its kinds replace theirs by id, its rules follow.
+/// @brief `over` laid on `under`: its tokens, palettes, fonts and metrics win, its kinds replace theirs by id, its rules
+///        follow. A prefix kind of `over` also replaces the exact kinds of `under` it covers, with the rules that select
+///        them, so a host kit's `card:*` beats the Schema's kind per type.
 [[nodiscard]] Kit MergeKits(const Kit& under, const Kit& over);
 
 } // namespace grapher

@@ -441,21 +441,38 @@ void Canvas::EnsureKit() const
     kitCards_.clear();
     kitLines_.clear();
     fitWidth_.clear();
-    if (!kit_) return;
-    for (const EdgeKind& k : kit_->edges) {
-        static const EdgeType kNoType{};
-        const EdgeType* t = schema_->FindEdge(k.id);
-        if (const EdgeLine line = ResolveEdgeLook(effective_, t ? *t : kNoType, {}, 0).line; line != (t ? t->line : EdgeLine::Curve))
-            kitLines_.emplace(k.id, line);
-    }   // the Schema's own kit: every card has the Style's geometry, and none fits its width
+    pinKinds_.clear();
+    if (!kit_) return;   // the Schema's own kit: every card has the Style's geometry, none fits its width, no pin kinds
+    // By type, since a prefix kind (`card:*`) stands for many: each edge type's route, each node type's geometry, and
+    // the pin kind each port type draws as. A kit's exact kind for a type the Schema lacks counts as that type.
+    auto exactOnly = [](std::string_view id) { return id.empty() || id.back() != '*'; };
+    auto route     = [&](const EdgeType& t) {
+        if (const EdgeLine line = ResolveEdgeLook(effective_, t, {}, 0).line; line != t.line) kitLines_.emplace(t.id, line);
+    };
+    route(EdgeType{});
+    for (const EdgeType& t : schema_->edgeTypes) route(t);
+    for (const EdgeKind& k : kit_->edges)
+        if (exactOnly(k.id) && !k.id.empty() && !schema_->FindEdge(k.id)) route(EdgeType{k.id, {}});
     const CardMetrics base = MetricsOf(style);
-    for (const NodeKind& k : effective_.nodes) {
-        const NodeType*      t = schema_->FindNode(k.id);
-        static const NodeType kNone{};
-        const NodeLook       look = ResolveLook(effective_, t ? *t : kNone, {}, 0, base);
-        if (!(look.metrics == base)) kitCards_.emplace(k.id, look.metrics);
-        if (look.fitWidth) fitWidth_.insert(k.id);
-    }
+    auto              card = [&](const NodeType& t) {
+        const NodeLook look = ResolveLook(effective_, t, {}, 0, base);
+        if (!(look.metrics == base)) kitCards_.emplace(t.id, look.metrics);
+        if (look.fitWidth) fitWidth_.insert(t.id);
+    };
+    card(NodeType{});
+    for (const NodeType& t : schema_->nodeTypes) card(t);
+    for (const NodeKind& k : kit_->nodes)
+        if (exactOnly(k.id) && !k.id.empty() && !schema_->FindNode(k.id)) card(NodeType{k.id, {}});
+    if (!effective_.pins.empty())
+        for (const PortType& t : schema_->portTypes)
+            if (const PinKind* k = effective_.FindPin(t.pin.empty() ? t.id : t.pin)) pinKinds_.emplace(t.id, k->id);
+}
+
+const std::string* Canvas::PinKindOf(std::string_view portType) const
+{
+    if (const auto it = pinKinds_.find(portType); it != pinKinds_.end()) return &it->second;
+    const PinKind* k = effective_.FindPin(portType);   // a type the Schema doesn't list (an untyped port's "")
+    return k ? &k->id : nullptr;
 }
 
 const NodeLook& Canvas::LookOf(const Node& n, std::uint32_t states) const
@@ -870,7 +887,9 @@ const PinLook* Canvas::PinLookOf(const Node& n, const PortDef& def, bool wired) 
 const PinLook* Canvas::PinLookIn(const NodeLook& look, const Node& n, const PortDef& def, bool wired) const
 {
     if (look.pins.empty()) return nullptr;
-    const auto it = def.typeFrom.empty() ? look.pins.find(def.type) : look.pins.find(PortTypeOf(*graph_, *schema_, n, def.id));
+    const std::string* kind = def.typeFrom.empty() ? PinKindOf(def.type) : PinKindOf(PortTypeOf(*graph_, *schema_, n, def.id));
+    if (!kind) return nullptr;
+    const auto it = look.pins.find(*kind);
     return it == look.pins.end() ? nullptr : &it->second[wired ? 1 : 0];
 }
 
@@ -2431,7 +2450,8 @@ DrawList Canvas::DrawMinimap(Vec2 size) const
     for (std::size_t i = 0; i < shown.nodes.size(); ++i)
         if (grouped_[i]) {
             const NodeType* t = schema_->FindNode(shown.nodes[i].type);
-            const Color     c = t ? t->band : s.muted;
+            // A kit's band (a palette slot, a fixed colour) is the group's colour here too.
+            const Color c = kit_ ? LookOf(*LiveOf(shown.nodes[i]), StatesOf(shown.nodes[i])).band : t ? t->band : s.muted;
             out.cmds.push_back(FillRect{toMap(shown.nodes[i].frame), Color{c.r, c.g, c.b, 40}, Color{c.r, c.g, c.b, 160}, 1.f});
         }
     for (std::size_t i = 0; i < shown.nodes.size(); ++i) {
@@ -2662,11 +2682,20 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                                                   (highlights.dimmed.contains(e.id) ? StateDimmed : 0u));
         Color color = look.color;
         if (look.pinColor && !e.fromPort.empty())
-            if (const Node* from = NodeById(e.from))
-                if (const PortType* pt = schema_->FindPortType(PortTypeOf(*graph_, *schema_, *from, e.fromPort))) {
-                    color = pt->color;
+            if (const Node* from = NodeById(e.from)) {
+                // Its pin kind's colour, as the source node shows it wired, when the kit gives one; else the type's.
+                const std::string     type = PortTypeOf(*graph_, *schema_, *from, e.fromPort);
+                std::optional<Color> pin;
+                if (const NodeLook* table = PinTableOf(*from))
+                    if (const std::string* kind = PinKindOf(type))
+                        if (const auto it = table->pins.find(*kind); it != table->pins.end()) pin = it->second[1].color;
+                if (!pin)
+                    if (const PortType* pt = schema_->FindPortType(type)) pin = pt->color;
+                if (pin) {
+                    color = *pin;
                     if (look.opacity < 1.f) color.a = static_cast<std::uint8_t>(std::lround(color.a * std::clamp(look.opacity, 0.f, 1.f)));
                 }
+            }
         const auto      path  = ToScreen(cam, wire);
         std::vector<DrawCmd>& into = look.onTop ? topWires : c;   // a wire on top draws over the nodes
         if (const float v = glowOf(wireGlow, e.id); v > 0.f)
@@ -2890,7 +2919,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                     const float u  = 5.f * z;
                     const float ix = r.Right() - pad - 2.4f * u;
                     const float iy = r.y + pad * 0.8f + 0.2f * u;
-                    const Color on = n.link.empty() ? s.background : t.band;
+                    const Color on = n.link.empty() ? s.background : look.band;
                     c.push_back(FillRect{{ix + 0.6f * u, iy, 1.8f * u, 1.4f * u}, on, s.muted, 1.f, 1.f});
                     c.push_back(FillRect{{ix, iy + 0.6f * u, 1.8f * u, 1.4f * u}, on, s.muted, 1.f, 1.f});
                 }

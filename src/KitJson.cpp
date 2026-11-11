@@ -117,6 +117,7 @@ public:
         Str(o, "side", p.side, where);
         Num(o, "length", p.length, where);
         Str(o, "direction", p.direction, where);
+        Str(o, "band", p.band, where);
         if (p.shape && *p.shape != "box" && *p.shape != "pill") Fail(where, "\"shape\" takes box or pill");
         if (!OneOf(p.glyph, kGlyphNames)) Fail(where, "\"glyph\" takes circle, square, diamond or arrow");
         if (p.side && *p.side != "left" && *p.side != "right") Fail(where, "\"side\" takes left or right");
@@ -283,6 +284,7 @@ void PutFields(json::Object& o, const PartSpec& p)
     PutStr(o, "side", p.side);
     PutNum(o, "length", p.length);
     PutStr(o, "direction", p.direction);
+    PutStr(o, "band", p.band);
     if (!p.on.empty()) {
         json::Object on;
         for (const auto& [g, a] : p.on) on.emplace_back(g, a);
@@ -402,6 +404,19 @@ std::optional<Kit> ParseKit(std::string_view text, std::string& error)
             if (const std::string* s = value.String()) kit.tokens[name] = *s;
             else r.Fail("tokens." + name, "is not a string");
         }
+    if (const json::Object* palettes = r.Obj(*doc, "palettes", "palettes"))
+        for (const auto& [name, value] : *palettes) {
+            const json::Array* a = value.Items();
+            if (!a) {
+                r.Fail("palettes." + name, "is not a list");
+                break;
+            }
+            std::vector<std::string>& list = kit.palettes[name];
+            for (const json::Value& e : *a) {
+                if (const std::string* c = e.String()) list.push_back(*c);
+                else r.Fail("palettes." + name, "holds something that is not a colour");
+            }
+        }
     if (const json::Object* fonts = r.Obj(*doc, "fonts", "fonts"))
         for (const auto& [name, value] : *fonts) {
             FontSpec f;
@@ -478,7 +493,7 @@ std::optional<Kit> ParseKit(std::string_view text, std::string& error)
     // Every $token a colour names must exist.
     std::vector<std::string> exprs;
     auto collect = [&](const auto& self, const PartSpec& p) -> void {
-        for (const auto* e : {&p.fill, &p.stroke, &p.color, &p.placeholderColor})
+        for (const auto* e : {&p.fill, &p.stroke, &p.color, &p.placeholderColor, &p.band})
             if (*e) exprs.push_back(**e);
         for (const PartSpec& c : p.content) self(self, c);
     };
@@ -505,6 +520,7 @@ std::optional<Kit> ParseKit(std::string_view text, std::string& error)
         edgeColours(rule.edge);
     }
     for (const auto& [name, value] : kit.tokens) exprs.push_back(value);
+    for (const auto& [name, list] : kit.palettes) exprs.insert(exprs.end(), list.begin(), list.end());
     for (const std::string& e : exprs)
         if (!ResolveColor(e, Color{}, kit)) return error = "\"" + e + "\" is no colour (or names a token the kit lacks)", std::nullopt;
     return kit;
@@ -517,6 +533,15 @@ std::string WriteKit(const Kit& kit)
         json::Object t;
         for (const auto& [k, v] : kit.tokens) t.emplace_back(k, v);
         doc.emplace_back("tokens", std::move(t));
+    }
+    if (!kit.palettes.empty()) {
+        json::Object palettes;
+        for (const auto& [k, list] : kit.palettes) {
+            json::Array a;
+            for (const std::string& c : list) a.push_back(c);
+            palettes.emplace_back(k, std::move(a));
+        }
+        doc.emplace_back("palettes", std::move(palettes));
     }
     if (!kit.fonts.empty()) {
         json::Object fonts;

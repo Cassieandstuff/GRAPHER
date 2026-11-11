@@ -8,12 +8,29 @@
 
 namespace grapher {
 
-const NodeKind* Kit::FindNode(std::string_view id) const
+bool KindCovers(std::string_view kind, std::string_view id)
 {
-    for (const NodeKind& k : nodes)
-        if (k.id == id) return &k;
-    return nullptr;
+    if (kind == id) return true;
+    return !kind.empty() && kind.back() == '*' && id.starts_with(kind.substr(0, kind.size() - 1));
 }
+
+namespace {
+
+// The kind with `id`, else the longest prefix kind that covers it.
+template <class K> const K* BestKind(const std::vector<K>& kinds, std::string_view id)
+{
+    const K* best = nullptr;
+    for (const K& k : kinds) {
+        if (k.id == id) return &k;
+        if (KindCovers(k.id, id) && (!best || k.id.size() > best->id.size())) best = &k;
+    }
+    return best;
+}
+
+} // namespace
+
+const NodeKind* Kit::FindNode(std::string_view id) const { return BestKind(nodes, id); }
+const PinKind*  Kit::FindPin(std::string_view id) const { return BestKind(pins, id); }
 
 void Kit::PutNodeKind(NodeKind kind)
 {
@@ -147,11 +164,16 @@ NodeKind DefaultKind(const NodeType& t, const Style& s)
     return k;
 }
 
-int Specificity(const Selector& s) { return static_cast<int>(s.tags.size()) * 1024 + std::popcount(s.states) * 2 + (s.kind.empty() ? 0 : 1); }
+// Tags, then states, then the kind: an exact kind over a prefix kind (`card:*`) over none.
+int Specificity(const Selector& s)
+{
+    const int kind = s.kind.empty() ? 0 : s.kind.back() == '*' ? 1 : 2;
+    return static_cast<int>(s.tags.size()) * 1024 + std::popcount(s.states) * 4 + kind;
+}
 
 bool Matches(const Selector& s, std::string_view kind, const std::vector<std::string>& tags, std::uint32_t states)
 {
-    if (!s.kind.empty() && s.kind != kind) return false;
+    if (!s.kind.empty() && !KindCovers(s.kind, kind)) return false;
     if ((s.states & states) != s.states) return false;
     for (const std::string& t : s.tags)
         if (std::find(tags.begin(), tags.end(), t) == tags.end()) return false;
@@ -201,6 +223,7 @@ void Apply(const PartSpec& patch, PartSpec& to)
     set(patch.side, to.side);
     set(patch.length, to.length);
     set(patch.direction, to.direction);
+    set(patch.band, to.band);
 }
 
 void ApplyPin(const PinSpec& patch, PinSpec& to)
@@ -355,7 +378,10 @@ Color Darker(Color c, float factor)
 
 class ColorParser {
 public:
-    ColorParser(std::string_view text, Color band, const Kit& kit, int depth) : s_(text), band_(band), kit_(kit), depth_(depth) {}
+    ColorParser(std::string_view text, Color band, const Kit& kit, const std::vector<std::string>& tags, int depth)
+        : s_(text), band_(band), kit_(kit), tags_(tags), depth_(depth)
+    {
+    }
 
     std::optional<Color> Run()
     {
@@ -407,11 +433,12 @@ private:
             const std::string_view name = Word();
             const auto             it   = kit_.tokens.find(name);
             if (it == kit_.tokens.end() || depth_ > 8) return std::nullopt;
-            return ColorParser(it->second, band_, kit_, depth_ + 1).Run();
+            return ColorParser(it->second, band_, kit_, tags_, depth_ + 1).Run();
         }
         const std::string_view word = Word();
         if (word == "band") return band_;
         if (word == "none") return Color{0, 0, 0, 0};
+        if (word == "palette") return Palette();
         if (word != "lighter" && word != "darker" && word != "alpha") return std::nullopt;
         if (!Eat('(')) return std::nullopt;
         const auto c = Expr();
@@ -424,12 +451,48 @@ private:
         a.a     = static_cast<std::uint8_t>(std::lround(std::clamp(*n <= 1.f ? *n * 255.f : *n, 0.f, 255.f)));
         return a;
     }
+    // `palette(name, tag:key)`: the entry the node's `key:<value>` tag picks; with no such tag, the band.
+    std::optional<Color> Palette()
+    {
+        if (!Eat('(')) return std::nullopt;
+        Skip();
+        const std::string_view name = Word();
+        if (name.empty() || !Eat(',')) return std::nullopt;
+        Skip();
+        if (Word() != "tag" || !Eat(':')) return std::nullopt;
+        Skip();
+        const std::string_view key = Word();
+        if (key.empty() || !Eat(')')) return std::nullopt;
+        const auto list = kit_.palettes.find(name);
+        if (list == kit_.palettes.end() || depth_ > 8) return std::nullopt;
+        const std::string* value = nullptr;
+        for (const std::string& t : tags_)
+            if (t.size() > key.size() && t.starts_with(key) && t[key.size()] == ':') {
+                value = &t;
+                break;
+            }
+        if (!value || list->second.empty()) {
+            // Still check every entry reads, so a broken palette fails when the kit loads.
+            for (const std::string& e : list->second)
+                if (!ColorParser(e, band_, kit_, tags_, depth_ + 1).Run()) return std::nullopt;
+            return band_;
+        }
+        const std::string_view v = std::string_view(*value).substr(key.size() + 1);
+        std::uint64_t          slot = 0;
+        const auto             res  = std::from_chars(v.data(), v.data() + v.size(), slot);
+        if (res.ec != std::errc{} || res.ptr != v.data() + v.size()) {
+            slot = 14695981039346656037ull;   // FNV-1a over its text: the same value, the same entry, on every machine
+            for (const char ch : v) slot = (slot ^ static_cast<unsigned char>(ch)) * 1099511628211ull;
+        }
+        return ColorParser(list->second[slot % list->second.size()], band_, kit_, tags_, depth_ + 1).Run();
+    }
 
-    std::string_view s_;
-    std::size_t      i_ = 0;
-    Color            band_;
-    const Kit&       kit_;
-    int              depth_;
+    std::string_view                s_;
+    std::size_t                     i_ = 0;
+    Color                           band_;
+    const Kit&                      kit_;
+    const std::vector<std::string>& tags_;
+    int                             depth_;
 };
 
 Color Faded(Color c, float opacity)
@@ -441,7 +504,10 @@ Color Faded(Color c, float opacity)
 
 } // namespace
 
-std::optional<Color> ResolveColor(std::string_view expr, Color band, const Kit& kit) { return ColorParser(expr, band, kit, 0).Run(); }
+std::optional<Color> ResolveColor(std::string_view expr, Color band, const Kit& kit, const std::vector<std::string>& tags)
+{
+    return ColorParser(expr, band, kit, tags, 0).Run();
+}
 
 std::optional<Selector> ParseSelector(std::string_view text)
 {
@@ -457,8 +523,33 @@ std::optional<Selector> ParseSelector(std::string_view text)
             ++i;
         return std::string(text.substr(b, i - b));
     };
+    static constexpr std::pair<std::string_view, std::uint32_t> kStates[] = {
+        {"selected", StateSelected}, {"hovered", StateHovered},     {"dimmed", StateDimmed},   {"alias", StateAlias},
+        {"collapsed", StateCollapsed}, {"inGroup", StateInGroup},   {"wired", StateWired},     {"unwired", StateUnwired},
+        {"lit", StateLit},           {"merged", StateMerged}};
+    auto stateOf = [](std::string_view name) -> std::uint32_t {
+        for (const auto& [n, bit] : kStates)
+            if (n == name) return bit;
+        return 0;
+    };
     skip();
-    out.kind = word();
+    // The kind runs to a tag, a part or a space and may hold `:` (`card:Combat`); its trailing `:name`s that name states
+    // are states.
+    {
+        const std::size_t b = i;
+        while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i])) && text[i] != '[' && text[i] != '>' && text[i] != ']') ++i;
+        std::string_view kind = text.substr(b, i - b);
+        std::uint32_t    tail = 0;
+        for (std::size_t colon; (colon = kind.rfind(':')) != std::string_view::npos;) {
+            const std::uint32_t bit = stateOf(kind.substr(colon + 1));
+            if (!bit) break;
+            tail |= bit;
+            kind = kind.substr(0, colon);
+        }
+        if (!kind.empty() && kind.back() == ':') return std::nullopt;
+        out.kind   = std::string(kind);
+        out.states = tail;
+    }
     if (out.kind == "*") out.kind.clear();
     for (;;) {
         skip();
@@ -470,15 +561,9 @@ std::optional<Selector> ParseSelector(std::string_view text)
             i = close + 1;
         } else if (text[i] == ':') {
             ++i;
-            const std::string state = word();
-            static constexpr std::pair<std::string_view, std::uint32_t> kStates[] = {
-                {"selected", StateSelected}, {"hovered", StateHovered}, {"dimmed", StateDimmed},
-                {"alias", StateAlias},       {"collapsed", StateCollapsed}, {"inGroup", StateInGroup},
-                {"wired", StateWired},       {"unwired", StateUnwired},     {"lit", StateLit},
-                {"merged", StateMerged}};
-            const auto it = std::find_if(std::begin(kStates), std::end(kStates), [&](const auto& p) { return p.first == state; });
-            if (it == std::end(kStates)) return std::nullopt;
-            out.states |= it->second;
+            const std::uint32_t bit = stateOf(word());
+            if (!bit) return std::nullopt;
+            out.states |= bit;
         } else if (text[i] == '>') {
             ++i;
             skip();
@@ -562,6 +647,24 @@ Kit KitFromSchema(const Schema& schema, const Style& style)
 Kit MergeKits(const Kit& under, const Kit& over)
 {
     Kit out = under;
+    // A prefix kind of `over` stands for the exact kinds of `under` it covers: they go, with the rules that select them.
+    auto covered = [](const auto& overKinds, std::string_view id) {
+        if (!id.empty() && id.back() == '*') return false;
+        return std::any_of(overKinds.begin(), overKinds.end(), [&](const auto& k) { return k.id != id && KindCovers(k.id, id); });
+    };
+    auto dropCovered = [&](auto& into, const auto& from) {
+        std::erase_if(into, [&](const auto& k) { return covered(from, k.id); });
+    };
+    std::erase_if(out.rules, [&](const Rule& r) {
+        const std::string_view part = r.select.part;
+        if (part.starts_with("edge:")) return covered(over.edges, part.substr(5));
+        if (part.starts_with("pin:")) return covered(over.pins, part.substr(4));
+        return !r.select.kind.empty() && covered(over.nodes, r.select.kind);
+    });
+    dropCovered(out.nodes, over.nodes);
+    dropCovered(out.pins, over.pins);
+    dropCovered(out.edges, over.edges);
+    for (const auto& [k, v] : over.palettes) out.palettes[k] = v;
     for (const auto& [k, v] : over.tokens) out.tokens[k] = v;
     for (const auto& [k, v] : over.fonts) out.fonts[k] = v;
     auto set = [](const std::optional<float>& from, std::optional<float>& into) {
@@ -612,9 +715,11 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
         if (PartSpec* target = r->select.part.empty() ? &root : FindPart(root, r->select.part)) Apply(r->patch, *target);
     }
 
+    // `band` for this node: the type's, or what the card's `band` makes of it (a fixed colour, a palette slot).
+    const Color band = root.band ? ResolveColor(*root.band, type.band, kit, tags).value_or(type.band) : type.band;
     auto color = [&](const std::optional<std::string>& expr, Color fallback) {
         if (!expr) return fallback;
-        return ResolveColor(*expr, type.band, kit).value_or(fallback);
+        return ResolveColor(*expr, band, kit, tags).value_or(fallback);
     };
     auto shows = [&](const PartSpec& p) {
         if (p.visible && !*p.visible) return false;
@@ -635,6 +740,7 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
         if (spec->groupHeader) m.groupHeader = *spec->groupHeader;
     }
     const float opacity = root.opacity.value_or(1.f);
+    look.band        = band;
     look.fill        = Faded(color(root.fill, Color{0, 0, 0, 0}), opacity);
     look.stroke      = Faded(color(root.stroke, Color{0, 0, 0, 0}), opacity);
     look.strokeWidth = root.strokeWidth.value_or(1.f);
@@ -727,8 +833,8 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
                     if (name == *spec.glyph) pin.glyph = g;
             pin.size  = spec.size.value_or(0.f);
             pin.fill  = !spec.fill || *spec.fill == "wired" ? 0 : *spec.fill == "always" ? 1 : 2;
-            if (spec.color) pin.color = ResolveColor(*spec.color, type.band, kit);
-            if (spec.hollow) pin.hollow = ResolveColor(*spec.hollow, type.band, kit);
+            if (spec.color) pin.color = ResolveColor(*spec.color, band, kit, tags);
+            if (spec.hollow) pin.hollow = ResolveColor(*spec.hollow, band, kit, tags);
             pin.hit   = spec.hit.value_or(4.f);
             pin.label = spec.label.value_or(true);
             pin.on    = spec.on;
@@ -739,8 +845,8 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
         for (const Rule* r : order)
             if (r->select.part == "row:" + rk.id && Matches(r->select, type.id, tags, states)) ApplyRow(r->row, spec);
         RowLook& row = look.rows[rk.id];
-        if (spec.color) row.color = ResolveColor(*spec.color, type.band, kit);
-        if (spec.valueColor) row.valueColor = ResolveColor(*spec.valueColor, type.band, kit);
+        if (spec.color) row.color = ResolveColor(*spec.color, band, kit, tags);
+        if (spec.valueColor) row.valueColor = ResolveColor(*spec.valueColor, band, kit, tags);
         row.prefix     = spec.prefix.value_or(std::string());
         row.suffix     = spec.suffix.value_or(std::string());
         row.align      = AlignOf(spec.align, 0);
@@ -762,11 +868,7 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
 
 namespace grapher {
 
-const EdgeKind* Kit::FindEdge(std::string_view id) const
-{
-    const auto it = std::find_if(edges.begin(), edges.end(), [&](const EdgeKind& k) { return k.id == id; });
-    return it == edges.end() ? nullptr : &*it;
-}
+const EdgeKind* Kit::FindEdge(std::string_view id) const { return BestKind(edges, id); }
 
 EdgeLook ResolveEdgeLook(const Kit& kit, const EdgeType& type, const std::vector<std::string>& tags, std::uint32_t states)
 {
@@ -782,7 +884,7 @@ EdgeLook ResolveEdgeLook(const Kit& kit, const EdgeType& type, const std::vector
         if (Matches(r->select, type.id, tags, states)) ApplyEdge(r->edge, spec);
     auto color = [&](const std::optional<std::string>& expr, Color fallback) {
         if (!expr) return fallback;
-        return ResolveColor(*expr, type.color, kit).value_or(fallback);
+        return ResolveColor(*expr, type.color, kit, tags).value_or(fallback);
     };
     EdgeLook look;
     if (spec.line)
