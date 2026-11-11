@@ -194,7 +194,7 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
     std::unordered_map<std::string_view, std::vector<PortPin>> pins;
     std::unordered_set<std::string_view>                       rebuild;
     for (const Node& n : graph.nodes) {
-        auto p = PortPins(n, schema, o.card);
+        auto p = PortPins(n, schema, o.CardFor(n));
         if (const auto it = m.shapes.find(n.id); it != m.shapes.end() && it->second.pins != p) rebuild.insert(n.id);
         pins.emplace(n.id, std::move(p));
     }
@@ -253,7 +253,7 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
             if (!groups.contains(self)) return Avoid::ConnEnd(m.shapes.at(self).ref, pin ? pin->cls : kAnySide);
             if (pin) {
                 // A group has no shape: its port is a fixed point on its outline.
-                const auto slots = LayoutPorts(*nodes.at(self), schema, o.card);
+                const auto slots = LayoutPorts(*nodes.at(self), schema, o.CardFor(*nodes.at(self)));
                 if (const PortSlot* s = FindSlot(slots, ports[k])) {
                     at[k] = Avoid::Point(s->at.x, s->at.y);
                     return Avoid::ConnEnd(at[k], pin->dir);

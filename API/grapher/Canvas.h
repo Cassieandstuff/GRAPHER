@@ -11,6 +11,7 @@
 #include <grapher/DrawList.h>
 #include <grapher/Graph.h>
 #include <grapher/Groups.h>
+#include <grapher/Kit.h>
 #include <grapher/Ports.h>
 #include <grapher/Routing.h>
 #include <grapher/Schema.h>
@@ -69,6 +70,7 @@ struct Hit {
     std::string id;     ///< the node or edge
     std::string port;   ///< Port: the port on node `id`
     std::string row;    ///< Row: the row of node `id`
+    std::string part;   ///< Node, Row: the part of a card under the point (its look's header, body…); empty elsewhere
 };
 
 using NodeSet = std::set<std::string, std::less<>>;
@@ -217,6 +219,21 @@ public:
     bool docking = false;
     /// @brief Whether `child` may dock to `parent`; unset = when a wire runs from the parent to the child.
     std::function<bool(const Node& child, const Node& parent)> canDock;
+
+    /// @name Kits: what nodes are made of and how they look, as data
+    /// @{
+    /// @brief Draw with `kit` (kept by the host, which bumps its revision after changing it), over what the Schema and the
+    ///        Style make; null = the Schema and Style alone, drawn exactly as a canvas without kits drew them.
+    void SetKit(const Kit* kit) { kit_ = kit; }
+    [[nodiscard]] const Kit* GetKit() const { return kit_; }
+    /// @brief The node's look in `states` (KitState bits), resolved once per (kit, kind, tags, states) and kept.
+    [[nodiscard]] const NodeLook& LookOf(const Node& node, std::uint32_t states = 0) const;
+    /// @brief How many looks have been resolved since the canvas began (a statistic: a steady frame resolves none).
+    [[nodiscard]] std::size_t ResolvedLooks() const { return resolved_; }
+    /// @brief How wide `text` draws at `size` (world units), for cards that fit their width; the backend supplies it.
+    ///        Unset = an estimate from the character count.
+    std::function<float(std::string_view text, float size, bool bold)> measure;
+    /// @}
 
     /// @name Member groups, open and closed: the canvas's view state, never an edit
     /// @{
@@ -486,6 +503,35 @@ private:
     mutable std::size_t backendKey_ = 0;     ///< the router and options the backend last routed with
     mutable double      backendMs_  = -1.0;  ///< how long the backend's last incremental route took; < 0 = not yet known
     float               fitZoom_    = 0.f;   ///< the last fit's zoom (Frame); 0 = none yet
+
+    /// @brief Make the kit in effect (the Schema and Style's, under the host's) current, dropping the looks when it changed.
+    void EnsureKit() const;
+    /// @brief The node's geometry: its kind's metrics over the Style's.
+    [[nodiscard]] CardMetrics MetricsFor(const Node& n) const;
+    /// @brief The KitState bits the node's own situation sets (dimmed, an alias, in a group); the gesture's come on top.
+    [[nodiscard]] std::uint32_t StatesOf(const Node& n) const;
+    /// @return the part of a card's look under world height `wy` ("header" or "body"); empty for other shapes
+    [[nodiscard]] std::string PartAt(const Node& n, float wy) const;
+    [[nodiscard]] float MeasureText(std::string_view text, float size, bool bold) const;
+
+    struct LookHash {
+        using is_transparent = void;
+        std::size_t operator()(std::string_view s) const { return std::hash<std::string_view>{}(s); }
+    };
+    const Kit*                   kit_ = nullptr;
+    mutable Kit                  effective_;
+    mutable bool                 kitValid_     = false;
+    mutable const Kit*           kitFor_       = nullptr;
+    mutable std::uint64_t        kitRev_       = 0;
+    mutable const Schema*        kitSchema_    = nullptr;
+    mutable std::uint64_t        kitSchemaRev_ = 0;
+    mutable Style                kitStyle_;
+    mutable std::uint64_t        kitGen_       = 0;   ///< bumped each time the kit in effect changes
+    mutable std::map<std::string, CardMetrics, std::less<>> kitCards_;   ///< node types whose geometry differs from the Style's
+    mutable std::unordered_set<std::string> fitWidth_;   ///< node types whose cards fit their width
+    mutable std::unordered_map<std::string, NodeLook, LookHash, std::equal_to<>> looks_;
+    mutable std::string          lookKey_;
+    mutable std::size_t          resolved_ = 0;
 };
 
 } // namespace grapher

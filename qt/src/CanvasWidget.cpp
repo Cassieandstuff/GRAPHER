@@ -171,6 +171,14 @@ CanvasWidget::CanvasWidget(Canvas& canvas, QWidget* parent) : QWidget(parent), c
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
+    // Cards that fit their width measure their lines with the font they are painted in (a copy: the canvas may outlive us).
+    if (!canvas_.measure)
+        canvas_.measure = [face = font()](std::string_view text, float size, bool bold) {
+            QFont f = face;
+            f.setPixelSize(std::max(1, static_cast<int>(std::lround(size))));
+            f.setBold(bold);
+            return static_cast<float>(QFontMetricsF(f).horizontalAdvance(QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()))));
+        };
 }
 
 void CanvasWidget::paintEvent(QPaintEvent*)

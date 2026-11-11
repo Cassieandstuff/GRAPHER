@@ -247,8 +247,93 @@ const NodeType& Canvas::TypeOf(const Node& n) const
 
 float Canvas::Snap(float v) const { return snap > 0.f ? std::round(v / snap) * snap : v; }
 
-std::vector<PortSlot> Canvas::SlotsOf(const Node& n) const { return LayoutPorts(n, *schema_, MetricsOf(style)); }
-std::vector<PortSlot> Canvas::SlotsOf(const Node& n, const Rect& frame) const { return LayoutPorts(n, *schema_, MetricsOf(style), frame); }
+std::vector<PortSlot> Canvas::SlotsOf(const Node& n) const { return LayoutPorts(n, *schema_, MetricsFor(n)); }
+std::vector<PortSlot> Canvas::SlotsOf(const Node& n, const Rect& frame) const { return LayoutPorts(n, *schema_, MetricsFor(n), frame); }
+
+void Canvas::EnsureKit() const
+{
+    if (kitValid_ && kitFor_ == kit_ && (!kit_ || kitRev_ == kit_->revision) && kitSchema_ == schema_ && kitSchemaRev_ == schema_->revision &&
+        kitStyle_ == style)
+        return;
+    effective_    = kit_ ? MergeKits(KitFromSchema(*schema_, style), *kit_) : KitFromSchema(*schema_, style);
+    kitValid_     = true;
+    kitFor_       = kit_;
+    kitRev_       = kit_ ? kit_->revision : 0;
+    kitSchema_    = schema_;
+    kitSchemaRev_ = schema_->revision;
+    kitStyle_     = style;
+    ++kitGen_;
+    looks_.clear();
+    kitCards_.clear();
+    fitWidth_.clear();
+    if (!kit_) return;   // the Schema's own kit: every card has the Style's geometry, and none fits its width
+    const CardMetrics base = MetricsOf(style);
+    for (const NodeKind& k : effective_.nodes) {
+        const NodeType*      t = schema_->FindNode(k.id);
+        static const NodeType kNone{};
+        const NodeLook       look = ResolveLook(effective_, t ? *t : kNone, {}, 0, base);
+        if (!(look.metrics == base)) kitCards_.emplace(k.id, look.metrics);
+        if (look.fitWidth) fitWidth_.insert(k.id);
+    }
+}
+
+const NodeLook& Canvas::LookOf(const Node& n, std::uint32_t states) const
+{
+    EnsureKit();
+    std::string& key = lookKey_;
+    key.assign(n.type);
+    key += '\x1f';
+    for (const std::string& tag : n.tags) {
+        key += tag;
+        key += '\x1e';
+    }
+    key += '\x1f';
+    key.append(reinterpret_cast<const char*>(&states), sizeof states);
+    if (const auto it = looks_.find(std::string_view(key)); it != looks_.end()) return it->second;
+    ++resolved_;
+    return looks_.emplace(key, ResolveLook(effective_, TypeOf(n), n.tags, states, MetricsOf(style))).first->second;
+}
+
+CardMetrics Canvas::MetricsFor(const Node& n) const
+{
+    if (!kit_) return MetricsOf(style);   // no kit: the Style's, as ever
+    EnsureKit();
+    const auto it = kitCards_.find(n.type);
+    return it == kitCards_.end() ? MetricsOf(style) : it->second;
+}
+
+std::uint32_t Canvas::StatesOf(const Node& n) const
+{
+    std::uint32_t states = 0;
+    if (highlights.dimmed.contains(n.id)) states |= StateDimmed;
+    if (!n.aliasOf.empty()) states |= StateAlias;
+    if (!n.parent.empty()) states |= StateInGroup;
+    return states;
+}
+
+std::string Canvas::PartAt(const Node& n, float wy) const
+{
+    const NodeType& t = TypeOf(n);
+    if (t.shape != NodeShape::Card && t.shape != NodeShape::Note) return {};
+    const NodeLook& look = LookOf(n, StatesOf(n));
+    for (const LookPart& part : look.parts)
+        if (part.kind == PartKind::Header) {
+            const float h = part.height > 0.f ? part.height : look.metrics.Header();
+            if (wy < n.frame.y + h) return part.id;
+        }
+    for (const LookPart& part : look.parts)
+        if (part.kind == PartKind::Body) return part.id;
+    return {};
+}
+
+float Canvas::MeasureText(std::string_view text, float size, bool bold) const
+{
+    if (measure) return measure(text, size, bold);
+    std::size_t points = 0;
+    for (const char ch : text)
+        if ((static_cast<unsigned char>(ch) & 0xC0) != 0x80) ++points;
+    return static_cast<float>(points) * size * (bold ? 0.62f : 0.56f);
+}
 
 void Canvas::Before(std::string_view label)
 {
@@ -431,7 +516,7 @@ std::string Canvas::AddNode(std::string_view type, Vec2 worldCenter)
     Node n;
     n.id    = NewId();
     n.type  = t->id;
-    const float h = PortRows(n, *schema_) > 0 ? std::max(t->height, CardHeight(n, *schema_, MetricsOf(style))) : t->height;
+    const float h = PortRows(n, *schema_) > 0 ? std::max(t->height, CardHeight(n, *schema_, MetricsFor(n))) : t->height;
     n.frame = {Snap(worldCenter.x - t->width * 0.5f), Snap(worldCenter.y - h * 0.5f), t->width, h};
     graph_->nodes.push_back(n);
     Settle({n.id}, {n.id});
@@ -688,7 +773,7 @@ std::optional<Vec2> Canvas::HeaderScreenPos(std::string_view nodeId) const
 {
     const Node* n = ShownNode(nodeId);
     if (!n) return std::nullopt;
-    const CardMetrics m = MetricsOf(style);
+    const CardMetrics m = MetricsFor(*n);
     const float       y = IsGroup(*n, *schema_) ? std::min(n->frame.h, m.groupHeader) * 0.5f : m.Top() + m.titleSize * 0.65f;
     return camera.ToScreen(Vec2{n->frame.Center().x, n->frame.y + std::min(y, n->frame.h)});
 }
@@ -698,7 +783,7 @@ std::optional<Rect> Canvas::RowScreenRect(std::string_view nodeId, std::string_v
     const Node* n = ShownNode(nodeId);
     if (!n) return std::nullopt;
     for (std::size_t k = 0; k < n->rows.size(); ++k)
-        if (n->rows[k].id == row) return camera.ToScreen(RowRect(*n, *schema_, MetricsOf(style), k));
+        if (n->rows[k].id == row) return camera.ToScreen(RowRect(*n, *schema_, MetricsFor(*n), k));
     return std::nullopt;
 }
 
@@ -793,15 +878,15 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
             }
             if (TypeOf(*n).shape != NodeShape::Dot && ResizeGrip(r, style).Contains(screen)) return {HitKind::Resize, n->id};
             if (const Node* live = LiveOf(*n); !live->rows.empty() && TypeOf(*n).shape == NodeShape::Card) {
-                const CardMetrics m   = MetricsOf(style);
+                const CardMetrics m   = MetricsFor(*n);
                 const float       top = RowsTop(*n, *schema_, m);
                 const float       wy  = camera.ToWorld(screen).y;
                 if (wy >= top) {
                     const auto k = static_cast<std::size_t>((wy - top) / m.Row());
-                    if (k < live->rows.size()) return {HitKind::Row, n->id, {}, live->rows[k].id};
+                    if (k < live->rows.size()) return {HitKind::Row, n->id, {}, live->rows[k].id, kit_ ? PartAt(*n, wy) : std::string()};
                 }
             }
-            return {HitKind::Node, n->id};
+            return {HitKind::Node, n->id, {}, {}, kit_ ? PartAt(*n, camera.ToWorld(screen).y) : std::string()};
         }
     }
     for (std::size_t i = Shown().edges.size(); i-- > 0;) {
@@ -889,10 +974,36 @@ void Canvas::BuildView() const
     for (std::size_t i = 0; i < graph_->nodes.size(); ++i) graphAt_.emplace(graph_->nodes[i].id, i);
     {
         // A card whose type fits its height grows to show its ports, rows and fields.
-        const CardMetrics m = MetricsOf(style);
         for (Node& node : view_.nodes)
             if (const NodeType* t = schema_->FindNode(node.type); t && t->fitHeight && t->shape == NodeShape::Card)
-                node.frame.h = std::max(node.frame.h, CardHeight(node, *schema_, m));
+                node.frame.h = std::max(node.frame.h, CardHeight(node, *schema_, MetricsFor(node)));
+        // One whose kind fits its width takes its widest line, between the kind's bounds.
+        if (!fitWidth_.empty())
+            for (Node& node : view_.nodes) {
+                if (!fitWidth_.contains(node.type)) continue;
+                const NodeLook&    look = LookOf(node, 0);
+                const CardMetrics& m    = look.metrics;
+                float              inset = 0.f, widest = 0.f;
+                for (const LookPart& part : look.parts) {
+                    if (part.kind == PartKind::Accent) inset += part.width;
+                    for (const LookText& text : part.texts) {
+                        std::string line = text.from == "type" ? TypeOf(node).label
+                                         : text.from.starts_with("field:") ? node.Field(std::string_view(text.from).substr(6))
+                                                                           : std::string();
+                        if (text.from.starts_with("row:"))
+                            if (const Row* row = node.FindRow(std::string_view(text.from).substr(4))) line = row->label;
+                        widest = std::max(widest, MeasureText(line, text.size * text.scale, text.bold));
+                    }
+                }
+                for (const Row& row : node.rows) {
+                    const float value = row.value.empty() ? 0.f : MeasureText(row.value, m.fontSize, false) + m.padding;
+                    widest            = std::max(widest, MeasureText(row.label, m.fontSize, false) + value);
+                }
+                float w = widest + 2 * m.padding + inset;
+                if (look.minWidth > 0.f) w = std::max(w, look.minWidth);
+                if (look.maxWidth > 0.f) w = std::min(w, look.maxWidth);
+                node.frame.w = w;
+            }
     }
     constexpr std::size_t kNone = static_cast<std::size_t>(-1);
     const std::size_t     n     = view_.nodes.size();
@@ -1078,7 +1189,6 @@ void Canvas::PlaceDocks(const std::vector<char>& dragged, const std::vector<std:
     constexpr std::size_t kNone = static_cast<std::size_t>(-1);
     constexpr std::array  kSides{PortSide::Bottom, PortSide::Top, PortSide::Right, PortSide::Left};
     const std::size_t     n = view_.nodes.size();
-    const CardMetrics     m = MetricsOf(style);
     offset_.resize(n);
     visiting_.assign(n, 0);
     auto out = [&](std::size_t c) { return c < dragged.size() && dragged[c]; };   // a dragged node is out of every list
@@ -1129,7 +1239,7 @@ void Canvas::PlaceDocks(const std::vector<char>& dragged, const std::vector<std:
                 float       middle = own.h * 0.5f;
                 for (std::size_t k = 0; k < view_.nodes[i].rows.size(); ++k)
                     if (view_.nodes[i].rows[k].id == d.row) {
-                        const Rect line = RowRect(view_.nodes[i], *schema_, m, k);
+                        const Rect line = RowRect(view_.nodes[i], *schema_, MetricsFor(view_.nodes[i]), k);
                         middle          = line.y - f.y + line.h * 0.5f;
                     }
                 const float y = middle - view_.nodes[c].frame.h * 0.5f;
@@ -1322,13 +1432,16 @@ void Canvas::Sync() const
     const bool     plain = (!router || patch) && dragging && routeMs_ > kLiveRouteMs && !local;
     RoutingOptions o     = routing;
     if (plain) o.avoidNodes = false;
-    o.card = MetricsOf(style);
+    EnsureKit();
+    o.card  = MetricsOf(style);
+    o.cards = kitCards_;
 
     std::size_t optionsKey = Mix(reinterpret_cast<std::uintptr_t>(router.get()),
                                  (o.avoidNodes ? 1u : 0u) | (o.spreadPorts ? 2u : 0u));
     for (float f : {o.clearance, o.bendCost, o.shareCost, o.crossCost, o.laneSpacing, o.cornerRadius, o.curveRadius,
                     o.card.padding, o.card.titleSize, o.card.fontSize, o.card.groupHeader, style.groupPadding})
         optionsKey = Mix(optionsKey, Bits(f));
+    optionsKey = Mix(optionsKey, static_cast<std::size_t>(kitGen_));
 
     const auto  hs  = HashText;
     // A drag takes the dragged nodes out of their docks while it lasts, so whether one is under way is part of the key.
@@ -1454,7 +1567,8 @@ void Canvas::Sync() const
         for (const Node& n : graph_->nodes)
             if (const auto t = types.find(n.type);
                 !n.dock.parent.empty() ||
-                (t != types.end() && ((t->second->groupMode == GroupMode::Members && t->second->shape == NodeShape::Group) || t->second->fitHeight))) {
+                (t != types.end() && ((t->second->groupMode == GroupMode::Members && t->second->shape == NodeShape::Group) || t->second->fitHeight)) ||
+                fitWidth_.contains(n.type)) {
                 useView_ = true;
                 break;
             }
@@ -2198,16 +2312,39 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                 c.push_back(Text{{r.x + r.h * 0.4f, r.y, std::max(0.f, r.w - r.h * 0.8f), r.h}, text.empty() ? t.label : text,
                                  s.fontSize * z, text.empty() ? s.muted : s.text, true, false, false, Align::Center});
         } else {
-        c.push_back(FillRect{r, note ? s.noteFill : s.nodeFill, sel ? s.selection : (hov ? s.muted : s.nodeStroke),
-                             sel ? 2.f : 1.f, s.corner * z});
-        const float rad = s.corner * z;
-        c.push_back(FillRect{{r.x + 1.f, r.y + rad, std::max(2.f, s.band * z), std::max(0.f, r.h - 2 * rad)}, t.band});
+        // A card or a note, drawn from its look: the kit's, or the one its Schema and Style make.
+        const NodeLook&    look = LookOf(n, (sel ? StateSelected : 0u) | (hov ? StateHovered : 0u) | StatesOf(n));
+        const CardMetrics& km   = look.metrics;
+        const float        rad  = look.corner * z;
+        const LookPart*    head = nullptr;
+        bool               filled = false;   // a part paints over the card: its outline goes on top
+        for (const LookPart& part : look.parts) {
+            if (part.kind == PartKind::Header) head = &part;
+            filled = filled || ((part.kind == PartKind::Header || part.kind == PartKind::Body) && part.fill.a > 0);
+        }
+        c.push_back(FillRect{r, look.fill, filled ? Color{0, 0, 0, 0} : look.stroke, filled ? 0.f : look.strokeWidth, rad, look.dash});
+        float inset = 0.f;   // an accent strip moves the text right
+        for (const LookPart& part : look.parts) {
+            if (part.kind == PartKind::Accent) {
+                c.push_back(FillRect{{r.x + 1.f, r.y + rad, std::max(2.f, part.width * z), std::max(0.f, r.h - 2 * rad)}, part.fill});
+                inset += part.width;
+            } else if (part.kind == PartKind::Header && part.fill.a > 0) {
+                const float hh = std::min(r.h, (part.height > 0.f ? part.height : km.Header()) * z);
+                c.push_back(FillRect{{r.x, r.y, r.w, hh}, part.fill, {}, 0.f, rad});
+                if (hh > rad) c.push_back(FillRect{{r.x, r.y + rad, r.w, hh - rad}, part.fill});
+            } else if (part.kind == PartKind::Body && part.fill.a > 0 && head) {
+                const float top = std::min(r.h, (head->height > 0.f ? head->height : km.Header()) * z);
+                c.push_back(FillRect{{r.x, r.y + top, r.w, r.h - top}, part.fill, {}, 0.f, rad});
+                c.push_back(FillRect{{r.x, r.y + top, r.w, std::min(rad, r.h - top)}, part.fill});
+            }
+        }
+        if (filled) c.push_back(FillRect{r, Color{0, 0, 0, 0}, look.stroke, look.strokeWidth, rad, look.dash});
 
-        const float pad = s.padding * z;
-        const float x   = r.x + pad + s.band * z;
+        const float pad = km.padding * z;
+        const float x   = r.x + pad + inset * z;
         const float w   = r.Right() - pad - x;
         float       y   = r.y + pad * 0.8f;
-        const float fs  = s.fontSize * z;
+        const float fs  = km.fontSize * z;
 
         if (fs >= 4.f && w > 4.f) {
             if (note) {
@@ -2215,14 +2352,30 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                 c.push_back(Text{{x, y, w, r.Bottom() - pad - y}, body.empty() ? std::string{"Double-click to write"} : body,
                                  fs, body.empty() ? s.muted : s.text, false, true, true});
             } else {
-                const std::string& named = t.titleField.empty() ? std::string{} : n.Field(t.titleField);
-                const float        ts    = s.titleSize * z;
-                const float        iconW = t.drillable ? 18.f * z : 0.f;
-                c.push_back(Text{{x, y, w - iconW, ts * 1.3f}, named.empty() ? "Untitled " + t.label : named, ts,
-                                 named.empty() ? s.muted : s.text, true});
-                y += ts * 1.35f;
-                c.push_back(Text{{x, y, w, fs * 1.3f}, t.label, fs * 0.9f, t.band});
-                y += fs * 1.5f;
+                // The header's lines: the title (a drillable card leaves room for its mark), then what the look adds.
+                if (head) {
+                    y                 = r.y + pad * head->top;
+                    const float iconW = t.drillable ? 18.f * z : 0.f;
+                    for (std::size_t k = 0; k < head->texts.size(); ++k) {
+                        const LookText& line = head->texts[k];
+                        std::string     text = line.from == "type" ? t.label : std::string();
+                        if (line.from.starts_with("field:")) text = n.Field(std::string_view(line.from).substr(6));
+                        if (line.from.starts_with("row:"))
+                            if (const Row* row = n.FindRow(std::string_view(line.from).substr(4))) text = row->label;
+                        const bool empty = text.empty() && !line.placeholder.empty();
+                        if (empty) {
+                            text = line.placeholder;
+                            if (const auto at = text.find("{type}"); at != std::string::npos) text.replace(at, 6, t.label);
+                        }
+                        const float ts = line.size * z;
+                        c.push_back(Text{{x, y, w - (k == 0 ? iconW : 0.f), ts * line.box}, text, ts * line.scale,
+                                         empty ? line.placeholderColor : line.color, line.bold, false, false, static_cast<Align>(line.align),
+                                         line.italic});
+                        y += ts * line.advance;
+                    }
+                    if (head->height > 0.f) y = r.y + head->height * z;
+                }
+                if (km.header > 0.f) y = r.y + km.header * z;
 
                 // Port rows: a left port's label after its pin, a right port's before it; a row holding both splits.
                 const auto slots = SlotsOf(n, frame);
@@ -2245,7 +2398,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                     if (!text.empty())
                         c.push_back(Text{box, text, fs, s.text, false, false, false, left ? Align::Left : Align::Right});
                 }
-                y += static_cast<float>(PortRows(n, *schema_)) * MetricsOf(s).Row() * z;
+                y += static_cast<float>(PortRows(n, *schema_)) * km.Row() * z;
 
                 // The picture sits at the foot of the card; text above stops short of it.
                 const bool  pictured = t.imageHeight > 0.f && !n.image.empty();
@@ -2254,7 +2407,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                     c.push_back(Image{{x, foot + s.padding * 0.25f * z, w, t.imageHeight * z}, n.image, s.corner * z * 0.5f});
 
                 // The node's own rows: a label on the left, a value (or a button, or a choice) on the right.
-                const float rowH = MetricsOf(s).Row() * z;
+                const float rowH = km.Row() * z;
                 for (const Row& row : n.rows) {
                     if (y + rowH > foot + 0.5f) break;
                     if (row.separator)

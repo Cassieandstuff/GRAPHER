@@ -18,6 +18,7 @@ struct FillRect {
     float strokeWidth = 0.f;   ///< 0 = no outline
     float radius      = 0.f;
     bool  dashed      = false;   ///< the outline
+    friend bool operator==(const FillRect&, const FillRect&) = default;
 };
 
 /// @brief An open polyline (curves arrive already flattened).
@@ -27,11 +28,13 @@ struct Polyline {
     float             width  = 1.f;
     bool              dashed = false;
     bool              dotted = false;
+    friend bool operator==(const Polyline&, const Polyline&) = default;
 };
 
 struct Polygon {
     std::vector<Vec2> points;
     Color             fill;
+    friend bool operator==(const Polygon&, const Polygon&) = default;
 };
 
 struct Circle {
@@ -40,6 +43,7 @@ struct Circle {
     Color fill;
     Color stroke;
     float strokeWidth = 0.f;
+    friend bool operator==(const Circle&, const Circle&) = default;
 };
 
 enum class Align { Left, Center, Right };
@@ -56,6 +60,7 @@ struct Text {
     bool        mono  = false;   ///< a fixed-width face (pseudo-code)
     Align       align = Align::Left;
     bool        italic = false;
+    friend bool operator==(const Text&, const Text&) = default;
 };
 
 /// @brief A picture the backend resolves by `key` (a node's thumbnail), scaled to fill `box`.
@@ -63,6 +68,7 @@ struct Image {
     Rect        box;
     std::string key;
     float       radius = 0.f;   ///< rounded corners
+    friend bool operator==(const Image&, const Image&) = default;
 };
 
 using DrawCmd = std::variant<FillRect, Polyline, Polygon, Circle, Text, Image>;
@@ -70,6 +76,7 @@ using DrawCmd = std::variant<FillRect, Polyline, Polygon, Circle, Text, Image>;
 struct DrawList {
     Vec2                 size;   ///< the surface the list was laid out for
     std::vector<DrawCmd> cmds;
+    friend bool operator==(const DrawList&, const DrawList&) = default;
 };
 
 } // namespace grapher

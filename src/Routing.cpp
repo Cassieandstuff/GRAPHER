@@ -452,7 +452,7 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
     auto slotOf = [&](std::size_t node, const std::string& port) -> const PortSlot* {
         if (port.empty()) return nullptr;
         auto it = slots.find(node);
-        if (it == slots.end()) it = slots.emplace(node, LayoutPorts(graph.nodes[node], schema, o.card)).first;
+        if (it == slots.end()) it = slots.emplace(node, LayoutPorts(graph.nodes[node], schema, o.CardFor(graph.nodes[node]))).first;
         return FindSlot(it->second, port);
     };
 

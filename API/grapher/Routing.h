@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <string>
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -33,10 +34,18 @@ struct RoutingOptions {
     float cornerRadius = 10.f;   ///< an elbow's corners
     float curveRadius  = 40.f;   ///< a detouring curve's corners
     CardMetrics card;            ///< where ports sit on a card (a canvas fills it from its Style)
+    /// @brief Where ports sit on the cards of a node type whose geometry differs from `card` (a kit's).
+    std::map<std::string, CardMetrics, std::less<>> cards;
     /// @brief With a side memory (RouteWires' `sides`): a wire's end keeps the side it had until the other end has moved
     ///        this far (world units) past where it would turn, so a drag along the middle doesn't flicker.
     float sideHysteresis = 24.f;
     friend bool operator==(const RoutingOptions&, const RoutingOptions&) = default;
+
+    [[nodiscard]] const CardMetrics& CardFor(const Node& node) const
+    {
+        const auto it = cards.find(node.type);
+        return it == cards.end() ? card : it->second;
+    }
 };
 
 /// @brief World-space polylines, keyed by edge id.

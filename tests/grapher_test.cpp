@@ -2279,11 +2279,12 @@ std::string Describe(const grapher::DrawList& list)
 }
 
 /// @brief Everything the golden graph draws and hits: three zooms, the minimap, a grid of hit tests.
-std::string GoldenPicture()
+std::string GoldenPicture(const grapher::Kit* kit = nullptr)
 {
     grapher::Schema s;
     grapher::Graph  g = GoldenGraph(s);
     grapher::Canvas c(g, s);
+    c.SetKit(kit);
     c.SetViewport({1400, 900});
     c.SetCollapsed("C", true);
     c.Frame();
@@ -2327,6 +2328,263 @@ void TestGoldenPicture()
         }
     }
     if (kGoldenPicture != 0) CHECK(h == kGoldenPicture);
+    // The kit a Schema and Style make draws the same picture as no kit at all.
+    grapher::Schema s;
+    (void)GoldenGraph(s);
+    const grapher::Kit same = grapher::KitFromSchema(s, grapher::Style{});
+    CHECK(GoldenPicture(&same) == picture);
+}
+
+// ── Kits ─────────────────────────────────────────────────────────────────────
+constexpr const char* kSampleKit = R"({
+    "tokens": { "body": "#2e3036", "hi": "#5ca0ff", "dim": "#ebebf0be" },
+    "fonts": { "title": { "size": 13, "bold": true } },
+    "metrics": { "padding": 8, "fontSize": 11, "row": 18 },
+    "nodes": {
+        "box": {
+            "fill": "$body", "stroke": "#00000078", "corner": 6,
+            "metrics": { "header": 40 },
+            "minWidth": 170, "maxWidth": 340, "fitWidth": true,
+            "on": { "doubleClick": "drill" },
+            "parts": [
+                { "part": "header", "fill": "darker(band, 130)", "height": 40, "top": 0.4,
+                  "content": [ { "part": "text", "id": "title", "from": "field:name", "font": "title", "color": "#ffffff", "advance": 1.4 },
+                               { "part": "text", "id": "sub", "from": "field:sub", "size": 10, "color": "$dim" },
+                               { "part": "text", "id": "flag", "from": "field:kind", "if": "[flagged]", "size": 10 } ] },
+                { "part": "body" }
+            ]
+        }
+    },
+    "rules": [
+        { "select": "*:selected > header", "fill": "band" },
+        { "select": "box[hot]", "stroke": "#ff0000" },
+        { "select": "box[hot]:hovered", "stroke": "#00ff00" },
+        { "select": "*:alias", "opacity": 0.5, "dash": true }
+    ],
+    "pins": { "num": { "glyph": "circle" } }
+})";
+
+grapher::Schema KitSchema()
+{
+    grapher::Schema s;
+    grapher::NodeType box{"box", "Box", {100, 100, 200}};
+    box.fields = {{"name", "Name"}, {"sub", "Sub"}, {"kind", "Kind"}};
+    box.ports  = {{"in", "In", "", grapher::PortDir::In, grapher::PortSide::Left}, {"out", "Out", "", grapher::PortDir::Out, grapher::PortSide::Right}};
+    s.nodeTypes.push_back(box);
+    s.edgeTypes.push_back({"data", "data"});
+    return s;
+}
+
+void TestKitJson()
+{
+    std::string error;
+    const auto  kit = grapher::ParseKit(kSampleKit, error);
+    CHECK(kit.has_value());
+    if (!kit) return std::fprintf(stderr, "  kit: %s\n", error.c_str()), void();
+    CHECK((kit->nodes.size() == 1 && kit->rules.size() == 4 && kit->reserved.contains("pins")));
+    CHECK((kit->nodes[0].card.on.at("doubleClick") == "drill" && kit->nodes[0].card.content[0].content[2].condition == "[flagged]"));
+    // What it writes reads back the same, and writes the same again.
+    const std::string text = grapher::WriteKit(*kit);
+    const auto        back = grapher::ParseKit(text, error);
+    CHECK((back.has_value() && *back == *kit && grapher::WriteKit(*back) == text));
+    // The Schema's own kit round-trips too.
+    const grapher::Kit schemaKit = grapher::KitFromSchema(KitSchema(), grapher::Style{});
+    const auto         again     = grapher::ParseKit(grapher::WriteKit(schemaKit), error);
+    CHECK((again && again->nodes == schemaKit.nodes && again->rules == schemaKit.rules && again->tokens == schemaKit.tokens));
+    // Mistakes say where they are.
+    for (const char* bad : {R"({"rules": [{"select": "box[", "fill": "#fff"}]})", R"({"nodes": {"x": {"fill": "$nope"}}})",
+                            R"({"nodes": {"x": {"parts": [{"part": "wing"}]}}})", R"({"nodes": {"x": {"parts": [{"part": "text", "align": "up"}]}}})",
+                            R"({"rules": [{"select": "box:sleepy"}]})", R"([1, 2])"}) {
+        error.clear();
+        CHECK((!grapher::ParseKit(bad, error) && !error.empty()));
+    }
+}
+
+void TestKitResolve()
+{
+    // Colours: Qt's lighter and darker, alpha, tokens, the band.
+    grapher::Kit tokens;
+    tokens.tokens = {{"hi", "#5ca0ff"}, {"ref", "$hi"}};
+    const grapher::Color band{10, 20, 30};
+    CHECK((grapher::ResolveColor("darker(#808080, 200)", band, tokens) == grapher::Color{64, 64, 64}));
+    CHECK((grapher::ResolveColor("lighter(#404040, 200)", band, tokens) == grapher::Color{128, 128, 128}));
+    CHECK((grapher::ResolveColor("alpha(#ffffff, 0.5)", band, tokens) == grapher::Color{255, 255, 255, 128}));
+    CHECK((grapher::ResolveColor("$ref", band, tokens) == grapher::Color{92, 160, 255} && grapher::ResolveColor("band", band, tokens) == band));
+    CHECK((!grapher::ResolveColor("$missing", band, tokens) && !grapher::ResolveColor("darker(#808080)", band, tokens)));
+    // Selectors.
+    const auto sel = grapher::ParseSelector("box[class:Blend][hot]:selected:hovered > header");
+    CHECK((sel && sel->kind == "box" && sel->tags.size() == 2 && sel->states == (grapher::StateSelected | grapher::StateHovered) && sel->part == "header"));
+    CHECK((grapher::ParseSelector("*")->kind.empty() && !grapher::ParseSelector("box > ") && !grapher::ParseSelector("box[]")));
+
+    std::string           error;
+    const auto            kit = grapher::ParseKit(kSampleKit, error);
+    const grapher::Schema s   = KitSchema();
+    grapher::Graph        g;
+    g.nodes.push_back({"a", "box", {0, 0, 200, 140}});
+    g.nodes[0].fields = {{"name", "Alpha"}, {"sub", "class · 0000x0001"}, {"kind", "K"}};
+    g.nodes[0].rows   = {{"r0", "first"}, {"r1", "second"}};
+    g.nodes[0].tags   = {"hot"};
+    g.nodes.push_back({"b", "box", {400, 0, 200, 140}});
+    g.nodes[1].fields = {{"name", "Beta"}, {"kind", "K"}};
+    g.nodes[1].tags   = {"flagged"};
+    g.nodes.push_back({"c", "box", {0, 300, 200, 140}});
+    g.nodes[2].aliasOf = "a";
+    grapher::Canvas c(g, s);
+    c.SetViewport({1000, 600});
+    c.SetKit(&*kit);
+    c.measure = [](std::string_view text, float size, bool) { return static_cast<float>(text.size()) * size * 0.5f; };
+
+    // The resolved looks: the kind's parts, then the rules by specificity.
+    const grapher::NodeLook& a = c.LookOf(g.nodes[0]);
+    CHECK((a.metrics.header == 40.f && a.metrics.Row() == 18.f && a.metrics.padding == 8.f && a.metrics.fontSize == 11.f));
+    CHECK((a.parts.size() == 2 && a.parts[0].kind == grapher::PartKind::Header && a.parts[0].texts.size() == 2));   // no flag: not tagged
+    CHECK((a.parts[0].texts[0].size == 13.f && a.parts[0].texts[0].bold && a.parts[0].texts[0].advance == 1.4f));
+    CHECK((a.stroke == grapher::Color{255, 0, 0} && a.fill == grapher::Color{0x2e, 0x30, 0x36}));
+    CHECK((c.LookOf(g.nodes[0], grapher::StateHovered).stroke == grapher::Color{0, 255, 0}));   // tag + state beats tag
+    CHECK((c.LookOf(g.nodes[0], grapher::StateSelected).parts[0].fill == grapher::Color{100, 100, 200}));
+    CHECK((c.LookOf(g.nodes[1]).parts[0].texts.size() == 3 && c.LookOf(g.nodes[1]).stroke == grapher::Color{0, 0, 0, 0x78}));
+    const grapher::NodeLook& alias = c.LookOf(g.nodes[2], grapher::StateAlias);
+    CHECK((alias.dash && alias.fill.a == 128));   // half as opaque
+    // Geometry follows the look: rows start under the 40-unit header, ports pin to rows of 18.
+    c.Frame();
+    const float          z   = c.camera.zoom;
+    const grapher::Rect  ra  = c.ScreenRectOf("a");
+    const auto           row = c.RowScreenRect("a", "r1");
+    CHECK((row && std::abs(row->y - (ra.y + (40.f + 18.f + 18.f) * z)) < 0.01f));   // one port row, then r0
+    const auto pin = c.PortScreenPos("a", "in");
+    CHECK((pin && std::abs(pin->y - (ra.y + (40.f + 9.f) * z)) < 0.01f));
+    // It fits its width between the kind's bounds, measured.
+    CHECK((ra.w >= 170.f * z - 0.01f && ra.w <= 340.f * z + 0.01f));
+    // What it draws: the header band, the title and subtitle in it, the body's rows.
+    const auto list = c.Draw();
+    bool band = false, title = false, sub = false;
+    for (const auto& cmd : list.cmds) {
+        if (const auto* f = std::get_if<grapher::FillRect>(&cmd); f && f->fill == a.parts[0].fill && std::abs(f->rect.y - ra.y) < 0.01f) band = true;
+        if (const auto* t = std::get_if<grapher::Text>(&cmd)) {
+            title = title || (t->text == "Alpha" && t->bold && std::abs(t->size - 13.f * z) < 0.01f);
+            sub   = sub || (t->text == "class · 0000x0001" && t->color == grapher::Color{0xeb, 0xeb, 0xf0, 0xbe});
+        }
+    }
+    CHECK((band && title && sub));
+    // A hit says which part it is on.
+    CHECK((c.HitTest({ra.Center().x, ra.y + 10.f * z}).part == "header" && c.HitTest({ra.Center().x, ra.Bottom() - 4.f * z}).part == "body"));
+    // A kind defined at runtime takes effect at once.
+    grapher::Kit live = *kit;
+    c.SetKit(&live);
+    grapher::NodeKind tall = live.nodes[0];
+    tall.metrics.header    = 60.f;
+    live.PutNodeKind(tall);
+    CHECK(c.LookOf(g.nodes[0]).metrics.header == 60.f);
+}
+
+void TestKitCache()
+{
+    std::string           error;
+    const auto            kit = grapher::ParseKit(kSampleKit, error);
+    const grapher::Schema s   = KitSchema();
+    grapher::Graph        g;
+    for (int k = 0; k < 50; ++k) {
+        g.nodes.push_back({"n" + std::to_string(k), "box", {k * 220.f, 0, 200, 140}});
+        g.nodes.back().tags = {k % 2 ? "hot" : "cold"};
+    }
+    grapher::Canvas c(g, s);
+    c.SetViewport({4000, 600});
+    c.SetKit(&*kit);
+    c.Frame();
+    (void)c.Draw();
+    const std::size_t first = c.ResolvedLooks();
+    CHECK((first >= 2 && first <= 8));   // a handful of (tags, state) keys, not one per node
+    (void)c.Draw();
+    (void)c.Draw();
+    CHECK(c.ResolvedLooks() == first);   // a steady frame resolves nothing
+    grapher::Kit edited = *kit;
+    c.SetKit(&edited);
+    ++edited.revision;
+    (void)c.Draw();
+    CHECK(c.ResolvedLooks() > first);    // a changed kit resolves again
+}
+
+void TestLargeGraphKit()
+{
+    // TestLargeGraph's 20,000 cards, with a kit: twelve kinds, forty rules, tags on every card. Same budgets.
+    grapher::Schema s;
+    grapher::Kit    kit;
+    kit.tokens = {{"body", "#2e3036"}, {"hi", "#5ca0ff"}};
+    for (int k = 0; k < 12; ++k) {
+        grapher::NodeType t{"card" + std::to_string(k), "Card", {static_cast<std::uint8_t>(40 + k * 15), 90, 160}};
+        t.ports = {{"in", "In"}, {"out", "Out", "", grapher::PortDir::Out}};
+        s.nodeTypes.push_back(t);
+        grapher::NodeKind kind;
+        kind.id               = t.id;
+        kind.card.fill        = "$body";
+        kind.card.stroke      = "#00000078";
+        kind.metrics.header   = 40.f;
+        grapher::PartSpec header{grapher::PartKind::Header, "header"};
+        header.fill = "darker(band, 130)";
+        grapher::PartSpec title{grapher::PartKind::Text, "title"};
+        title.from = "field:name";
+        title.bold = true;
+        header.content = {title};
+        kind.card.content = {header, grapher::PartSpec{grapher::PartKind::Body, "body"}};
+        kit.nodes.push_back(kind);
+    }
+    for (int k = 0; k < 40; ++k) {
+        grapher::Rule r{*grapher::ParseSelector("card" + std::to_string(k % 12) + "[t" + std::to_string(k % 5) + "]" + (k % 3 ? ":hovered" : "")), {}};
+        r.patch.stroke = k % 2 ? "$hi" : "#ff8000";
+        kit.rules.push_back(r);
+    }
+    grapher::NodeType folder{"folder", "Folder"};
+    folder.shape = grapher::NodeShape::Group;
+    s.nodeTypes.push_back(folder);
+    s.edgeTypes.push_back({"data", "data"});
+    grapher::Graph g;
+    g.nodes.reserve(20100);
+    constexpr int cols = 200, rows = 100;
+    for (int y = 0; y < rows; ++y) {
+        g.nodes.push_back({"g" + std::to_string(y), "folder", {-20.f, y * 140.f - 30.f, cols * 240.f, 120.f}});
+        for (int x = 0; x < cols; ++x) {
+            const int k = y * cols + x;
+            g.nodes.push_back({"n" + std::to_string(k), "card" + std::to_string(k % 12), {x * 240.f, y * 140.f, 160.f, 80.f}});
+            g.nodes.back().fields = {{"name", "Card"}};
+            g.nodes.back().tags   = {"t" + std::to_string(k % 5), "class:C" + std::to_string(k % 7)};
+            if (x > 0) g.edges.push_back({"e" + std::to_string(k), "n" + std::to_string(k - 1), "n" + std::to_string(k), "data", "", "out", "in"});
+        }
+    }
+    using Clock = std::chrono::steady_clock;
+    auto ms = [](Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); };
+    grapher::Canvas c(g, s);
+    c.SetViewport({1600, 900});
+    c.SetKit(&kit);
+    c.CenterOn("n10100", 0.35f);
+    (void)c.Draw();
+    const std::size_t looks = c.ResolvedLooks();
+    auto t0 = Clock::now();
+    for (int k = 0; k < 10; ++k) {
+        c.PointerMove({static_cast<float>(100 + k * 40), 450.f});   // the hover moves between frames
+        (void)c.Draw();
+    }
+    const double drawMs = ms(t0) / 10.0;
+    t0 = Clock::now();
+    int hits = 0;
+    for (int k = 0; k < 200; ++k) hits += c.HitTest({static_cast<float>(k * 8 % 1600), static_cast<float>(k * 37 % 900)}).kind != grapher::HitKind::None;
+    const double        hitMs = ms(t0) / 200.0;
+    const grapher::Vec2 grab  = c.ScreenRectOf("n10100").Center();
+    c.PointerDown(grab, grapher::Button::Left, {});
+    c.PointerMove(grab + grapher::Vec2{10, 0});
+    (void)c.Draw();
+    t0 = Clock::now();
+    c.PointerMove(grab + grapher::Vec2{30, 15});
+    (void)c.Draw();
+    const double dragMs = ms(t0);
+    c.PointerUp(grab + grapher::Vec2{30, 15}, grapher::Button::Left);
+    std::printf("  20k graph with a kit: %zu looks resolved (%zu after the hover moved); draw %.2f ms, hit test %.3f ms, drag step %.2f ms\n",
+                looks, c.ResolvedLooks(), drawMs, hitMs, dragMs);
+    CHECK((looks > 0 && looks <= 12 * 5 * 7 && hits > 0));
+#ifdef NDEBUG
+    CHECK(drawMs <= 4.0);
+    CHECK(hitMs <= 0.2);
+    CHECK(dragMs <= 8.0);
+#endif
 }
 
 } // namespace
@@ -2369,6 +2627,10 @@ int main()
     TestLayoutDocks();
     TestFitBelowMinZoom();
     TestGoldenPicture();
+    TestKitJson();
+    TestKitResolve();
+    TestKitCache();
+    TestLargeGraphKit();
     TestFixedGroupAndHover();
     TestFrameGroupsUnchanged();
     TestDocks();

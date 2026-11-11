@@ -21,11 +21,13 @@ struct CardMetrics {
     float titleSize = 15.f;
     float fontSize  = 12.f;
     float groupHeader = 30.f;   ///< a group's header strip
+    float header = 0.f;   ///< where the rows start, stated outright (a kit's header height); 0 = from the sizes
+    float row    = 0.f;   ///< a row's height, stated outright; 0 = from the font size
     friend bool operator==(const CardMetrics&, const CardMetrics&) = default;
 
     [[nodiscard]] float Top() const { return padding * 0.8f; }                         ///< the title line's top, from the frame's
-    [[nodiscard]] float Header() const { return Top() + titleSize * 1.35f + fontSize * 1.5f; }   ///< where the rows start
-    [[nodiscard]] float Row() const { return fontSize * 1.4f; }
+    [[nodiscard]] float Header() const { return header > 0.f ? header : Top() + titleSize * 1.35f + fontSize * 1.5f; }   ///< where the rows start
+    [[nodiscard]] float Row() const { return row > 0.f ? row : fontSize * 1.4f; }
 };
 
 [[nodiscard]] inline CardMetrics MetricsOf(const Style& s) { return {s.padding, s.titleSize, s.fontSize, s.groupHeader}; }
