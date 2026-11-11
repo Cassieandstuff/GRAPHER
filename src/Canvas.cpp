@@ -227,6 +227,7 @@ Canvas::Canvas(Graph& graph, const Schema& schema) : graph_(&graph), host_(&grap
 
 void Canvas::SetGraph(Graph& graph)
 {
+    dragKey_    = 0;
     graph_      = &graph;
     host_       = &graph;
     scratch_    = {};
@@ -316,6 +317,7 @@ void Canvas::HoldInPlace(std::string_view nodeId)
 
 void Canvas::Refresh()
 {
+    dragKey_ = 0;   // the host changed its graph: a drag under way keys it in full again
     // The node held in place keeps its header where it was on screen.
     if (!hold_.empty()) {
         const std::string held = std::exchange(hold_, {});

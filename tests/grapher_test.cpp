@@ -1855,6 +1855,38 @@ void TestLiftWires()
     CHECK(moved && moved->edge.toPort == "b" && moved->replaced == std::vector<std::string>{"e"} && intents[0].label == "Move wire");
 }
 
+void TestHostChangesMidDrag()
+{
+    // A large graph drags on a shortcut cache key; the host moving a node mid-drag (and saying so) is still picked up.
+    grapher::Schema s;
+    s.nodeTypes.push_back({"box", "Box"});
+    grapher::EdgeType line{"line", "line"};
+    line.color = {1, 2, 3};
+    line.arrow = false;
+    s.edgeTypes.push_back(line);
+    grapher::Graph g;
+    for (int k = 0; k < 2100; ++k) g.nodes.push_back({"n" + std::to_string(k), "box", {k * 200.f, 0, 100, 60}});
+    for (int k = 0; k + 1 < 2100; ++k) g.edges.push_back({"e" + std::to_string(k), "n" + std::to_string(k), "n" + std::to_string(k + 1), "line"});
+    grapher::Canvas c(g, s);
+    c.SetViewport({800, 600});
+    (void)c.Draw();
+    const grapher::Vec2 grab = c.ScreenRectOf("n0").Center();
+    c.PointerDown(grab, grapher::Button::Left, {});
+    c.PointerMove(grab + grapher::Vec2{10, 10});
+    (void)c.Draw();
+    c.PointerMove(grab + grapher::Vec2{20, 20});
+    (void)c.Draw();   // the drag runs on the shortcut key now
+
+    g.nodes[1000].frame.y += 300.f;   // the host moves a node the drag doesn't touch, and says so
+    c.GraphChanged();
+    c.camera.pan = {400.f - 1000 * 200.f, 0.f};   // n999 and n1000 in view
+    const grapher::Rect moved{g.nodes[1000].frame.x + c.camera.pan.x, g.nodes[1000].frame.y + c.camera.pan.y, 100, 60};
+    bool followed = false;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* p = std::get_if<grapher::Polyline>(&cmd); p && p->color == line.color && moved.Inflated(1.f).Contains(p->points.back())) followed = true;
+    CHECK(followed);   // the wire into it ends on its new frame
+    c.PointerUp(grab + grapher::Vec2{20, 20}, grapher::Button::Left);
+}
 } // namespace
 
 int main()
@@ -1899,6 +1931,7 @@ int main()
     TestHighlights();
     TestMinimapAndSearch();
     TestLiftWires();
+    TestHostChangesMidDrag();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

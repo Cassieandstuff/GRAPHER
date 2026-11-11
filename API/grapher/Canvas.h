@@ -224,6 +224,9 @@ public:
 
     /// @brief The host applied (or refused) what the canvas proposed: show its graph again. A no-op in Direct mode.
     void Refresh();
+    /// @brief The host changed the graph itself (an undo, a live update, another panel's edit), perhaps mid-gesture: the
+    ///        next frame checks every node and edge again instead of trusting that only the drag moved anything.
+    void GraphChanged() { dragKey_ = 0; }
     /// @return whether a proposal is showing (Propose mode, before Refresh)
     [[nodiscard]] bool Proposing() const { return graph_ != host_; }
     /// @brief Stop the gesture under way (Esc): a move or resize goes back where it started, a wire or box is dropped.
