@@ -128,8 +128,33 @@ struct RowKind {
     friend bool operator==(const RowKind&, const RowKind&) = default;
 };
 
+/// @brief How a kind of edge looks. An edge kind is named by an EdgeType id: the Schema keeps what it joins, the kit how
+///        it draws. Every field is optional, so a rule's patch sets only what it names.
+struct EdgeSpec {
+    /// @brief curve, straight, elbow. The route follows it, so rules never change it: only the kind says it.
+    std::optional<std::string> line;
+    std::optional<float>       width;      ///< pixels at zoom 1
+    std::optional<float>       widen;      ///< pixels added to the width (a state's emphasis, whatever the kind's width)
+    std::optional<bool>        dash, dotted, onTop;   ///< dotted wins over dash; onTop draws it over the nodes
+    std::optional<std::string> arrow;      ///< none, end, start, both
+    std::optional<float>       arrowSize;  ///< world units (9 by default, kept 5–12 px at that size)
+    std::optional<std::string> color;      ///< a colour expression
+    std::optional<bool>        pinColor;   ///< the colour of the type its Out port carries, when it has one (else `color`)
+    std::optional<float>       opacity;
+    std::optional<std::string> labelColor, labelFill;
+    std::optional<float>       labelScale;   ///< a label's size, in the canvas's font sizes
+    friend bool operator==(const EdgeSpec&, const EdgeSpec&) = default;
+};
+struct EdgeKind {
+    std::string id;   ///< an EdgeType id
+    EdgeSpec    spec;
+    friend bool operator==(const EdgeKind&, const EdgeKind&) = default;
+};
+
 /// @brief `kind? ([tag])* (:state)* (> part)?`, for example `box[class:Blend]:selected > header`; `*` or nothing = any kind.
-///        A part may be `pin:<pin kind>` or `row:<row kind>`, and then the rule's pin or row fields patch it.
+///        A part may be `pin:<pin kind>` or `row:<row kind>`, and then the rule's pin or row fields patch it; or
+///        `edge:<edge kind>`, whose kind, tags and states are then the edge's own (Edge::tags; selected, lit, merged,
+///        dimmed).
 struct Selector {
     std::string              kind;
     std::vector<std::string> tags;
@@ -148,14 +173,17 @@ enum KitState : std::uint32_t {
     StateInGroup   = 1u << 5,
     StateWired     = 1u << 6,   ///< a pin a wire uses
     StateUnwired   = 1u << 7,   ///< a pin none does
+    StateLit       = 1u << 8,   ///< an edge touching the selection (Style::highlightSelectedWires)
+    StateMerged    = 1u << 9,   ///< an edge standing for several that join a closed group
 };
 
-/// @brief Patch the selected part with what `patch` sets (`pin` and `row` for a `pin:` or `row:` part).
+/// @brief Patch the selected part with what `patch` sets (`pin`, `row` and `edge` for a `pin:`, `row:` or `edge:` part).
 struct Rule {
     Selector select;
     PartSpec patch;
     PinSpec  pin;
     RowSpec  row;
+    EdgeSpec edge;
     friend bool operator==(const Rule&, const Rule&) = default;
 };
 
@@ -166,13 +194,15 @@ struct Kit {
     std::vector<NodeKind>                           nodes;
     std::vector<PinKind>                            pins;
     std::vector<RowKind>                            rows;
+    std::vector<EdgeKind>                           edges;
     std::vector<Rule>                               rules;     ///< in file order; specificity orders them when applied
-    /// @brief Sections later milestones read (groups, edges, actions), kept as the JSON text they came in.
+    /// @brief Sections a later milestone reads (actions), kept as the JSON text they came in.
     std::map<std::string, std::string, std::less<>> reserved;
     /// @brief Bump after changing the kit in place, so a canvas drops what it resolved. PutNodeKind bumps it.
     std::uint64_t                                   revision = 0;
 
     [[nodiscard]] const NodeKind* FindNode(std::string_view id) const;
+    [[nodiscard]] const EdgeKind* FindEdge(std::string_view id) const;
     /// @brief Add a node kind, or replace the one with its id (a kind defined at runtime from data); bumps `revision`.
     void PutNodeKind(NodeKind kind);
     friend bool operator==(const Kit&, const Kit&) = default;
@@ -223,6 +253,18 @@ struct RowLook {
     std::map<std::string, std::string, std::less<>> on;
 };
 
+/// @brief An edge kind as resolved for one edge (its type, tags and state).
+struct EdgeLook {
+    EdgeLine line = EdgeLine::Curve;
+    Color    color{140, 145, 155};
+    bool     pinColor = false;
+    float    width = 1.5f, opacity = 1.f, arrowSize = 9.f;
+    bool     dash = false, dotted = false, onTop = false;
+    int      arrow = 1;   ///< bits: 1 at the target end, 2 at the source end
+    Color    labelColor{154, 158, 166}, labelFill{29, 30, 34};
+    float    labelScale = 0.9f;
+};
+
 /// @brief A part of a resolved look.
 struct LookPart {
     PartKind              kind = PartKind::Body;
@@ -254,6 +296,9 @@ struct NodeLook {
 ///        rules in application order: see Canvas). `base` is the geometry the kit's metrics refine.
 [[nodiscard]] NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std::string>& tags, std::uint32_t states,
                                    const CardMetrics& base);
+
+/// @brief Resolve the look of an edge of `type` with `tags` in `states`, under `kit` (its rules in application order).
+[[nodiscard]] EdgeLook ResolveEdgeLook(const Kit& kit, const EdgeType& type, const std::vector<std::string>& tags, std::uint32_t states);
 
 /// @brief `over` laid on `under`: its tokens, fonts and metrics win, its kinds replace theirs by id, its rules follow.
 [[nodiscard]] Kit MergeKits(const Kit& under, const Kit& over);

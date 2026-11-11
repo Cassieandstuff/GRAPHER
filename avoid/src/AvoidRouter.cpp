@@ -242,8 +242,7 @@ WirePaths AvoidRouter::Route(const Graph& graph, const Schema& schema, const Rou
 
     // Connectors: add the new, retype the changed, follow the group ends that moved.
     for (const auto& [id, e] : wanted) {
-        const EdgeType*   t    = schema.FindEdge(e->type);
-        const EdgeLine    line = t ? t->line : EdgeLine::Curve;
+        const EdgeLine    line = o.LineFor(e->type, schema);
         const std::string ends[2]  = {e->from, e->to};
         const std::string ports[2] = {e->fromPort, e->toPort};
         Avoid::Point      at[2];

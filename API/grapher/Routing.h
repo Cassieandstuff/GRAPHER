@@ -39,7 +39,17 @@ struct RoutingOptions {
     /// @brief With a side memory (RouteWires' `sides`): a wire's end keeps the side it had until the other end has moved
     ///        this far (world units) past where it would turn, so a drag along the middle doesn't flicker.
     float sideHysteresis = 24.f;
+    /// @brief An edge type's line where a kit's edge kind says otherwise than the Schema.
+    std::map<std::string, EdgeLine, std::less<>> lines;
     friend bool operator==(const RoutingOptions&, const RoutingOptions&) = default;
+
+    /// @return how an edge of type `type` runs: the kit's line, else the Schema's, else a curve
+    [[nodiscard]] EdgeLine LineFor(std::string_view type, const Schema& schema) const
+    {
+        if (const auto it = lines.find(type); it != lines.end()) return it->second;
+        const EdgeType* t = schema.FindEdge(type);
+        return t ? t->line : EdgeLine::Curve;
+    }
 
     [[nodiscard]] const CardMetrics& CardFor(const Node& node) const
     {

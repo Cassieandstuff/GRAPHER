@@ -264,9 +264,17 @@ void Canvas::EnsureKit() const
     kitStyle_     = style;
     ++kitGen_;
     looks_.clear();
+    edgeLooks_.clear();
     kitCards_.clear();
+    kitLines_.clear();
     fitWidth_.clear();
-    if (!kit_) return;   // the Schema's own kit: every card has the Style's geometry, and none fits its width
+    if (!kit_) return;
+    for (const EdgeKind& k : kit_->edges) {
+        static const EdgeType kNoType{};
+        const EdgeType* t = schema_->FindEdge(k.id);
+        if (const EdgeLine line = ResolveEdgeLook(effective_, t ? *t : kNoType, {}, 0).line; line != (t ? t->line : EdgeLine::Curve))
+            kitLines_.emplace(k.id, line);
+    }   // the Schema's own kit: every card has the Style's geometry, and none fits its width
     const CardMetrics base = MetricsOf(style);
     for (const NodeKind& k : effective_.nodes) {
         const NodeType*      t = schema_->FindNode(k.id);
@@ -292,6 +300,23 @@ const NodeLook& Canvas::LookOf(const Node& n, std::uint32_t states) const
     if (const auto it = looks_.find(std::string_view(key)); it != looks_.end()) return it->second;
     ++resolved_;
     return looks_.emplace(key, ResolveLook(effective_, TypeOf(n), n.tags, states, MetricsOf(style))).first->second;
+}
+
+const EdgeLook& Canvas::EdgeLookOf(const Edge& e, std::uint32_t states) const
+{
+    EnsureKit();
+    std::string key = e.type;
+    key += '\x1f';
+    for (const std::string& tag : e.tags) {
+        key += tag;
+        key += '\x1e';
+    }
+    key += '\x1f';
+    key.append(reinterpret_cast<const char*>(&states), sizeof states);
+    if (const auto it = edgeLooks_.find(std::string_view(key)); it != edgeLooks_.end()) return it->second;
+    static const EdgeType kPlain{};
+    const EdgeType* t = schema_->FindEdge(e.type);
+    return edgeLooks_.emplace(std::move(key), ResolveEdgeLook(effective_, t ? *t : kPlain, e.tags, states)).first->second;
 }
 
 CardMetrics Canvas::MetricsFor(const Node& n) const
@@ -1564,6 +1589,7 @@ void Canvas::Sync() const
     EnsureKit();
     o.card  = MetricsOf(style);
     o.cards = kitCards_;
+    o.lines = kitLines_;
 
     std::size_t optionsKey = Mix(reinterpret_cast<std::uintptr_t>(router.get()),
                                  (o.avoidNodes ? 1u : 0u) | (o.spreadPorts ? 2u : 0u));
@@ -1597,8 +1623,7 @@ void Canvas::Sync() const
         }
         for (const Edge& e : graph_->edges) {
             for (const std::string* s : {&e.id, &e.from, &e.to, &e.type, &e.fromPort, &e.toPort}) key = Mix(key, hs(*s));
-            const EdgeType* t = schema_->FindEdge(e.type);
-            key = Mix(key, t ? static_cast<std::size_t>(t->line) + 1 : 0);
+            key = Mix(key, static_cast<std::size_t>(o.LineFor(e.type, *schema_)) + 1);
         }
     }
     if (local) {
@@ -2392,7 +2417,6 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
 
     // Edges, under the nodes; their labels go on top of everything, so a short edge between two cards still reads.
     std::vector<DrawCmd> labels, topWires;
-    const float      arrow = std::clamp(9.f * z, 5.f, 12.f);
     const Rect screenArea{-20.f, -20.f, viewport.x + 40.f, viewport.y + 40.f};
     for (std::size_t i = 0; i < Shown().edges.size(); ++i) {
         const Edge& e = Shown().edges[i];
@@ -2401,29 +2425,37 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         if (const Node* a = NodeById(Shown().edges[i].from), *b = NodeById(Shown().edges[i].to); (a && !Visible(*a)) || (b && !Visible(*b)))
             continue;   // an end shows only with what it belongs to
         const std::vector<Vec2>& wire = *paths_[i];
-        static const EdgeType kPlain{};
-        const EdgeType* t     = schema_->FindEdge(e.type);
-        const EdgeType& type  = t ? *t : kPlain;
         const bool      sel   = chrome && e.id == selEdge_;
-        Color wireColor = type.color;
-        if (type.portColor && !e.fromPort.empty())
-            if (const Node* from = NodeById(e.from))
-                if (const PortType* pt = schema_->FindPortType(PortTypeOf(*graph_, *schema_, *from, e.fromPort))) wireColor = pt->color;
         const bool      near  = chrome && s.highlightSelectedWires && (selNodes_.contains(e.from) || selNodes_.contains(e.to));
-        const Color     color = sel || near ? s.selection : wireColor;
+        // Its look: its kind's, patched by the rules its tags and state match (selected, lit, merged, dimmed).
+        const EdgeLook& look  = EdgeLookOf(e, (sel ? StateSelected : 0u) | (near ? StateLit : 0u) | (dashed_[i] ? StateMerged : 0u) |
+                                                  (highlights.dimmed.contains(e.id) ? StateDimmed : 0u));
+        Color color = look.color;
+        if (look.pinColor && !e.fromPort.empty())
+            if (const Node* from = NodeById(e.from))
+                if (const PortType* pt = schema_->FindPortType(PortTypeOf(*graph_, *schema_, *from, e.fromPort))) {
+                    color = pt->color;
+                    if (look.opacity < 1.f) color.a = static_cast<std::uint8_t>(std::lround(color.a * std::clamp(look.opacity, 0.f, 1.f)));
+                }
         const auto      path  = ToScreen(cam, wire);
-        std::vector<DrawCmd>& into = type.onTop ? topWires : c;   // a wire on top draws over the nodes
+        std::vector<DrawCmd>& into = look.onTop ? topWires : c;   // a wire on top draws over the nodes
         if (const float v = glowOf(wireGlow, e.id); v > 0.f)
-            into.push_back(Polyline{path, Color{s.glow.r, s.glow.g, s.glow.b, static_cast<std::uint8_t>(60 + 120 * v)}, type.width + 2.f + 6.f * v});
-        into.push_back(Polyline{path, color, sel ? type.width + 1.f : (near ? type.width + 0.7f : type.width), !type.dotted && (type.dashed || dashed_[i]),
-                               type.dotted});
-        if (type.arrow) into.push_back(Arrowhead(path, arrow, color));
+            into.push_back(Polyline{path, Color{s.glow.r, s.glow.g, s.glow.b, static_cast<std::uint8_t>(60 + 120 * v)},
+                                    EdgeLookOf(e).width + 2.f + 6.f * v});
+        into.push_back(Polyline{path, color, look.width, !look.dotted && look.dash, look.dotted});
+        if (look.arrow != 0) {
+            const float size  = look.arrowSize;
+            const float arrow = std::clamp(size * z, size * 5.f / 9.f, size * 12.f / 9.f);
+            if (look.arrow & 1) into.push_back(Arrowhead(path, arrow, color));
+            if (look.arrow & 2) into.push_back(Arrowhead(std::vector<Vec2>(path.rbegin(), path.rend()), arrow, color));
+        }
         if (!e.label.empty() && s.fontSize * z >= 6.f) {
             const Vec2  mid = Midpoint(path);
-            const float fs  = s.fontSize * z * 0.9f;
+            const float fs  = s.fontSize * z * look.labelScale;
             const float w   = std::max(40.f, fs * 0.55f * static_cast<float>(e.label.size()) + 8.f);
-            labels.push_back(FillRect{{mid.x - w * 0.5f, mid.y - fs * 0.8f, w, fs * 1.6f}, s.background, {}, 0.f, 3.f});
-            labels.push_back(Text{{mid.x - w * 0.5f, mid.y - fs * 0.8f, w, fs * 1.6f}, e.label, fs, s.muted, false, false, false, Align::Center});
+            labels.push_back(FillRect{{mid.x - w * 0.5f, mid.y - fs * 0.8f, w, fs * 1.6f}, look.labelFill, {}, 0.f, 3.f});
+            labels.push_back(Text{{mid.x - w * 0.5f, mid.y - fs * 0.8f, w, fs * 1.6f}, e.label, fs, look.labelColor, false, false, false,
+                                  Align::Center});
         }
     }
 

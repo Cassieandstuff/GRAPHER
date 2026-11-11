@@ -150,6 +150,53 @@ void ApplyRow(const RowSpec& patch, RowSpec& to)
     for (const auto& [g, a] : patch.on) to.on[g] = a;
 }
 
+void ApplyEdge(const EdgeSpec& patch, EdgeSpec& to)
+{
+    auto set = [](const auto& from, auto& into) {
+        if (from) into = from;
+    };
+    // `line` is the kind's alone: the route follows it, and a rule must not reroute a wire by its state.
+    set(patch.width, to.width);
+    set(patch.widen, to.widen);
+    set(patch.dash, to.dash);
+    set(patch.dotted, to.dotted);
+    set(patch.onTop, to.onTop);
+    set(patch.arrow, to.arrow);
+    set(patch.arrowSize, to.arrowSize);
+    set(patch.color, to.color);
+    set(patch.pinColor, to.pinColor);
+    set(patch.opacity, to.opacity);
+    set(patch.labelColor, to.labelColor);
+    set(patch.labelFill, to.labelFill);
+    set(patch.labelScale, to.labelScale);
+}
+
+constexpr std::pair<std::string_view, EdgeLine> kEdgeLines[] = {{"curve", EdgeLine::Curve}, {"straight", EdgeLine::Straight}, {"elbow", EdgeLine::Elbow}};
+
+std::string_view LineName(EdgeLine l)
+{
+    for (const auto& [name, v] : kEdgeLines)
+        if (v == l) return name;
+    return "curve";
+}
+
+EdgeKind DefaultEdgeKind(const EdgeType& t)
+{
+    EdgeKind k;
+    k.id               = t.id;
+    k.spec.line        = std::string(LineName(t.line));
+    k.spec.width       = t.width;
+    k.spec.color       = t.color.ToHex();
+    if (t.dashed) k.spec.dash = true;
+    if (t.dotted) k.spec.dotted = true;
+    if (t.onTop) k.spec.onTop = true;
+    if (t.portColor) k.spec.pinColor = true;
+    k.spec.arrow      = t.arrow ? "end" : "none";
+    k.spec.labelColor = "$muted";
+    k.spec.labelFill  = "$background";
+    return k;
+}
+
 int AlignOf(const std::optional<std::string>& a, int fallback)
 {
     if (!a) return fallback;
@@ -337,7 +384,8 @@ std::optional<Selector> ParseSelector(std::string_view text)
             static constexpr std::pair<std::string_view, std::uint32_t> kStates[] = {
                 {"selected", StateSelected}, {"hovered", StateHovered}, {"dimmed", StateDimmed},
                 {"alias", StateAlias},       {"collapsed", StateCollapsed}, {"inGroup", StateInGroup},
-                {"wired", StateWired},       {"unwired", StateUnwired}};
+                {"wired", StateWired},       {"unwired", StateUnwired},     {"lit", StateLit},
+                {"merged", StateMerged}};
             const auto it = std::find_if(std::begin(kStates), std::end(kStates), [&](const auto& p) { return p.first == state; });
             if (it == std::end(kStates)) return std::nullopt;
             out.states |= it->second;
@@ -375,6 +423,27 @@ Kit KitFromSchema(const Schema& schema, const Style& style)
     selected.patch.stroke      = "$selection";
     selected.patch.strokeWidth = 2.f;
     kit.rules = {hovered, selected};
+    // Edges: each type as it draws; touching the selection, in its colour and a little wider; selected, wider still;
+    // standing for several that join a closed group, dashed.
+    std::vector<EdgeType> edgeTypes = schema.edgeTypes;
+    edgeTypes.insert(edgeTypes.begin(), EdgeType{});   // an unknown type
+    for (const EdgeType& t : edgeTypes) {
+        kit.edges.push_back(DefaultEdgeKind(t));
+        const std::string part = "edge:" + t.id;
+        Rule lit{Selector{{}, {}, StateLit, part}, {}};
+        lit.edge.color    = "$selection";
+        lit.edge.pinColor = false;
+        lit.edge.widen    = 0.7f;
+        Rule sel{Selector{{}, {}, StateSelected, part}, {}};
+        sel.edge.color    = "$selection";
+        sel.edge.pinColor = false;
+        sel.edge.widen    = 1.f;
+        Rule merged{Selector{{}, {}, StateMerged, part}, {}};
+        merged.edge.dash = true;
+        kit.rules.push_back(std::move(lit));
+        kit.rules.push_back(std::move(sel));
+        kit.rules.push_back(std::move(merged));
+    }
     for (const RowStyle& rs : schema.rowStyles) {
         RowKind k;
         k.id = rs.id;
@@ -418,6 +487,7 @@ Kit MergeKits(const Kit& under, const Kit& over)
     };
     merge(out.pins, over.pins);
     merge(out.rows, over.rows);
+    merge(out.edges, over.edges);
     out.rules.insert(out.rules.end(), over.rules.begin(), over.rules.end());
     for (const auto& [k, v] : over.reserved) out.reserved[k] = v;
     out.revision = under.revision + over.revision;
@@ -558,6 +628,52 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
         row.reorder    = spec.reorder.value_or(std::string());
         row.on         = spec.on;
     }
+    return look;
+}
+
+} // namespace grapher
+
+namespace grapher {
+
+const EdgeKind* Kit::FindEdge(std::string_view id) const
+{
+    const auto it = std::find_if(edges.begin(), edges.end(), [&](const EdgeKind& k) { return k.id == id; });
+    return it == edges.end() ? nullptr : &*it;
+}
+
+EdgeLook ResolveEdgeLook(const Kit& kit, const EdgeType& type, const std::vector<std::string>& tags, std::uint32_t states)
+{
+    const EdgeKind* kind = kit.FindEdge(type.id);
+    if (!kind) kind = kit.FindEdge("");
+    EdgeSpec        spec = kind ? kind->spec : DefaultEdgeKind(type).spec;
+    const std::string part = "edge:" + (kind ? kind->id : type.id);
+    std::vector<const Rule*> order;
+    for (const Rule& r : kit.rules)
+        if (r.select.part == part) order.push_back(&r);
+    std::stable_sort(order.begin(), order.end(), [](const Rule* a, const Rule* b) { return Specificity(a->select) < Specificity(b->select); });
+    for (const Rule* r : order)
+        if (Matches(r->select, type.id, tags, states)) ApplyEdge(r->edge, spec);
+    auto color = [&](const std::optional<std::string>& expr, Color fallback) {
+        if (!expr) return fallback;
+        return ResolveColor(*expr, type.color, kit).value_or(fallback);
+    };
+    EdgeLook look;
+    if (spec.line)
+        for (const auto& [name, v] : kEdgeLines)
+            if (name == *spec.line) look.line = v;
+    look.opacity    = spec.opacity.value_or(1.f);
+    look.color      = Faded(color(spec.color, type.color), look.opacity);
+    look.pinColor   = spec.pinColor.value_or(false);
+    look.width      = spec.width.value_or(1.5f) + spec.widen.value_or(0.f);
+    look.arrowSize  = spec.arrowSize.value_or(9.f);
+    look.dash       = spec.dash.value_or(false);
+    look.dotted     = spec.dotted.value_or(false);
+    look.onTop      = spec.onTop.value_or(false);
+    const std::string arrow = spec.arrow.value_or("end");
+    look.arrow      = arrow == "none" ? 0 : arrow == "start" ? 2 : arrow == "both" ? 3 : 1;
+    look.labelColor = Faded(color(spec.labelColor, look.labelColor), look.opacity);
+    look.labelFill  = color(spec.labelFill, look.labelFill);
+    look.labelScale = spec.labelScale.value_or(0.9f);
     return look;
 }
 

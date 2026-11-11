@@ -256,6 +256,9 @@ public:
     [[nodiscard]] const NodeLook& LookOf(const Node& node, std::uint32_t states = 0) const;
     /// @brief How many looks have been resolved since the canvas began (a statistic: a steady frame resolves none).
     [[nodiscard]] std::size_t ResolvedLooks() const { return resolved_; }
+    /// @return how edge `e` draws in `states` (StateSelected, StateLit, StateMerged, StateDimmed): its kit's edge kind with
+    ///         the rules on it, or the one its EdgeType makes. Resolved once per (type, tags, states) and kept.
+    [[nodiscard]] const EdgeLook& EdgeLookOf(const Edge& e, std::uint32_t states = 0) const;
     /// @brief The choices of a row whose kind edits it from a list the host keeps (a `reference` editor, or a `choice` row
     ///        with none of its own).
     std::function<std::vector<std::string>(const Node& node, const Row& row)> choicesFor;
@@ -587,6 +590,8 @@ private:
     mutable std::map<std::string, CardMetrics, std::less<>> kitCards_;   ///< node types whose geometry differs from the Style's
     mutable std::unordered_set<std::string> fitWidth_;   ///< node types whose cards fit their width
     mutable std::unordered_map<std::string, NodeLook, LookHash, std::equal_to<>> looks_;
+    mutable std::unordered_map<std::string, EdgeLook, LookHash, std::equal_to<>> edgeLooks_;
+    mutable std::map<std::string, EdgeLine, std::less<>> kitLines_;   ///< edge types a kit routes otherwise than the Schema
     mutable std::string          lookKey_;
     mutable std::size_t          resolved_ = 0;
 };
