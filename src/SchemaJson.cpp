@@ -288,6 +288,7 @@ std::expected<Schema, std::string> ParseSchema(std::string_view text)
         r.Enum(portTypes[k], "glyph", kGlyphs, t.glyph, where);
         r.Strings(portTypes[k], "bases", t.bases, where);
         r.Str(portTypes[k], "edge", t.edge, where);
+        r.Str(portTypes[k], "pin", t.pin, where);
         s.portTypes.push_back(std::move(t));
     }
     const json::Array& conversions = r.List(root, "conversions", "schema");
@@ -361,6 +362,7 @@ std::string WriteSchema(const Schema& s)
             Put(o, "glyph", t.glyph, def.glyph, std::string(NameOf(kGlyphs, t.glyph)));
             Put(o, "bases", t.bases, def.bases, Strings(t.bases));
             Put(o, "edge", t.edge, def.edge, t.edge);
+            Put(o, "pin", t.pin, def.pin, t.pin);
             a.emplace_back(std::move(o));
         }
         root.emplace_back("portTypes", std::move(a));

@@ -572,6 +572,8 @@ private:
     [[nodiscard]] const PinLook* PinLookIn(const NodeLook& look, const Node& n, const PortDef& def, bool wired) const;
     /// @return `n`'s look when the kit has pin kinds, else nullptr: what PinLookIn needs, looked up once per node
     [[nodiscard]] const NodeLook* PinTableOf(const Node& n) const;
+    /// @return the pin kind a port type draws as (its PortType::pin, else the kind its id finds); nullptr for none
+    [[nodiscard]] const std::string* PinKindOf(std::string_view portType) const;
     /// @return where a reordered row would go: its index in Node::rows, kept within its list
     [[nodiscard]] int ReorderTarget(const Node& n, std::string_view rowId, Vec2 at) const;
     Hit                          downHit_;     ///< what the press landed on
@@ -597,6 +599,7 @@ private:
     mutable std::unordered_map<std::string, NodeLook, LookHash, std::equal_to<>> looks_;
     mutable std::unordered_map<std::string, EdgeLook, LookHash, std::equal_to<>> edgeLooks_;
     mutable std::map<std::string, EdgeLine, std::less<>> kitLines_;   ///< edge types a kit routes otherwise than the Schema
+    mutable std::map<std::string, std::string, std::less<>> pinKinds_;   ///< port type -> the pin kind it draws as
     mutable std::string          lookKey_;
     mutable std::size_t          resolved_ = 0;
 };

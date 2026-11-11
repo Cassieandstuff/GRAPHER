@@ -1,6 +1,7 @@
 // GRAPHER core tests: plain asserts, no framework (the TARGETER convention).
 #include <grapher/Grapher.h>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -2505,6 +2506,128 @@ void TestKitCache()
     CHECK(c.ResolvedLooks() > first);    // a changed kit resolves again
 }
 
+// K4a: kinds a host makes from data. A prefix kind stands for every type it starts; a port type names its pin kind; a
+// card's band is an expression (a palette slot a tag picks, a colour a rule pins); a wire takes its pin kind's colour.
+void TestKitPrefixAndPalette()
+{
+    // Selectors: a kind may hold `:`, its trailing states peel off, a prefix kind ends in `*`.
+    const auto a = grapher::ParseSelector("card:*[t]:hovered > pin:val:*");
+    CHECK((a && a->kind == "card:*" && a->tags == std::vector<std::string>{"t"} && a->states == grapher::StateHovered && a->part == "pin:val:*"));
+    const auto b = grapher::ParseSelector("card:Combat:selected:hovered");
+    CHECK((b && b->kind == "card:Combat" && b->states == (grapher::StateSelected | grapher::StateHovered)));
+    const auto c = grapher::ParseSelector(":selected");
+    CHECK((c && c->kind.empty() && c->states == grapher::StateSelected));
+    CHECK((grapher::ParseSelector("x:bogus")->kind == "x:bogus" && !grapher::ParseSelector("card:") && !grapher::ParseSelector("card::selected")));
+    CHECK((grapher::KindCovers("card:*", "card:Combat") && grapher::KindCovers("*", "x") && grapher::KindCovers("a", "a") &&
+           !grapher::KindCovers("card:*", "box:A") && !grapher::KindCovers("card:A", "card:AB")));
+
+    grapher::Schema s;
+    s.portTypes = {{"cls:A", "A", {1, 2, 3}}, {"cls:B", "B", {4, 5, 6}}, {"val:float", "float", {7, 8, 9}}, {"plain", "plain", {11, 12, 13}}};
+    s.portTypes[0].pin = s.portTypes[1].pin = "role:child";
+    auto card = [](std::string id, grapher::Color band) {
+        grapher::NodeType t{std::move(id), "Card", band};
+        t.fields = {{"name", "Name"}};
+        t.ports  = {{"p", "P", "cls:A", grapher::PortDir::Out, grapher::PortSide::Right},
+                    {"v", "V", "val:float", grapher::PortDir::In, grapher::PortSide::Left},
+                    {"q", "Q", "plain", grapher::PortDir::Out, grapher::PortSide::Right}};
+        return t;
+    };
+    s.nodeTypes = {card("card:Combat", {10, 20, 30}), card("card:Idle", {40, 50, 60}), card("card:Pinned", {70, 80, 90})};
+    s.edgeTypes = {{"wire:ref", "ref", {9, 9, 9}}, {"plainWire", "plain", {33, 33, 33}}};
+    s.edgeTypes[1].portColor = true;
+
+    const char* json = R"({
+        "palettes": {"groups": ["#ff0000", "#00ff00", "#0000ff"]},
+        "nodes": {
+            "card:*":      {"band": "palette(groups, tag:hue)", "fill": "darker(band, 200)", "stroke": "band"},
+            "card:Pinned": {"band": "#123456", "stroke": "band"}
+        },
+        "pins": {"role:child": {"glyph": "diamond", "color": "#ffaa00"}, "val:*": {"glyph": "square", "size": 5}},
+        "edges": {"wire:*": {"width": 4, "pinColor": true, "arrow": "none"}},
+        "rules": [
+            {"select": "card:*[pin:me]", "band": "#abcdef"},
+            {"select": "card:*:selected", "stroke": "#ffffff"},
+            {"select": "card:Combat:selected", "stroke": "#000000"}
+        ]
+    })";
+    std::string error;
+    const auto  parsed = grapher::ParseKit(json, error);
+    CHECK((parsed && error.empty()));
+    if (!parsed) return;
+    const grapher::Kit kit = *parsed;
+    // It writes back the same, and broken palettes or bands fail.
+    const auto back = grapher::ParseKit(grapher::WriteKit(kit), error);
+    CHECK((back && *back == kit && kit.palettes.at("groups").size() == 3 && kit.FindNode("card:Pinned")->card.band == "#123456"));
+    for (const char* bad : {R"({"palettes": {"p": ["#zz"]}})", R"({"palettes": {"p": "#fff"}})",
+                            R"({"nodes": {"x": {"band": "palette(nope, tag:hue)"}}})", R"({"nodes": {"x": {"band": "palette(p, hue)"}}})"}) {
+        error.clear();
+        CHECK((!grapher::ParseKit(bad, error) && !error.empty()));
+    }
+    // Finding kinds: the exact one, else the longest prefix.
+    CHECK((kit.FindNode("card:Pinned")->id == "card:Pinned" && kit.FindNode("card:Idle")->id == "card:*" && !kit.FindNode("box:A")));
+    CHECK((kit.FindPin("val:float")->id == "val:*" && kit.FindEdge("wire:ref")->id == "wire:*" && !kit.FindPin("cls:A")));
+    // Merged over the Schema's kit, the prefix kind replaces the per-type kinds it covers, and their rules.
+    const grapher::Kit merged = grapher::MergeKits(grapher::KitFromSchema(s, grapher::Style{}), kit);
+    CHECK((merged.FindNode("card:Combat")->id == "card:*" && merged.FindEdge("wire:ref")->id == "wire:*" &&
+           merged.FindEdge("plainWire")->id == "plainWire"));
+
+    grapher::Graph g;
+    auto node = [&](std::string id, std::string type, float x, std::vector<std::string> tags) {
+        g.nodes.push_back({std::move(id), std::move(type), {x, 0, 200, 120}});
+        g.nodes.back().fields = {{"name", g.nodes.back().id}};
+        g.nodes.back().tags   = std::move(tags);
+    };
+    node("n1", "card:Combat", 0, {"hue:1"});
+    node("n2", "card:Idle", 400, {"hue:4"});
+    node("n3", "card:Idle", 800, {"hue:2"});
+    node("n4", "card:Idle", 1200, {"hue:Combat"});
+    node("n5", "card:Combat", 1600, {"hue:Combat"});
+    node("n6", "card:Idle", 2000, {});
+    node("n7", "card:Pinned", 2400, {"hue:0"});
+    node("n8", "card:Idle", 2800, {"hue:0", "pin:me"});
+    g.edges.push_back({"w1", "n1", "n2", "wire:ref", "", "p", "v"});
+    g.edges.push_back({"w2", "n3", "n6", "plainWire", "", "q", "v"});
+    grapher::Canvas cv(g, s);
+    cv.SetKit(&kit);
+    cv.SetViewport({4000, 600});
+    cv.camera.zoom = 1.f;
+    cv.camera.pan = {20, 100};
+    auto look = [&](std::size_t i, std::uint32_t st = 0) -> const grapher::NodeLook& { return cv.LookOf(g.nodes[i], st); };
+    // The band: the palette entry the hue tag picks (a number modulo its length, else a stable hash of the text).
+    const grapher::Color red{255, 0, 0}, green{0, 255, 0}, blue{0, 0, 255};
+    CHECK((look(0).band == green && look(0).stroke == green && look(1).band == green && look(2).band == blue));
+    std::uint64_t h = 14695981039346656037ull;
+    for (const char ch : std::string("Combat")) h = (h ^ static_cast<unsigned char>(ch)) * 1099511628211ull;
+    const grapher::Color hashed = std::array{red, green, blue}[h % 3];
+    CHECK((look(3).band == hashed && look(4).band == hashed));
+    CHECK((look(5).band == grapher::Color{40, 50, 60}));    // no hue tag: the type's band
+    CHECK((look(6).band == grapher::Color{0x12, 0x34, 0x56} && look(6).stroke == look(6).band));   // the exact kind wins
+    CHECK((look(7).band == grapher::Color{0xab, 0xcd, 0xef}));   // a rule on a tag pins it
+    CHECK((look(0).fill == grapher::Color{0, 128, 0}));   // the kind's colours read that band
+    // Selected: an exact kind's rule over the prefix kind's, over the Schema's.
+    CHECK((look(0, grapher::StateSelected).stroke == grapher::Color{0, 0, 0} && look(1, grapher::StateSelected).stroke == grapher::Color{255, 255, 255}));
+    // Pins: a port type draws as the pin kind its `pin` names, else the one its id finds; with neither, none.
+    CHECK((look(0).pins.at("role:child")[0].glyph == grapher::PortGlyph::Diamond && look(0).pins.contains("val:*") && !look(0).pins.contains("plain")));
+    const auto list = cv.Draw();
+    const auto v1   = cv.PortScreenPos("n2", "v");
+    bool square = false, wire = false, plainWire = false;
+    for (const auto& cmd : list.cmds) {
+        if (const auto* f = std::get_if<grapher::FillRect>(&cmd); f && v1 && std::abs(f->rect.Center().x - v1->x) < 0.01f &&
+                                                                   std::abs(f->rect.w - 10.f) < 0.01f)
+            square = true;
+        if (const auto* p = std::get_if<grapher::Polyline>(&cmd)) {
+            wire      = wire || (p->width == 4.f && p->color == grapher::Color{255, 170, 0});   // its pin kind's colour
+            plainWire = plainWire || p->color == grapher::Color{11, 12, 13};   // no pin kind: the port type's
+        }
+    }
+    CHECK((square && wire && plainWire));
+    // The Schema's edge rules went with its kind: selected, the kit's wire is as the kit says.
+    CHECK((cv.EdgeLookOf(g.edges[0], grapher::StateSelected).width == 4.f));
+    // A port type's `pin` reads and writes in the Schema's JSON.
+    const auto again = grapher::ParseSchema(grapher::WriteSchema(s));
+    CHECK((again && again->portTypes[0].pin == "role:child" && again->portTypes[2].pin.empty()));
+}
+
 void TestLargeGraphKit()
 {
     // TestLargeGraph's 20,000 cards, with a kit: twelve kinds, forty rules, tags on every card; pin, row and edge kinds,
@@ -3147,6 +3270,7 @@ int main()
     TestKitEdges();
     TestKitGroups();
     TestKitPillsAndDial();
+    TestKitPrefixAndPalette();
     TestLargeGraphKit();
     TestFixedGroupAndHover();
     TestFrameGroupsUnchanged();
