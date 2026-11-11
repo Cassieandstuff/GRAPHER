@@ -85,6 +85,8 @@ struct Node {
     /// @brief Shown only while this node or one of these is selected (a card belonging to a busy hub); empty = always.
     std::vector<std::string> showWith;
     Dial                 dial;      ///< a NodeShape::Dial node's axis and needle
+    /// @brief What a kit's rules may select the node by (its class, its role…). Opaque to GRAPHER.
+    std::vector<std::string> tags;
 
     /// @return the row `id`, or nullptr
     [[nodiscard]] const Row* FindRow(std::string_view rowId) const;

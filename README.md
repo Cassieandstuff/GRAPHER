@@ -112,6 +112,7 @@ routes cached, a hit test ≤ 0.2 ms, a drag step ≤ 8 ms; panning and zooming 
 
 | `grapher/DrawList.h` | what a backend paints: rects, polylines, polygons, circles, text, in screen pixels |
 | `grapher/Style.h` | background, grid and card chrome |
+| `grapher/Kit.h` | kits: node kinds as part trees (header, body, accent, text lines), colour tokens and rules by selector (kind, `Node::tags`, state), as JSON (`ParseKit`, `WriteKit`); `Canvas::SetKit` draws with one, and with none draws exactly as before (`KitFromSchema`) |
 | `grapher/qt/CanvasWidget.h` | the Qt backend: `CanvasWidget` and `Paint(QPainter&, DrawList)` |
 
 Include only `<grapher/Grapher.h>` (plus a backend header).
