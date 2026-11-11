@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <bit>
+#include <array>
+#include <charconv>
 #include <chrono>
 #include <cmath>
+#include <numbers>
 #include <cstring>
 #include <cstdint>
 #include <functional>
@@ -48,6 +51,17 @@ std::string PortKey(std::string_view node, std::string_view port)
     k += '\x1f';
     k += port;
     return k;
+}
+
+constexpr float kHandleAt = 0.8f;   ///< a dial's handles sit this far out along its radius
+
+PortSide DockSideOf(PortSide s) { return s == PortSide::Auto ? PortSide::Bottom : s; }
+
+float Overlap(const Rect& a, const Rect& b)
+{
+    const float w = std::min(a.Right(), b.Right()) - std::max(a.x, b.x);
+    const float h = std::min(a.Bottom(), b.Bottom()) - std::max(a.y, b.y);
+    return w > 0.f && h > 0.f ? w * h : 0.f;
 }
 
 /// @brief A graph with more nodes than this drags by rerouting only the dragged nodes' wires.
@@ -357,6 +371,7 @@ MoveNodes Canvas::MovedFrames() const
     for (const Node& n : graph_->nodes) {
         if (const auto it = before.find(n.id); it != before.end() && !(*it->second == n.frame)) out.frames.emplace_back(n.id, n.frame);
         if (const auto it = parentBefore.find(n.id); it != parentBefore.end() && *it->second != n.parent) out.parents.emplace_back(n.id, n.parent);
+        if (const Node* h = host_->FindNode(n.id); h && !(h->dock == n.dock)) out.docks.emplace_back(n.id, n.dock);
     }
     return out;
 }
@@ -699,7 +714,7 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
     std::vector<const Node*> order, groups;
     for (std::size_t i = Shown().nodes.size(); i-- > 0;) {
         const Node& n = Shown().nodes[i];
-        if (!camera.ToScreen(n.frame).Inflated(reach).Contains(screen)) continue;
+        if (!camera.ToScreen(n.frame).Inflated(reach).Contains(screen) || !Visible(n)) continue;
         if (grouped_[i]) groups.push_back(&n);
         else order.push_back(&n);
     }
@@ -719,6 +734,15 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
         if (!r.Inflated(reach).Contains(screen)) continue;
         if (Hit h = onOutline(*n, r); h.kind != HitKind::None) return h;
         if (r.Contains(screen)) {
+            if (TypeOf(*n).shape == NodeShape::Dial) {
+                // A dial's handles sit inside its ring, one per row on it.
+                const Ring     ring = RingOf(n->frame);
+                const DialAxis axis = AxisOf(*n);
+                for (const Row& row : n->rows)
+                    if (!row.port.empty() && Distance(screen, camera.ToScreen(ring.At(axis.Angle(RowNumber(row)), kHandleAt))) <= pin)
+                        return {HitKind::Handle, n->id, {}, row.id};
+                return {HitKind::Node, n->id};
+            }
             if (ResizeGrip(r, style).Contains(screen)) return {HitKind::Resize, n->id};
             if (!n->rows.empty() && TypeOf(*n).shape == NodeShape::Card) {
                 const CardMetrics m   = MetricsOf(style);
@@ -859,15 +883,21 @@ void Canvas::BuildView() const
         if (member[i]) groups.push_back(i);
     }
     std::ranges::stable_sort(groups, std::greater<>{}, [&](std::size_t g) { return depth[g]; });
-    for (const std::size_t g : groups) {
-        Rect& f = view_.nodes[g].frame;
-        if (!kids[g].empty()) {
-            Rect u = view_.nodes[kids[g].front()].frame;
-            for (const std::size_t c : kids[g]) u = Rect::Union(u, view_.nodes[c].frame);
-            f = {u.x - style.groupPadding, u.y - style.groupHeader, u.w + 2 * style.groupPadding, u.h + style.groupHeader + style.groupPadding};
+    hasMembers_ = !groups.empty();
+    const auto fit = [&] {
+        for (const std::size_t g : groups) {
+            Rect& f = view_.nodes[g].frame;
+            if (!kids[g].empty()) {
+                Rect u = view_.nodes[kids[g].front()].frame;
+                for (const std::size_t c : kids[g]) u = Rect::Union(u, view_.nodes[c].frame);
+                f = {u.x - style.groupPadding, u.y - style.groupHeader, u.w + 2 * style.groupPadding, u.h + style.groupHeader + style.groupPadding};
+            }
+            if (collapsed_.contains(view_.nodes[g].id)) f.h = style.groupHeader;
         }
-        if (collapsed_.contains(view_.nodes[g].id)) f.h = style.groupHeader;
-    }
+    };
+    fit();
+    DockView(up);   // docked nodes take their places beside their parents, carrying what docked groups hold
+    if (hasDocks_) fit();
     // Wires into a closed group end on it; several that then join the same two ends draw as one, dashed.
     std::vector<Edge>               edges;
     std::vector<char>               dashed;
@@ -921,6 +951,263 @@ void Canvas::BuildView() const
         if (member[full] && !collapsed_.contains(view_.nodes[i].id)) fitOrder_.push_back(i);
     }
     std::ranges::stable_sort(fitOrder_, std::greater<>{}, [&](std::size_t g) { return shownDepth[g]; });
+}
+
+bool Canvas::Visible(const Node& n) const
+{
+    if (n.showWith.empty() || selNodes_.contains(n.id)) return true;
+    for (const std::string& id : n.showWith)
+        if (selNodes_.contains(id)) return true;
+    return false;
+}
+
+void Canvas::DockView(const std::vector<std::size_t>& up) const
+{
+    hasDocks_ = false;
+    const std::size_t n = view_.nodes.size();
+    std::unordered_map<std::string_view, std::size_t> at;
+    at.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) at.emplace(view_.nodes[i].id, i);
+    // A node being dragged is out of every list, so the others close up behind it.
+    std::unordered_set<std::string_view> dragged;
+    if (mode_ == Mode::Moving && started_)
+        for (const auto& [id, frame] : origin_) dragged.insert(id);
+
+    constexpr std::array kSides{PortSide::Bottom, PortSide::Top, PortSide::Right, PortSide::Left};
+    auto slot = [](PortSide s) { return s == PortSide::Bottom ? 0 : s == PortSide::Top ? 1 : s == PortSide::Right ? 2 : 3; };
+    std::unordered_map<std::size_t, std::array<std::vector<std::size_t>, 4>> onSide;
+    std::unordered_map<std::size_t, std::vector<std::size_t>>                beside;
+    std::vector<char>                                                        docked(n, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        const Dock& d = view_.nodes[i].dock;
+        if (d.parent.empty() || dragged.contains(view_.nodes[i].id)) continue;
+        const auto p = at.find(d.parent);
+        if (p == at.end() || p->second == i) continue;
+        const PortSide side = DockSideOf(d.side);
+        if (!d.row.empty() && (side == PortSide::Left || side == PortSide::Right)) beside[p->second].push_back(i);
+        else onSide[p->second][static_cast<std::size_t>(slot(side))].push_back(i);
+        docked[i] = 1;
+        hasDocks_ = true;
+    }
+    if (!hasDocks_) return;
+    auto byOrder = [&](std::vector<std::size_t>& v) {
+        std::ranges::stable_sort(v, {}, [&](std::size_t i) { return view_.nodes[i].dock.order; });
+    };
+    for (auto& [p, sides] : onSide)
+        for (auto& list : sides) byOrder(list);
+
+    // Each node's cluster (itself and what is docked to it, at any depth) relative to its own corner.
+    const CardMetrics           m = MetricsOf(style);
+    std::vector<Vec2>           offset(n);
+    std::vector<char>           visiting(n, 0);
+    std::function<Rect(std::size_t)> cluster = [&](std::size_t i) -> Rect {
+        visiting[i]   = 1;
+        const Rect& f = view_.nodes[i].frame;
+        const Rect  own{0, 0, f.w, f.h};
+        Rect        span = own;
+        if (const auto it = onSide.find(i); it != onSide.end())
+            for (const PortSide side : kSides) {
+                float along = side == PortSide::Bottom ? own.Bottom() + style.dockGap : side == PortSide::Top ? -style.dockGap : 0.f;
+                for (const std::size_t c : it->second[static_cast<std::size_t>(slot(side))]) {
+                    if (visiting[c]) continue;   // a dock cycle ends here
+                    const Rect r = cluster(c);
+                    Vec2       off;
+                    switch (side) {
+                    case PortSide::Bottom:
+                        if (view_.nodes[c].dock.flush) along -= style.dockGap;
+                        off = {0, along - r.y};
+                        along += r.h + style.dockGap;
+                        break;
+                    case PortSide::Top:
+                        off = {0, along - r.Bottom()};
+                        along -= r.h + style.dockGap;
+                        break;
+                    case PortSide::Right:
+                        off = {own.Right() + style.dockSideGap - r.x, along - r.y};
+                        along += r.h + style.dockGap;
+                        break;
+                    default:
+                        off = {own.x - style.dockSideGap - r.Right(), along - r.y};
+                        along += r.h + style.dockGap;
+                        break;
+                    }
+                    offset[c] = off;
+                    span      = Rect::Union(span, Rect{r.x + off.x, r.y + off.y, r.w, r.h});
+                }
+            }
+        // Beside a row: level with its line, further out for each one already there.
+        if (const auto it = beside.find(i); it != beside.end()) {
+            float right = own.Right() + style.dockSideGap, left = own.x - style.dockSideGap;
+            for (const std::size_t c : it->second) {
+                if (visiting[c]) continue;
+                const Rect  r      = cluster(c);
+                const Dock& d      = view_.nodes[c].dock;
+                float       middle = own.h * 0.5f;
+                for (std::size_t k = 0; k < view_.nodes[i].rows.size(); ++k)
+                    if (view_.nodes[i].rows[k].id == d.row) {
+                        const Rect line = RowRect(view_.nodes[i], *schema_, m, k);
+                        middle          = line.y - f.y + line.h * 0.5f;
+                    }
+                const float y = middle - view_.nodes[c].frame.h * 0.5f;
+                Vec2        off;
+                if (DockSideOf(d.side) == PortSide::Right) {
+                    off = {right - r.x, y};
+                    right += r.w + style.dockSideGap;
+                } else {
+                    off = {left - r.Right(), y};
+                    left -= r.w + style.dockSideGap;
+                }
+                offset[c] = off;
+                span      = Rect::Union(span, Rect{r.x + off.x, r.y + off.y, r.w, r.h});
+            }
+        }
+        visiting[i] = 0;
+        return span;
+    };
+
+    // What a docked member group holds moves with it.
+    std::vector<std::vector<std::size_t>> held(n);
+    for (std::size_t i = 0; i < n; ++i)
+        if (up[i] != static_cast<std::size_t>(-1)) held[up[i]].push_back(i);
+    std::function<void(std::size_t, Vec2)> shift = [&](std::size_t i, Vec2 d) {
+        view_.nodes[i].frame.x += d.x;
+        view_.nodes[i].frame.y += d.y;
+        for (const std::size_t k : held[i]) shift(k, d);
+    };
+    std::function<void(std::size_t)> place = [&](std::size_t i) {
+        visiting[i] = 1;
+        const Vec2 corner{view_.nodes[i].frame.x, view_.nodes[i].frame.y};
+        auto put = [&](std::size_t c) {
+            if (visiting[c]) return;
+            const Vec2 to = corner + offset[c];
+            shift(c, to - Vec2{view_.nodes[c].frame.x, view_.nodes[c].frame.y});
+            place(c);
+        };
+        if (const auto it = onSide.find(i); it != onSide.end())
+            for (const auto& list : it->second)
+                for (const std::size_t c : list) put(c);
+        if (const auto it = beside.find(i); it != beside.end())
+            for (const std::size_t c : it->second) put(c);
+        visiting[i] = 0;
+    };
+    for (std::size_t i = 0; i < n; ++i)
+        if (!docked[i] && (onSide.contains(i) || beside.contains(i))) {
+            cluster(i);
+            place(i);
+        }
+}
+
+std::optional<DockSlot> Canvas::FindDockSlot(std::string_view nodeId, const Rect& frame) const
+{
+    if (!docking) return std::nullopt;
+    const Node* child = graph_->FindNode(nodeId);
+    if (!child || frame.w <= 0.f || frame.h <= 0.f) return std::nullopt;
+    // A node docked (at any depth) under the child is no parent for it.
+    auto under = [&](const Node& p) {
+        const Node* at = &p;
+        for (std::size_t steps = 0; at && steps <= graph_->nodes.size(); ++steps) {
+            if (at->dock.parent.empty()) return false;
+            if (at->dock.parent == child->id) return true;
+            at = graph_->FindNode(at->dock.parent);
+        }
+        return at != nullptr;
+    };
+    std::vector<const Node*> parents;
+    if (canDock) {
+        for (const Node& p : graph_->nodes)
+            if (p.id != child->id && canDock(*child, p) && !under(p)) parents.push_back(&p);
+    } else {
+        for (const Edge& e : graph_->edges)
+            if (e.to == child->id && e.from != child->id)
+                if (const Node* p = graph_->FindNode(e.from); p && !under(*p) && std::ranges::find(parents, p) == parents.end()) parents.push_back(p);
+    }
+
+    std::optional<DockSlot> best;
+    float                   bestShare = 0.25f;   // the slot must take at least a quarter of it
+    for (const Node* p : parents) {
+        const Node* shown = ShownNode(p->id);
+        if (!shown) continue;
+        const Rect P = shown->frame;
+        if (!P.Inflated(std::max(frame.w, frame.h) * 2.f).Intersects(frame)) continue;
+        for (const PortSide side : {PortSide::Bottom, PortSide::Top, PortSide::Right, PortSide::Left}) {
+            std::vector<const Node*> list;
+            for (const Node& k : graph_->nodes)
+                if (k.id != child->id && k.dock.parent == p->id && k.dock.row.empty() && DockSideOf(k.dock.side) == side) list.push_back(&k);
+            std::ranges::stable_sort(list, {}, [](const Node* k) { return k->dock.order; });
+            float along = 0.f;
+            for (std::size_t k = 0; k <= list.size(); ++k) {
+                Rect slot;
+                switch (side) {
+                case PortSide::Bottom: slot = {P.x, P.Bottom() + style.dockGap + along, frame.w, frame.h}; break;
+                case PortSide::Top: slot = {P.x, P.y - style.dockGap - along - frame.h, frame.w, frame.h}; break;
+                case PortSide::Right: slot = {P.Right() + style.dockSideGap, P.y + along, frame.w, frame.h}; break;
+                default: slot = {P.x - style.dockSideGap - frame.w, P.y + along, frame.w, frame.h}; break;
+                }
+                if (const float share = Overlap(slot, frame) / (frame.w * frame.h); share > bestShare) {
+                    bestShare = share;
+                    best      = DockSlot{p->id, side, static_cast<int>(k), slot};
+                }
+                if (k < list.size()) {
+                    const Node* ks = ShownNode(list[k]->id);
+                    along += (ks ? ks->frame.h : list[k]->frame.h) + style.dockGap;
+                }
+            }
+        }
+    }
+    return best;
+}
+
+void Canvas::DrawDial(std::vector<DrawCmd>& c, const Node& n, const NodeType& t, const Camera& cam, bool sel, bool hov) const
+{
+    constexpr double kPi = std::numbers::pi;
+    const Style&     s   = style;
+    const float      z   = cam.zoom;
+    const Ring       ring = RingOf(n.frame);
+    const DialAxis   axis = AxisOf(n);
+    const Vec2       o    = cam.ToScreen(ring.center);
+    const float      R    = ring.radius * z;
+    const float      fs   = s.fontSize * z;
+    auto dir = [](double a) { return Vec2{static_cast<float>(std::sin(a)), static_cast<float>(-std::cos(a))}; };
+
+    const Rect r = cam.ToScreen(n.frame);
+    c.push_back(FillRect{r, s.nodeFill, sel ? s.selection : (hov ? s.muted : s.nodeStroke), sel ? 2.f : 1.f, s.corner * z});
+    // The ring: whole when cyclic, else a 270° arc open at the bottom.
+    const double      a0 = axis.cyclic ? 0.0 : -0.75 * kPi, a1 = axis.cyclic ? 2 * kPi : 0.75 * kPi;
+    std::vector<Vec2> arc;
+    for (int k = 0; k <= 64; ++k) arc.push_back(o + dir(a0 + (a1 - a0) * k / 64.0) * R);
+    c.push_back(Polyline{std::move(arc), t.band, std::max(1.5f, 3.f * z)});
+    const std::string& named = t.titleField.empty() ? std::string{} : n.Field(t.titleField);
+    c.push_back(Text{{r.x + s.padding * z, r.y + s.padding * 0.3f * z, r.w - 2 * s.padding * z, s.titleSize * z * 1.3f},
+                     named.empty() ? t.label : named, s.titleSize * z, s.text, true, false, false, Align::Center});
+    // The needle, and what it reads.
+    const Vec2 tip = o + dir(axis.Angle(n.dial.value)) * (R * 0.7f);
+    c.push_back(Polyline{{o, tip}, s.text, 2.f});
+    c.push_back(Circle{o, std::max(2.f, 3.f * z), s.text, s.text, 0.f});
+    char       buf[32];
+    const auto end = std::to_chars(buf, buf + sizeof buf, n.dial.value).ptr;
+    c.push_back(Text{{o.x - R, o.y + R * 0.2f, 2 * R, fs * 1.3f}, n.dial.label + "  " + std::string(buf, end), fs, s.muted, false,
+                     false, false, Align::Center});
+    // Each row on the ring: a handle inside it (following a drag), its label outside.
+    const Color gold{220, 180, 60};
+    for (const Row& row : n.rows) {
+        if (row.port.empty()) continue;
+        const bool  dragging = mode_ == Mode::DialDrag && active_ == n.id && pressRow_ == row.id;
+        const float v        = dragging ? dialValue_ : RowNumber(row);
+        const auto  a        = axis.Angle(v);
+        const Vec2  h        = o + dir(a) * (R * kHandleAt);
+        const float d        = std::clamp(5.f * z, 3.f, 7.f);
+        c.push_back(Polygon{{{h.x, h.y - d}, {h.x + d, h.y}, {h.x, h.y + d}, {h.x - d, h.y}}, gold});
+        const Vec2  l = o + dir(a) * (R * 1.32f);
+        const float w = 110.f * z;
+        std::string text = row.label;
+        if (dragging) {
+            const auto e = std::to_chars(buf, buf + sizeof buf, v).ptr;
+            text += " " + std::string(buf, e);
+        } else if (!row.value.empty()) {
+            text += " " + row.value;
+        }
+        c.push_back(Text{{l.x - w * 0.5f, l.y - fs * 0.65f, w, fs * 1.3f}, text, fs * 0.9f, s.text, false, false, false, Align::Center});
+    }
 }
 
 void Canvas::FitView() const
@@ -992,7 +1279,8 @@ void Canvas::Sync() const
                 if (it == index_.end() || !real) rebuilt = true;
                 else view_.nodes[it->second].frame = real->frame;
             }
-            if (rebuilt) BuildView();   // a closed group moved with what it holds: start over
+            rebuilt = rebuilt || hasDocks_;   // docked nodes close up behind a dragged one: lay the view out again
+            if (rebuilt) BuildView();   // or a closed group moved with what it holds: start over
             else FitView();
             if (!rebuilt)
                 for (const auto& [id, frame] : origin_)
@@ -1011,7 +1299,7 @@ void Canvas::Sync() const
             }
         for (const Node& n : shown.nodes)
             if (joined.contains(n.id)) sub.nodes.push_back(n);
-        for (auto& [id, path] : RouteWires(sub, *schema_, o)) wires_[id] = std::move(path);
+        for (auto& [id, path] : RouteWires(sub, *schema_, o, &sides_)) wires_[id] = std::move(path);
         if (!rebuilt && paths_.size() == shown.edges.size()) {
             // A drag changes no node or edge, only frames: the tables keep their shape, and only the touched wires'
             // paths and bounds change.
@@ -1024,7 +1312,8 @@ void Canvas::Sync() const
     } else {
         useView_ = false;
         for (const Node& n : graph_->nodes)
-            if (const auto t = types.find(n.type); t != types.end() && t->second->groupMode == GroupMode::Members && t->second->shape == NodeShape::Group) {
+            if (const auto t = types.find(n.type);
+                !n.dock.parent.empty() || (t != types.end() && t->second->groupMode == GroupMode::Members && t->second->shape == NodeShape::Group)) {
                 useView_ = true;
                 break;
             }
@@ -1052,7 +1341,7 @@ void Canvas::Sync() const
                 else if (live != quick.end()) wires_.emplace(e.id, live->second);
             }
         } else {
-            wires_ = RouteWires(shown, *schema_, o);
+            wires_ = RouteWires(shown, *schema_, o, &sides_);
             if (!plain) routeMs_ = elapsed();
         }
     }
@@ -1120,6 +1409,14 @@ bool Canvas::PointerDown(Vec2 at, Button button, Modifiers mods)
 
     const Hit hit = HitTest(at);
     switch (hit.kind) {
+    case HitKind::Handle:
+        if (!selNodes_.contains(hit.id)) SelectNodes({hit.id});
+        mode_     = Mode::DialDrag;
+        active_   = hit.id;
+        pressRow_ = hit.row;
+        if (const Node* n = ShownNode(hit.id))
+            if (const Row* r = n->FindRow(hit.row)) dialValue_ = RowNumber(*r);
+        return true;
     case HitKind::Connect:
     case HitKind::Port:
         mode_       = Mode::Connecting;
@@ -1198,7 +1495,11 @@ void Canvas::StartMove()
             for (std::string& m : GroupMembers(*graph_, *schema_, n.id))
                 if (!selNodes_.contains(m)) carried_.insert(std::move(m));
     for (const Node& n : graph_->nodes)
-        if (selNodes_.contains(n.id) || carried_.contains(n.id)) origin_.emplace_back(n.id, n.frame);
+        if (selNodes_.contains(n.id) || carried_.contains(n.id)) {
+            // A docked node moves from where it is drawn, not from the frame it had before it docked.
+            const Node* shown = n.dock.parent.empty() ? nullptr : ShownNode(n.id);
+            origin_.emplace_back(n.id, shown ? shown->frame : n.frame);
+        }
     // The member groups a drop may join, as they are now: a group grows with a member dragged inside it.
     Sync();
     dropTargets_.clear();
@@ -1206,9 +1507,10 @@ void Canvas::StartMove()
         if (IsMemberGroup(n, *schema_) && !selNodes_.contains(n.id) && !carried_.contains(n.id)) dropTargets_.emplace_back(n.id, n.frame);
 }
 
-bool Canvas::PointerMove(Vec2 at)
+bool Canvas::PointerMove(Vec2 at, Modifiers mods)
 {
-    pointer_ = at;
+    pointer_  = at;
+    snapDial_ = mods.shift;
     if (mode_ != Mode::Idle && !started_) {
         if (Distance(at, downAt_) < kDragThreshold) return false;
         started_ = true;
@@ -1264,6 +1566,14 @@ bool Canvas::PointerMove(Vec2 at)
         }
         return true;
     }
+    case Mode::DialDrag:
+        if (const Node* n = ShownNode(active_)) {
+            const Ring  ring = RingOf(n->frame);
+            const Vec2  d    = camera.ToWorld(at) - ring.center;
+            const float v    = AxisOf(*n).Value(std::atan2(d.x, -d.y));
+            dialValue_       = snapDial_ ? AxisOf(*n).Snap(v) : v;
+        }
+        return true;
     case Mode::Panning:
         camera.pan = panAtDown_ + (at - downAt_);
         return true;
@@ -1275,11 +1585,27 @@ bool Canvas::PointerMove(Vec2 at)
 
 bool Canvas::PointerUp(Vec2 at, Button)
 {
-    PointerMove(at);
+    PointerMove(at, Modifiers{snapDial_, false, false});   // the last move keeps the snap the drag had
     const Mode mode = mode_;
     mode_           = Mode::Idle;
 
     switch (mode) {
+    case Mode::DialDrag: {
+        if (!started_) return false;
+        const Node* n = graph_->FindNode(active_);
+        const Row*  r = n ? n->FindRow(pressRow_) : nullptr;
+        if (!r) return true;
+        char       buf[32];
+        const auto end = std::to_chars(buf, buf + sizeof buf, dialValue_).ptr;
+        SetValue   set{active_, pressRow_, r->field, std::string(buf, end)};
+        Before("Set " + (r->field.empty() ? r->label : r->field));
+        Node* m = graph_->FindNode(active_);
+        if (!set.field.empty()) m->fields[set.field] = set.value;
+        for (Row& row : m->rows)
+            if (row.id == pressRow_) row.value = set.value;
+        Changed(Intent{"Set " + (set.field.empty() ? set.row : set.field), std::move(set)});
+        return true;
+    }
     case Mode::RowPress:
         if (const Node* n = graph_->FindNode(active_))
             if (const Row* r = n->FindRow(pressRow_)) rowClick_ = RowClick{active_, pressRow_, r->action, at};
@@ -1296,7 +1622,27 @@ bool Canvas::PointerUp(Vec2 at, Button)
                 if (const Node* n = graph_->FindNode(id); n && IsGroup(*n, *schema_))
                     for (const std::string& m : GroupMembers(*graph_, *schema_, id)) roots.erase(m);
             Settle(roots, moving);
-            if (useView_) {
+            if (docking && roots.size() == 1) {
+                // One node let go over a slot docks there, the slots after it moving out; let go anywhere else, a
+                // docked node undocks where it is.
+                Node* n = graph_->FindNode(*roots.begin());
+                if (const auto slot = n ? FindDockSlot(n->id, n->frame) : std::nullopt) {
+                    // The side's list, renumbered from nearest, with the node in its slot.
+                    std::vector<Node*> list;
+                    for (Node& s : graph_->nodes)
+                        if (s.id != n->id && s.dock.parent == slot->parent && s.dock.row.empty() && DockSideOf(s.dock.side) == slot->side)
+                            list.push_back(&s);
+                    std::ranges::stable_sort(list, {}, [](const Node* s) { return s->dock.order; });
+                    n->dock = Dock{slot->parent, slot->side, slot->index};
+                    list.insert(list.begin() + std::min<std::ptrdiff_t>(slot->index, std::ssize(list)), n);
+                    for (std::size_t k = 0; k < list.size(); ++k) list[k]->dock.order = static_cast<int>(k);
+                    n->frame.x = slot->at.x;
+                    n->frame.y = slot->at.y;
+                } else if (n && !n->dock.parent.empty()) {
+                    n->dock = {};
+                }
+            }
+            if (hasMembers_) {
                 // Dropped on a member group, a node joins the innermost one under the pointer; dropped on none, it
                 // leaves its own.
                 const Vec2                                 w      = camera.ToWorld(at);
@@ -1457,6 +1803,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
     for (std::size_t i = 0; i < Shown().edges.size(); ++i) {
         const Edge& e = Shown().edges[i];
         if (!paths_[i] || !cam.ToScreen(boxes_[i]).Intersects(screenArea)) continue;   // off screen
+        if (const Node* a = NodeById(Shown().edges[i].from), *b = NodeById(Shown().edges[i].to); (a && !Visible(*a)) || (b && !Visible(*b)))
+            continue;   // an end shows only with what it belongs to
         const std::vector<Vec2>& wire = *paths_[i];
         static const EdgeType kPlain{};
         const EdgeType* t     = schema_->FindEdge(e.type);
@@ -1468,7 +1816,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                 if (const PortType* pt = schema_->FindPortType(PortTypeOf(*graph_, *schema_, *from, e.fromPort))) wireColor = pt->color;
         const Color     color = sel ? s.selection : wireColor;
         const auto      path  = ToScreen(cam, wire);
-        c.push_back(Polyline{path, color, sel ? 2.5f : 1.5f, type.dashed || dashed_[i]});   // dashed: into a closed group
+        c.push_back(Polyline{path, color, sel ? type.width + 1.f : type.width, !type.dotted && (type.dashed || dashed_[i]), type.dotted});
         if (type.arrow) c.push_back(Arrowhead(path, arrow, color));
         if (!e.label.empty() && s.fontSize * z >= 6.f) {
             const Vec2  mid = Midpoint(path);
@@ -1515,7 +1863,10 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         const Rect      r    = cam.ToScreen(n.frame);
         if (!r.Intersects(Rect{0, 0, viewport.x, viewport.y})) return;
 
-        if (t.shape == NodeShape::Dot) {
+        if (!Visible(n)) return;
+        if (t.shape == NodeShape::Dial) {
+            DrawDial(c, n, t, cam, sel, hov);
+        } else if (t.shape == NodeShape::Dot) {
             c.push_back(Circle{r.Center(), std::min(r.w, r.h) * 0.5f, t.band, sel ? s.selection : (hov ? s.text : t.band), sel ? 2.f : 1.f});
         } else if (t.shape == NodeShape::Pill) {
             c.push_back(FillRect{r, s.nodeFill, sel ? s.selection : (hov ? s.text : t.band), sel ? 2.f : 1.5f, r.h * 0.5f});
@@ -1599,6 +1950,10 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                     if (row.action == RowAction::Choice) right += right.empty() ? "\u25be" : " \u25be";
                     const float rw = right.empty() ? 0.f : std::min(w * 0.5f, fs * 0.6f * static_cast<float>(right.size()) + pad);
                     const std::string text = (rs ? rs->prefix : std::string{}) + row.label;
+                    if (rs && rs->chip) {
+                        const float cw = std::min(w - rw, fs * 0.6f * static_cast<float>(text.size()) + pad);
+                        c.push_back(FillRect{{x - pad * 0.3f, y + rowH * 0.1f, cw, rowH * 0.8f}, Color{label.r, label.g, label.b, 40}, {}, 0.f, rowH * 0.4f});
+                    }
                     c.push_back(Text{{x, y, w - rw, rowH}, text, fs, label, bold, false, false, Align::Left, italic});
                     if (row.action == RowAction::Button) {
                         const Rect b{r.Right() - pad - rw, y + rowH * 0.1f, rw, rowH * 0.8f};
@@ -1660,6 +2015,23 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
             if (sel || g->id == hovered_ || g->id == connectTo_) drawHandles(*g, cam.ToScreen(g->frame), sel);
         }
 
+    if (chrome && docking && mode_ == Mode::Moving && started_ && origin_.size() == 1)
+        if (const Node* moving = graph_->FindNode(origin_.front().first))
+            if (const auto slot = FindDockSlot(moving->id, moving->frame)) {
+                const Color wash{s.selection.r, s.selection.g, s.selection.b, 40};
+                c.push_back(FillRect{cam.ToScreen(slot->at), wash, s.selection, 1.f, s.corner * z, true});
+            }
+    if (chrome && mode_ == Mode::Idle && !hovered_.empty())
+        if (const Node* h = NodeById(hovered_); h && !h->dock.parent.empty()) {
+            // A docked card hovered: the row it hangs on washes, and what its wires enter is ringed.
+            const Color wash{s.selection.r, s.selection.g, s.selection.b, 40};
+            if (!h->dock.row.empty())
+                if (const auto line = RowScreenRect(h->dock.parent, h->dock.row)) c.push_back(FillRect{*line, wash});
+            for (const Edge& e : Shown().edges)
+                if (e.from == h->id)
+                    if (const Node* to = NodeById(e.to))
+                        c.push_back(FillRect{cam.ToScreen(to->frame).Inflated(3.f), Color{0, 0, 0, 0}, s.selection, 1.5f, s.corner * z});
+        }
     c.insert(c.end(), labels.begin(), labels.end());
     // Zoomed far out, text is noise: only the shapes draw.
     if (z < s.textZoom) std::erase_if(c, [](const DrawCmd& d) { return std::holds_alternative<Text>(d); });

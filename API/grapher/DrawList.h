@@ -26,6 +26,7 @@ struct Polyline {
     Color             color;
     float             width  = 1.f;
     bool              dashed = false;
+    bool              dotted = false;
 };
 
 struct Polygon {

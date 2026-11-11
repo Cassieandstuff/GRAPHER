@@ -1184,8 +1184,8 @@ void TestLargeGraph()
 
     grapher::Canvas c(g, s);
     c.SetViewport({1600, 900});
-    c.CenterOn("n10100", 0.35f);
     auto t0 = Clock::now();
+    c.CenterOn("n10100", 0.35f);   // the first route runs here
     const auto first = c.Draw();
     const double routeMs = ms(t0);
     int visible = 0;
@@ -1463,6 +1463,203 @@ void TestFrameGroupsUnchanged()
     CHECK(g.nodes[2].parent.empty() && grapher::ParentGroup(g, s, g.nodes[2]) == "G" && g.nodes[0].frame.Holds(g.nodes[2].frame));
 }
 
+// ── Docks, dials, wire styles ────────────────────────────────────────────────
+
+grapher::Schema DockSchema()
+{
+    grapher::Schema s = FolderSchema();   // box 100x60, a member folder, a "curve" edge
+    grapher::NodeType card{"card", "Card"};
+    card.width  = 200.f;
+    card.height = 120.f;
+    s.nodeTypes.push_back(card);
+    return s;
+}
+
+void TestDocks()
+{
+    const grapher::Schema s = DockSchema();
+    grapher::Graph        g;
+    g.nodes.push_back({"P", "card", {0, 0, 200, 120}});
+    g.nodes.push_back({"A", "box", {900, 900, 100, 60}});
+    g.nodes.push_back({"B", "box", {900, 900, 100, 60}});
+    g.nodes.push_back({"C", "box", {900, 900, 100, 60}});
+    g.nodes[1].dock = {"P", grapher::PortSide::Bottom, 0};
+    g.nodes[2].dock = {"P", grapher::PortSide::Bottom, 1};
+    g.nodes[3].dock = {"P", grapher::PortSide::Right, 0};
+    g.edges.push_back({"pa", "P", "A", "curve"});
+    g.edges.push_back({"pb", "P", "B", "curve"});
+    grapher::Canvas c(g, s);
+    c.SetViewport({1600, 1200});
+    c.camera.pan = {100, 100};
+    c.docking    = true;
+    const float gap = c.style.dockGap, side = c.style.dockSideGap;
+
+    // Docked: stacked under their parent nearest first, or beside it; their place travels with the parent.
+    CHECK(c.FrameOf("A") == (grapher::Rect{0, 120 + gap, 100, 60}));
+    CHECK(c.FrameOf("B") == (grapher::Rect{0, 120 + gap + 60 + gap, 100, 60}));
+    CHECK(c.FrameOf("C") == (grapher::Rect{200 + side, 0, 100, 60}));
+    g.nodes[0].frame.x = 50;
+    CHECK(c.FrameOf("B").x == 50.f && c.FrameOf("C").x == 250.f + side);
+
+    // Dragged away, a docked node undocks where it is let go; the one behind it closes up.
+    const grapher::Vec2 a = c.ScreenRectOf("A").Center();
+    c.PointerDown(a, grapher::Button::Left, {});
+    c.PointerMove(a + grapher::Vec2{300, 100});
+    CHECK(c.FrameOf("B").y == 120 + gap);   // closed up while A is away
+    c.PointerUp(a + grapher::Vec2{600, 200}, grapher::Button::Left);
+    CHECK(g.nodes[1].dock.parent.empty() && g.nodes[1].frame.x == 650.f);
+
+    // Dragged onto the slot under its parent (a wire runs to it), it docks there, and B moves out behind it.
+    const auto slot = c.FindDockSlot("A", grapher::Rect{55, 120 + gap + 5, 100, 60});
+    CHECK(slot && slot->parent == "P" && slot->side == grapher::PortSide::Bottom && slot->index == 0);
+    const grapher::Vec2 from = c.ScreenRectOf("A").Center(), to = c.camera.ToScreen(grapher::Vec2{105, 120 + gap + 35});
+    c.PointerDown(from, grapher::Button::Left, {});
+    c.PointerMove(from + (to - from) * 0.5f);
+    c.PointerMove(to);
+    bool phantom = false;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* f = std::get_if<grapher::FillRect>(&cmd); f && f->dashed && f->stroke == c.style.selection) phantom = true;
+    CHECK(phantom);
+    c.PointerUp(to, grapher::Button::Left);
+    CHECK(g.nodes[1].dock.parent == "P" && g.nodes[1].dock.order == 0 && g.nodes[2].dock.order == 1);
+    CHECK(!c.FindDockSlot("C", grapher::Rect{55, 400, 100, 60}));   // nothing wires to C: no slot takes it
+
+    // A card beside a row sits level with that line; a member group docked flush hangs right under its card.
+    g.nodes[0].rows = {{"r0", "zero"}, {"r1", "one"}};
+    g.nodes.push_back({"E", "box", {0, 0, 100, 30}});
+    g.nodes.back().dock = {"P", grapher::PortSide::Right, 0, "r1"};
+    g.nodes.push_back({"G", "folder", {0, 0, 10, 10}});
+    g.nodes.back().dock = {"P", grapher::PortSide::Bottom, 2, {}, true};
+    g.nodes.push_back({"m", "box", {500, 500, 100, 60}});
+    g.nodes.back().parent = "G";
+    const grapher::Rect line = *c.RowScreenRect("P", "r1");
+    const grapher::Rect e    = c.ScreenRectOf("E");
+    CHECK(std::abs(e.Center().y - line.Center().y) < 0.01f && e.x > c.ScreenRectOf("P").Right());
+    const grapher::Rect b = c.FrameOf("B"), grp = c.FrameOf("G");
+    CHECK(std::abs(grp.y - b.Bottom()) < 0.01f && grp.Holds(c.FrameOf("m")));
+
+    // A dock cycle ends.
+    g.nodes.push_back({"X", "box", {0, 900, 100, 60}});
+    g.nodes.push_back({"Y", "box", {0, 900, 100, 60}});
+    g.nodes[g.nodes.size() - 2].dock = {"Y", grapher::PortSide::Bottom};
+    g.nodes.back().dock              = {"X", grapher::PortSide::Bottom};
+    (void)c.Draw();
+
+    // Proposed, the new dock arrives with the frames.
+    c.editMode = grapher::EditMode::Propose;
+    std::vector<grapher::Intent> intents;
+    c.onIntent = [&](const grapher::Intent& i) { intents.push_back(i); };
+    const grapher::Vec2 bAt = c.ScreenRectOf("B").Center();
+    c.PointerDown(bAt, grapher::Button::Left, {});
+    c.PointerMove(bAt + grapher::Vec2{400, 300});
+    c.PointerUp(bAt + grapher::Vec2{800, 600}, grapher::Button::Left);
+    const auto* move = intents.size() == 1 ? std::get_if<grapher::MoveNodes>(&intents[0].change) : nullptr;
+    CHECK(move && move->docks.size() == 1 && move->docks[0].first == "B" && move->docks[0].second.parent.empty());
+    c.Refresh();
+}
+
+void TestShowWithAndWireStyles()
+{
+    grapher::Schema s = DockSchema();
+    s.edgeTypes[0].dotted = true;
+    s.edgeTypes[0].width  = 3.f;
+    grapher::Graph g;
+    g.nodes.push_back({"S", "box", {0, 0, 100, 60}});
+    g.nodes.push_back({"W", "box", {300, 0, 100, 60}});
+    g.nodes.push_back({"T", "box", {300, 200, 100, 60}});
+    g.nodes[1].showWith = {"S"};
+    g.edges.push_back({"sw", "S", "W", "curve"});
+    g.edges.push_back({"st", "S", "T", "curve"});
+    grapher::Canvas c(g, s);
+    c.SetViewport({800, 600});
+
+    // Hidden until what it belongs to is selected: not drawn, not hit, its wires not drawn.
+    auto wires = [&] {
+        int n = 0;
+        for (const auto& cmd : c.Draw().cmds)
+            if (const auto* p = std::get_if<grapher::Polyline>(&cmd); p && p->color == (grapher::Color{1, 2, 3})) {
+                ++n;
+                CHECK(p->dotted && !p->dashed && p->width == 3.f);
+            }
+        return n;
+    };
+    CHECK(wires() == 1 && c.HitTest(c.ScreenRectOf("W").Center()).id != "W");
+    c.SelectNodes({"S"});
+    CHECK(wires() == 2 && c.HitTest(c.ScreenRectOf("W").Center()).id == "W");
+
+    // A wire keeps its sides near the turn, with a memory; without one it turns.
+    grapher::Graph h;
+    h.nodes.push_back({"a", "box", {0, 0, 100, 60}});
+    h.nodes.push_back({"b", "box", {200, 0, 100, 60}});
+    h.edges.push_back({"ab", "a", "b", "curve"});
+    std::unordered_map<std::string, std::uint8_t> sides;
+    CHECK(grapher::RouteWires(h, s, {}, &sides).at("ab").front().x == 100.f);   // a's right side
+    h.nodes[1].frame = {130, 80, 100, 60};   // just past the turn
+    CHECK(grapher::RouteWires(h, s, {}).at("ab").front().y == 60.f);            // a's bottom
+    CHECK(grapher::RouteWires(h, s, {}, &sides).at("ab").front().x == 100.f);   // held
+    h.nodes[1].frame = {0, 300, 100, 60};   // well past it
+    CHECK(grapher::RouteWires(h, s, {}, &sides).at("ab").front().y == 60.f);
+}
+
+void TestDial()
+{
+    using grapher::DialAxis;
+    constexpr double kPi = 3.14159265358979323846;
+    // A cyclic axis is at its true angle from the top, and wraps.
+    const DialAxis cyc = DialAxis::Make(true, 0.f, 4.f, {});
+    CHECK(std::abs(cyc.Angle(1.f) - kPi / 2) < 1e-6 && std::abs(cyc.Value(-kPi / 2) - 3.f) < 1e-4);
+    // An open one spreads its values evenly over 270 degrees, linear between neighbours, clamped at its ends.
+    const std::vector<float> speeds{5.3f, 52.8f, 351.f, 3510.f};
+    const DialAxis           open = DialAxis::Make(false, 0.f, 0.f, speeds);
+    CHECK(std::abs(open.Angle(5.3f) + 0.75 * kPi) < 1e-6 && std::abs(open.Angle(3510.f) - 0.75 * kPi) < 1e-6);
+    CHECK(std::abs(open.Angle(52.8f) - (-0.25 * kPi)) < 1e-6 && std::abs(open.Value(open.Angle(200.f)) - 200.f) < 0.01f);
+    CHECK(open.Value(kPi) == 5.3f || open.Value(kPi) == 3510.f);
+    CHECK(std::abs(open.Snap(60.f) - open.Value((-0.75 + 1.5 * 6.0 / 16.0) * kPi)) < 0.01f || open.Snap(60.f) > 0.f);
+    const DialAxis one = DialAxis::Make(false, 0.f, 0.f, std::vector<float>{2.f});
+    CHECK(one.knots.size() == 2 && one.Angle(2.f) < one.Angle(3.f));
+
+    // A dial node: its rows' pins on the ring at their values; a handle drags a row's value round, Shift snapping.
+    grapher::Schema s = DockSchema();
+    grapher::NodeType dial{"dial", "Blend"};
+    dial.shape = grapher::NodeShape::Dial;
+    s.nodeTypes.push_back(dial);
+    grapher::Graph g;
+    g.nodes.push_back({"d", "dial", {0, 0, 300, 300}});
+    grapher::Node& d = g.nodes[0];
+    d.ports = {{"p0", "", "", grapher::PortDir::Out}, {"p1", "", "", grapher::PortDir::Out}, {"p2", "", "", grapher::PortDir::Out}};
+    d.rows  = {{"r0", "walk", "0"}, {"r1", "jog", "1"}, {"r2", "run", "2"}};
+    for (int k = 0; k < 3; ++k) d.rows[static_cast<std::size_t>(k)].port = "p" + std::to_string(k), d.rows[static_cast<std::size_t>(k)].field = "pos" + std::to_string(k);
+    d.dial = {false, 0.f, 1.f, 1.f, "speed"};
+    grapher::Canvas c(g, s);
+    c.SetViewport({800, 600});
+    const grapher::Ring     ring = grapher::RingOf(d.frame);
+    const grapher::DialAxis axis = grapher::AxisOf(d);
+    CHECK(Near(*c.PortScreenPos("d", "p1"), ring.At(axis.Angle(1.f))) && Near(*c.PortScreenPos("d", "p0"), ring.At(-0.75 * kPi)));
+    const grapher::Vec2 handle = ring.At(axis.Angle(1.f), 0.8f);
+    const grapher::Hit  hit    = c.HitTest(handle);
+    CHECK(hit.kind == grapher::HitKind::Handle && hit.row == "r1");
+    const grapher::Vec2 there = ring.At(0.3 * kPi, 0.8f);   // past "run"'s value: clamped to the arc's end
+    c.PointerDown(handle, grapher::Button::Left, {});
+    c.PointerMove(handle + (there - handle) * 0.5f);
+    c.PointerMove(ring.At(0.1 * kPi, 0.8f), {true, false, false});
+    c.PointerUp(ring.At(0.1 * kPi, 0.8f), grapher::Button::Left);
+    const float v = std::stof(g.nodes[0].Field("pos1"));
+    CHECK(v == axis.Snap(axis.Value(0.1 * kPi)) && g.nodes[0].rows[1].value == g.nodes[0].Field("pos1"));
+    bool needle = false;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* t = std::get_if<grapher::Text>(&cmd); t && t->text.starts_with("speed")) needle = true;
+    CHECK(needle);
+
+    // The format: a dial shape, dotted and wide edges, chip rows.
+    grapher::Schema styled = s;
+    styled.edgeTypes[0].dotted = true;
+    styled.edgeTypes[0].width  = 2.5f;
+    styled.rowStyles.push_back({"chip", grapher::Color{1, 2, 3}});
+    styled.rowStyles.back().chip = true;
+    const auto back = grapher::ParseSchema(grapher::WriteSchema(styled));
+    CHECK(back && *back == styled);
+}
+
 } // namespace
 
 int main()
@@ -1501,6 +1698,9 @@ int main()
     TestAliasesAndHolding();
     TestLayoutGraph();
     TestFrameGroupsUnchanged();
+    TestDocks();
+    TestShowWithAndWireStyles();
+    TestDial();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

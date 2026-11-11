@@ -17,12 +17,12 @@
 ///                "ports":  [ { "id": "a", "label": "A", "type": "rgba", "dir": "in", "side": "auto",
 ///                              "maxWires": 1, "field": "", "onHeader": false, "typeFrom": "" } ] } ],
 ///   "edges": [ { "id": "data", "label": "data", "color": "#8c919b", "line": "curve", "dashed": false, "arrow": true,
-///                "portColor": false } ]
+///                "portColor": false, "dotted": false, "width": 1.5 } ]
 /// }
 /// ```
 ///
 /// Every key but an id is optional and defaults as the structs do; a label defaults to its id. Names are byte-exact.
-/// Enumerations are spelt in lower case: shape card | note | pill | group | dot; kind text | path | url | tag; line curve |
+/// Enumerations are spelt in lower case: shape card | note | pill | group | dot | dial; kind text | path | url | tag; line curve |
 /// straight | elbow; glyph circle | square | diamond | arrow; dir in | out; side auto | left | right | top | bottom.
 
 #include <grapher/Schema.h>

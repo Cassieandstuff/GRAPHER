@@ -11,6 +11,7 @@ core knows no UI toolkit; backends paint its draw lists.
 | `grapher/SchemaJson.h` | the schema as JSON: `ParseSchema`, `ParseNodeType` (a type defined at runtime), `WriteSchema` |
 | `grapher/Graph.h` | `Node` (with ports of its own), `Edge` (port to port, or node to node), `Graph` — a value type, so undo is a copy |
 | `grapher/Groups.h` | group membership: a frame group holds what lies inside it, a member group what names it as `parent` (`ParentGroup`, `GroupMembers`) |
+| `grapher/Dial.h` | a dial's geometry: `DialAxis` (cyclic or open), `RingOf` |
 | `grapher/Layout.h` | `LayoutColumns` (columns by wire distance, few crossings) and `LayoutGraph` (inside out through member groups, kept nodes stay, open groups push) |
 | `grapher/Routing.h` | `RouteWires` — ports spread along node sides; wires that would cut through a node routed around it (orthogonal A*), drawn in their edge type's style |
 | `grapher/Canvas.h` | `Camera`, `Canvas` — gestures (select, move, resize, connect, marquee, pan, zoom) and `Draw()` |
@@ -67,6 +68,23 @@ leaves its own (an edit: `MoveNodes::parents` when proposed). A header can show 
 dimmed with a dashed outline, and a click on it selects the original and opens the groups around it.
 `HoldInPlace` keeps a node's header still on screen through the host's next `Refresh`, so laying the graph out again
 after an edit doesn't move the view. `LayoutGraph` is the layout to run then.
+
+**Docks.** A node can dock to another (`Node::dock`): on one of its sides, in a list that reads outward (children
+stacked under a parent), beside one of its rows (a card hanging off a line), or flush (a member group headed by a card).
+A docked node's place is worked out from its parent's and travels with it, docked nodes of its own included. With
+`Canvas::docking` on, dragging a docked node away undocks it where it is let go, and dragging a node onto a slot beside
+a parent it may dock to (`canDock`; by default, one wiring to it) docks it there, the slot shown while it drags and the
+side renumbered (an edit: `MoveNodes::docks` when proposed). Hovering a card docked beside a row washes that row and
+rings what its wires enter. `Node::showWith` shows a node only while it, or one of the nodes it names, is selected.
+
+**Dials** (`NodeShape::Dial`) are a radial layout: each row that claims a port stands on the ring at the angle its value
+has on the axis (`Node::dial`: cyclic at true angles, or open on a 270° arc with the rows evenly spaced), its pin
+leaving outward. A needle shows `dial.value`. A handle per row drags its value round the ring, Shift snapping to
+sixteenths, and sets it like a choice (`SetValue`).
+
+**Wire styles.** An edge type can be dotted and set its width. With a canvas, a wire keeps the sides it leaves and enters
+by until its ends have moved well past where they would turn (`RoutingOptions::sideHysteresis`), so dragging along the
+middle doesn't flicker. A row style can be a chip (a rounded patch behind its label).
 
 **Large graphs.** The canvas keeps its routes, per-node and per-edge tables until a frame, port, edge or option
 changes, culls what is off screen, and hit-tests only what is near the pointer. On a graph of more than 2000 nodes a

@@ -12,7 +12,7 @@ namespace {
 
 template <class E> using Names = std::initializer_list<std::pair<std::string_view, E>>;
 
-constexpr Names<NodeShape> kShapes{{"card", NodeShape::Card}, {"note", NodeShape::Note}, {"pill", NodeShape::Pill}, {"group", NodeShape::Group}, {"dot", NodeShape::Dot}};
+constexpr Names<NodeShape> kShapes{{"card", NodeShape::Card}, {"note", NodeShape::Note}, {"pill", NodeShape::Pill}, {"group", NodeShape::Group}, {"dot", NodeShape::Dot}, {"dial", NodeShape::Dial}};
 constexpr Names<FieldKind> kKinds{{"text", FieldKind::Text}, {"path", FieldKind::Path}, {"url", FieldKind::Url}, {"tag", FieldKind::Tag}};
 constexpr Names<EdgeLine>  kLines{{"curve", EdgeLine::Curve}, {"straight", EdgeLine::Straight}, {"elbow", EdgeLine::Elbow}};
 constexpr Names<PortGlyph> kGlyphs{{"circle", PortGlyph::Circle}, {"square", PortGlyph::Square}, {"diamond", PortGlyph::Diamond}, {"arrow", PortGlyph::Arrow}};
@@ -303,6 +303,7 @@ std::expected<Schema, std::string> ParseSchema(std::string_view text)
         r.Str(rowStyles[k], "prefix", st.prefix, where);
         r.Bool(rowStyles[k], "bold", st.bold, where);
         r.Bool(rowStyles[k], "italic", st.italic, where);
+        r.Bool(rowStyles[k], "chip", st.chip, where);
         s.rowStyles.push_back(std::move(st));
     }
     const json::Array& nodes = r.List(root, "nodes", "schema");
@@ -317,6 +318,8 @@ std::expected<Schema, std::string> ParseSchema(std::string_view text)
         r.Bool(edges[k], "dashed", t.dashed, where);
         r.Bool(edges[k], "arrow", t.arrow, where);
         r.Bool(edges[k], "portColor", t.portColor, where);
+        r.Bool(edges[k], "dotted", t.dotted, where);
+        r.Num(edges[k], "width", t.width, where);
         s.edgeTypes.push_back(std::move(t));
     }
     if (!r.Ok()) return std::unexpected(r.error);
@@ -367,6 +370,7 @@ std::string WriteSchema(const Schema& s)
             Put(o, "prefix", st.prefix, def.prefix, st.prefix);
             Put(o, "bold", st.bold, def.bold, st.bold);
             Put(o, "italic", st.italic, def.italic, st.italic);
+            Put(o, "chip", st.chip, def.chip, st.chip);
             a.emplace_back(std::move(o));
         }
         root.emplace_back("rowStyles", std::move(a));
@@ -384,6 +388,8 @@ std::string WriteSchema(const Schema& s)
         Put(o, "dashed", t.dashed, def.dashed, t.dashed);
         Put(o, "arrow", t.arrow, def.arrow, t.arrow);
         Put(o, "portColor", t.portColor, def.portColor, t.portColor);
+        Put(o, "dotted", t.dotted, def.dotted, t.dotted);
+        Put(o, "width", t.width, def.width, static_cast<double>(t.width));
         edges.emplace_back(std::move(o));
     }
     root.emplace_back("edges", std::move(edges));

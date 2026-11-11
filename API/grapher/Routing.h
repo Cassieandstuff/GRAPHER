@@ -13,6 +13,7 @@
 #include <grapher/Ports.h>
 #include <grapher/Schema.h>
 
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -32,6 +33,9 @@ struct RoutingOptions {
     float cornerRadius = 10.f;   ///< an elbow's corners
     float curveRadius  = 40.f;   ///< a detouring curve's corners
     CardMetrics card;            ///< where ports sit on a card (a canvas fills it from its Style)
+    /// @brief With a side memory (RouteWires' `sides`): a wire's end keeps the side it had until the other end has moved
+    ///        this far (world units) past where it would turn, so a drag along the middle doesn't flicker.
+    float sideHysteresis = 24.f;
     friend bool operator==(const RoutingOptions&, const RoutingOptions&) = default;
 };
 
@@ -42,6 +46,9 @@ using WirePaths = std::unordered_map<std::string, std::vector<Vec2>>;
 /// @note Each path starts on the source node's outline and ends on the target's; the last segment points into the target,
 ///       so an arrowhead drawn along it lands on the node.
 [[nodiscard]] WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOptions& options);
+/// @brief The same, remembering each wire's sides between calls (`sides`: edge id -> packed sides) for hysteresis.
+[[nodiscard]] WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOptions& options,
+                                   std::unordered_map<std::string, std::uint8_t>* sides);
 
 /// @brief A router a host can swap in for RouteWires (a backend over a routing library, e.g. grapher::avoid). It may keep
 ///        state between calls (incremental routing), so one instance serves one canvas.

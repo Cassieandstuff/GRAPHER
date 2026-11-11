@@ -7,6 +7,7 @@
 ///        it never touches the host's graph: a gesture plays out on a copy, and the edit arrives as an Intent the host
 ///        applies (or refuses) through its own history, then calls Refresh.
 
+#include <grapher/Dial.h>
 #include <grapher/DrawList.h>
 #include <grapher/Graph.h>
 #include <grapher/Groups.h>
@@ -58,6 +59,7 @@ enum class HitKind {
     Edge,
     Port,      ///< a port's pin; Hit::port names it
     Row,       ///< one of a node's rows (Node::rows); Hit::row names it
+    Handle,    ///< a dial's handle for one of its rows; Hit::row names it
 };
 
 struct Hit {
@@ -87,6 +89,16 @@ struct MoveNodes {
     std::vector<std::pair<std::string, Rect>> frames;   ///< every node whose frame changed, with its new frame
     /// @brief Nodes dropped into another member group (or out of all: an empty parent), with their new Node::parent.
     std::vector<std::pair<std::string, std::string>> parents;
+    /// @brief Nodes docked, undocked (an empty Dock::parent) or reordered on their side, with their new Dock.
+    std::vector<std::pair<std::string, Dock>> docks;
+};
+
+/// @brief Where a dragged node would dock: a parent, its side, the place on it, and the frame it would take there.
+struct DockSlot {
+    std::string parent;
+    PortSide    side  = PortSide::Bottom;
+    int         index = 0;
+    Rect        at;
 };
 /// @brief A new wire, and the wires it replaces at a port that was full.
 struct ConnectWire {
@@ -157,6 +169,11 @@ public:
     std::function<void(std::string_view group, bool collapsed)> onCollapseChanged;
     /// @brief A click on an alias (Node::aliasOf) selects the original and shows it, opening the groups around it.
     bool followAliases = true;
+    /// @brief Dragging a node docks it to a slot beside a parent it may dock to, or undocks it (Node::dock). Off by
+    ///        default: a host whose nodes dock turns it on.
+    bool docking = false;
+    /// @brief Whether `child` may dock to `parent`; unset = when a wire runs from the parent to the child.
+    std::function<bool(const Node& child, const Node& parent)> canDock;
 
     /// @name Member groups, open and closed: the canvas's view state, never an edit
     /// @{
@@ -172,6 +189,10 @@ public:
     /// @return the node's frame as drawn (a member group's wraps what it holds), world units; empty when hidden or unknown
     [[nodiscard]] Rect FrameOf(std::string_view nodeId) const;
     /// @}
+    /// @brief The slot a node dragged to `frame` would dock into, if any (`docking` on).
+    [[nodiscard]] std::optional<DockSlot> FindDockSlot(std::string_view nodeId, const Rect& frame) const;
+    /// @return whether the node shows now (Node::showWith)
+    [[nodiscard]] bool Visible(const Node& node) const;
     /// @brief Keep the node's header where it is on screen through the next Refresh (the host laying the graph out again
     ///        after an edit), so the view doesn't jump.
     void HoldInPlace(std::string_view nodeId);
@@ -189,7 +210,8 @@ public:
     /// @name Input, in screen pixels. Each returns true when the picture changed.
     /// @{
     bool PointerDown(Vec2 at, Button button, Modifiers mods);
-    bool PointerMove(Vec2 at);
+    /// @param mods held while moving (Shift snaps a dial's handle)
+    bool PointerMove(Vec2 at, Modifiers mods = {});
     bool PointerUp(Vec2 at, Button button);
     /// @param steps wheel notches; positive zooms in, about `at`
     bool Wheel(Vec2 at, float steps);
@@ -264,7 +286,7 @@ public:
     [[nodiscard]] DrawList DrawAll(float zoom = 1.f, float margin = 40.f) const;
 
 private:
-    enum class Mode { Idle, Moving, Resizing, Connecting, Marquee, Panning, RowPress };
+    enum class Mode { Idle, Moving, Resizing, Connecting, Marquee, Panning, RowPress, DialDrag };
 
     [[nodiscard]] DrawList Render(const Camera& cam, Vec2 viewport, bool chrome) const;
     /// @param groupInterior a group's empty interior counts as the group (a connection's target)
@@ -324,6 +346,9 @@ private:
     [[nodiscard]] const Graph& Shown() const { return useView_ ? view_ : *graph_; }
     /// @brief Fill `view_` from the graph (see Shown).
     void BuildView() const;
+    /// @brief Place `view_`'s docked nodes against their parents (and what docked member groups hold with them).
+    void DockView(const std::vector<std::size_t>& up) const;
+    void DrawDial(std::vector<DrawCmd>& c, const Node& n, const NodeType& t, const Camera& cam, bool sel, bool hov) const;
     /// @brief Fit every open member group of `view_` around what it shows, deepest first.
     void FitView() const;
     /// @brief Bring the per-graph caches up to date (rerouting when a frame, a port, an edge or the options changed):
@@ -354,6 +379,11 @@ private:
     std::size_t                                   viewRev_ = 0;   ///< bumped when a group opens or closes
     std::vector<std::pair<std::string, Rect>>     dropTargets_;   ///< member groups a move may drop into, as they were
     std::string                                   pressed_;       ///< the node a press landed on
+    float                                         dialValue_ = 0.f;   ///< a dial handle's value while it drags
+    bool                                          snapDial_  = false;
+    mutable bool                                  hasDocks_  = false;
+    mutable bool                                  hasMembers_ = false;
+    mutable std::unordered_map<std::string, std::uint8_t> sides_;   ///< each wire's last sides, so they don't flicker
     std::string                                   hold_;          ///< HoldInPlace's node
     Vec2                                          holdAt_;
     mutable std::vector<std::size_t>              viewUp_;     ///< per shown node: the shown group holding it

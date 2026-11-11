@@ -39,6 +39,9 @@ enum class NodeShape {
     Group,
     /// @brief A small round node with no text, its ports on its outline: a reroute point a wire passes through.
     Dot,
+    /// @brief A round card whose rows stand around its rim by value (Node::dial): a radial layout, with a handle per row
+    ///        to drag its value round the ring.
+    Dial,
 };
 
 /// @brief What a group holds.
@@ -55,6 +58,7 @@ struct RowStyle {
     std::string           prefix;       ///< put before the label ("+ ", "← ")
     bool                  bold   = false;
     bool                  italic = false;
+    bool                  chip   = false;   ///< a rounded patch of its colour behind the label
     friend bool operator==(const RowStyle&, const RowStyle&) = default;
 };
 
@@ -88,6 +92,8 @@ struct EdgeType {
     bool        arrow  = true;   ///< an arrowhead at the target end
     /// @brief A wire of this type takes the colour of the type its Out port carries (PortTypeOf), when it has one.
     bool        portColor = false;
+    bool        dotted    = false;   ///< drawn dotted (wins over dashed)
+    float       width     = 1.5f;    ///< the line's width at zoom 1, in pixels
     friend bool operator==(const EdgeType&, const EdgeType&) = default;
 };
 

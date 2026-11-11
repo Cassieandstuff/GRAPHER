@@ -1,8 +1,10 @@
 #include <grapher/Ports.h>
 
+#include <grapher/Dial.h>
 #include <grapher/Groups.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace grapher {
 
@@ -57,13 +59,17 @@ std::vector<PortSlot> LayoutPorts(const Node& node, const Schema& schema, const 
     const Rect& f    = node.frame;
     const bool  card = IsCard(node, schema);
     const bool  group = !card && IsGroup(node, schema);
+    const NodeType* type = schema.FindNode(node.type);
+    const bool      dial = type && type->shape == NodeShape::Dial;
+    const DialAxis  axis = dial ? AxisOf(node) : DialAxis{};
+    const Ring      ring = dial ? RingOf(f) : Ring{};
 
     // Ports that spread along their side: every port of a non-card shape, and a card's top and bottom ports.
     std::size_t spreadCount[5] = {};
     for (const PortDef& p : ports) {
         const PortSide s = SideOf(p);
         const bool     rowed = card && (s == PortSide::Left || s == PortSide::Right);
-        if (!rowed && !(p.onHeader && (card || group))) ++spreadCount[static_cast<int>(s)];
+        if (!rowed && !(p.onHeader && (card || group)) && !(dial && RowOfPort(node, p.id) >= 0)) ++spreadCount[static_cast<int>(s)];
     }
     std::size_t spreadAt[5] = {};
     int         rowAt[2]    = {0, 0};   // left, right
@@ -76,7 +82,14 @@ std::vector<PortSlot> LayoutPorts(const Node& node, const Schema& schema, const 
         slot.normal = NormalOf(slot.side);
         const bool horizontal = slot.side == PortSide::Left || slot.side == PortSide::Right;
         const float x = slot.side == PortSide::Left ? f.x : f.Right();
-        if (p.onHeader && horizontal && (card || group)) {
+        if (const int onRim = dial ? RowOfPort(node, p.id) : -1; onRim >= 0) {
+            // On a dial's ring, at its row's value, leaving outward.
+            const double a = axis.Angle(RowNumber(node.rows[static_cast<std::size_t>(onRim)]));
+            slot.at        = ring.At(a);
+            slot.normal    = Vec2{static_cast<float>(std::sin(a)), static_cast<float>(-std::cos(a))};
+            const float ax = std::abs(slot.normal.x), ay = std::abs(slot.normal.y);
+            slot.side      = ax >= ay ? (slot.normal.x < 0 ? PortSide::Left : PortSide::Right) : (slot.normal.y < 0 ? PortSide::Top : PortSide::Bottom);
+        } else if (p.onHeader && horizontal && (card || group)) {
             // On the title line (a group's header strip).
             const float y = card ? f.y + m.Top() + m.titleSize * 0.65f : f.y + std::min(f.h, m.groupHeader) * 0.5f;
             slot.at = {x, std::min(y, f.Bottom())};

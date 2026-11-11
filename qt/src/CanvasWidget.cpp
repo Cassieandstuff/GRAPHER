@@ -63,7 +63,8 @@ void Paint(QPainter& p, const DrawList& list, const ImageSource& images)
                 if (l.points.size() < 2) return;
                 QPen pen(Q(l.color), l.width);
                 pen.setCapStyle(Qt::RoundCap);
-                if (l.dashed) pen.setStyle(Qt::DashLine);
+                if (l.dotted) pen.setStyle(Qt::DotLine);
+                else if (l.dashed) pen.setStyle(Qt::DashLine);
                 p.setPen(pen);
                 p.setBrush(Qt::NoBrush);
                 QPainterPath path(Q(l.points.front()));
@@ -168,12 +169,13 @@ void CanvasWidget::mousePressEvent(QMouseEvent* e)
 
 void CanvasWidget::mouseMoveEvent(QMouseEvent* e)
 {
-    if (canvas_.PointerMove(V(e->position()))) update();
+    if (canvas_.PointerMove(V(e->position()), ModsOf(e->modifiers()))) update();
     if (canvas_.Busy()) return;
     switch (canvas_.HitTest(V(e->position())).kind) {
     case HitKind::Resize: setCursor(Qt::SizeFDiagCursor); break;
     case HitKind::Connect:
     case HitKind::Port: setCursor(Qt::CrossCursor); break;
+    case HitKind::Handle: setCursor(Qt::OpenHandCursor); break;
     case HitKind::Edge: setCursor(Qt::PointingHandCursor); break;
     default: unsetCursor(); break;
     }

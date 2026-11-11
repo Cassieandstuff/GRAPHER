@@ -33,6 +33,8 @@ struct Style {
     float textZoom    = 0.3f;   ///< below this zoom no text draws at all, only shapes
     float groupHeader = 30.f;   ///< a group's header strip: its title sits there, and a click there picks the group
     float groupPadding = 14.f;  ///< between a member group's outline and what it holds
+    float dockGap      = 10.f;  ///< between docked nodes stacked above or below their parent
+    float dockSideGap  = 12.f;  ///< between a parent and a node docked on its left or right
     std::uint8_t groupFill = 22;   ///< the alpha of a group's band-coloured fill
 };
 

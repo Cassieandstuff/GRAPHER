@@ -414,6 +414,27 @@ Side SideOfPort(PortSide s)
 
 WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOptions& o)
 {
+    return RouteWires(graph, schema, o, nullptr);
+}
+
+namespace {
+
+/// @brief Whether ends that took sides `from` (on `a`) would still face `b` within `h` world units of turning.
+bool StillFacing(const Rect& a, const Rect& b, Side from, float h)
+{
+    const Vec2 d = b.Center() - a.Center();
+    if (from == Left || from == Right) {
+        const bool across = (std::abs(d.x) + h) * (a.h + b.h) >= std::abs(d.y) * (a.w + b.w);
+        return across && (from == Right ? d.x >= -h : d.x <= h);
+    }
+    const bool across = (std::abs(d.y) + h) * (a.w + b.w) >= std::abs(d.x) * (a.h + b.h);
+    return across && (from == Bottom ? d.y >= -h : d.y <= h);
+}
+
+} // namespace
+
+WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOptions& o, std::unordered_map<std::string, std::uint8_t>* memory)
+{
     std::unordered_map<std::string_view, std::size_t> index;
     std::vector<Rect> frames;
     std::vector<char> solid;   // a group is no obstacle: wires run over it to and from what it holds
@@ -440,6 +461,17 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
         const auto ia = index.find(e.from), ib = index.find(e.to);
         if (ia == index.end() || ib == index.end() || ia->second == ib->second) continue;
         auto [sa, sb] = FacingSides(frames[ia->second], frames[ib->second]);
+        if (memory && o.sideHysteresis > 0.f) {
+            // A wire keeps its sides until its ends have moved well past where they would turn.
+            if (const auto it = memory->find(e.id); it != memory->end()) {
+                const auto pa = static_cast<Side>(it->second >> 2), pb = static_cast<Side>(it->second & 3);
+                if ((pa != sa || pb != sb) && StillFacing(frames[ia->second], frames[ib->second], pa, o.sideHysteresis)) {
+                    sa = pa;
+                    sb = pb;
+                }
+            }
+            (*memory)[e.id] = static_cast<std::uint8_t>(sa * 4 + sb);
+        }
         const EdgeType* t = schema.FindEdge(e.type);
         Wire wire{&e, ia->second, ib->second, sa, sb, {}, {}, t ? t->line : EdgeLine::Curve};
         if (const PortSlot* s = slotOf(ia->second, e.fromPort)) {

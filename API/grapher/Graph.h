@@ -38,6 +38,30 @@ struct Row {
     friend bool operator==(const Row&, const Row&) = default;
 };
 
+/// @brief Where a node sits against another: on one of its sides, in an ordered list that reads outward (a child
+///        stacked under its parent), or beside one of its rows (a card hanging off a line). A docked node's place is
+///        derived from its parent's and travels with it; dragging it away undocks it, dropping it on a slot docks it.
+struct Dock {
+    std::string parent;                   ///< the node it docks to; empty = not docked
+    PortSide    side  = PortSide::Bottom; ///< Auto counts as Bottom
+    int         order = 0;                ///< its place on the side, nearest first
+    std::string row;                      ///< a row of the parent to sit beside (side Left or Right) instead of the list
+    bool        flush = false;            ///< no gap: it touches its parent (a group headed by a card)
+    friend bool operator==(const Dock&, const Dock&) = default;
+};
+
+/// @brief A ring a node's rows stand around: each row that claims a port sits on the rim at the angle its numeric value
+///        has on the axis. A cyclic axis goes round the whole circle at true angles between `min` and `max`; an open one
+///        lies on a 270° arc with its gap at the bottom, its rows evenly spaced in order and the axis linear between
+///        neighbours. A needle shows `value`.
+struct Dial {
+    bool        cyclic = false;
+    float       min = 0.f, max = 1.f;   ///< a cyclic axis' range
+    float       value = 0.f;            ///< where the needle points
+    std::string label;                  ///< under the needle
+    friend bool operator==(const Dial&, const Dial&) = default;
+};
+
 struct Node {
     std::string id;     ///< unique in its graph, stable across saves
     std::string type;   ///< a NodeType id; an unknown one draws neutral
@@ -57,6 +81,10 @@ struct Node {
     /// @brief This node stands in for node `aliasOf` where it is also shown (a node reached from far away): drawn
     ///        dimmed with a dashed outline, and a click on it goes to the original.
     std::string          aliasOf;
+    Dock                 dock;
+    /// @brief Shown only while this node or one of these is selected (a card belonging to a busy hub); empty = always.
+    std::vector<std::string> showWith;
+    Dial                 dial;      ///< a NodeShape::Dial node's axis and needle
 
     /// @return the row `id`, or nullptr
     [[nodiscard]] const Row* FindRow(std::string_view rowId) const;
