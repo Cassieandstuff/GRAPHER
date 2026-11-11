@@ -900,7 +900,9 @@ void Canvas::BuildView() const
     // Wires into a closed group end on it; several that then join the same two ends draw as one, dashed.
     std::vector<Edge>               edges;
     std::vector<char>               dashed;
-    std::unordered_set<std::string> seen;
+    std::unordered_map<std::string, std::string> seen;   // merged ends -> the edge drawn for them
+    edgeShownAs_.clear();
+    shownAs_.clear();
     edges.reserve(view_.edges.size());
     for (const Edge& e : view_.edges) {
         const auto a = at.find(e.from), b = at.find(e.to);
@@ -916,7 +918,13 @@ void Canvas::BuildView() const
         bool remapped = false;
         if (ra != a->second) x.from = view_.nodes[ra].id, x.fromPort.clear(), remapped = true;
         if (rb != b->second) x.to = view_.nodes[rb].id, x.toPort.clear(), remapped = true;
-        if (remapped && !seen.insert(x.from + '\x1f' + x.fromPort + '\x1f' + x.to + '\x1f' + x.toPort).second) continue;
+        if (remapped) {
+            const auto [it, fresh] = seen.emplace(x.from + '\x1f' + x.fromPort + '\x1f' + x.to + '\x1f' + x.toPort, x.id);
+            if (!fresh) {
+                edgeShownAs_.emplace(e.id, it->second);   // its light goes to the wire drawn for it
+                continue;
+            }
+        }
         edges.push_back(std::move(x));
         dashed.push_back(remapped ? 1 : 0);
     }
@@ -928,6 +936,8 @@ void Canvas::BuildView() const
         if (rep[i] == kNone) {
             shown.push_back(std::move(view_.nodes[i]));
             count_.push_back(count[i]);
+        } else {
+            shownAs_.emplace(ids[i], ids[rep[i]]);
         }
     view_.nodes = std::move(shown);
     view_.edges = std::move(edges);
@@ -1738,6 +1748,107 @@ bool Canvas::PointerUp(Vec2 at, Button)
 
 DrawList Canvas::Draw() const { return Render(camera, viewport_, true); }
 
+std::pair<Vec2, float> Canvas::MinimapFrame(Vec2 size) const
+{
+    constexpr float kReadable = 0.02f;   ///< below this the minimap stops shrinking and follows the view instead
+    Sync();
+    const Graph& shown = Shown();
+    if (shown.nodes.empty() || size.x <= 0.f || size.y <= 0.f) return {{}, 1.f};
+    const Rect  b     = shown.Bounds().Inflated(40.f);
+    const float fit   = std::min(size.x / std::max(b.w, 1.f), size.y / std::max(b.h, 1.f));
+    if (fit >= kReadable) return {Vec2{b.x - (size.x / fit - b.w) * 0.5f, b.y - (size.y / fit - b.h) * 0.5f}, fit};
+    // Too big to read whole: a readable scale, centred on the view, kept inside the graph.
+    const Vec2 middle = camera.ToWorld(viewport_ * 0.5f);
+    const Vec2 span   = size / kReadable;
+    const Vec2 origin{std::clamp(middle.x - span.x * 0.5f, b.x, std::max(b.x, b.Right() - span.x)),
+                      std::clamp(middle.y - span.y * 0.5f, b.y, std::max(b.y, b.Bottom() - span.y))};
+    return {origin, kReadable};
+}
+
+DrawList Canvas::DrawMinimap(Vec2 size) const
+{
+    DrawList out;
+    out.size              = size;
+    const auto [o, k]     = MinimapFrame(size);
+    const Style& s        = style;
+    auto         toMap    = [&](const Rect& r) { return Rect{(r.x - o.x) * k, (r.y - o.y) * k, std::max(1.5f, r.w * k), std::max(1.5f, r.h * k)}; };
+    out.cmds.push_back(FillRect{{0, 0, size.x, size.y}, Color{s.background.r, s.background.g, s.background.b, 235}, s.nodeStroke, 1.f, 4.f});
+    const Graph& shown = Shown();
+    for (std::size_t i = 0; i < shown.nodes.size(); ++i)
+        if (grouped_[i]) {
+            const NodeType* t = schema_->FindNode(shown.nodes[i].type);
+            const Color     c = t ? t->band : s.muted;
+            out.cmds.push_back(FillRect{toMap(shown.nodes[i].frame), Color{c.r, c.g, c.b, 40}, Color{c.r, c.g, c.b, 160}, 1.f});
+        }
+    for (std::size_t i = 0; i < shown.nodes.size(); ++i) {
+        const Node& n = shown.nodes[i];
+        if (grouped_[i] || !Visible(n)) continue;
+        Color c = s.muted;
+        if (const auto ring = highlights.rings.find(n.id); ring != highlights.rings.end()) c = ring->second;
+        if (selNodes_.contains(n.id)) c = s.selection;
+        out.cmds.push_back(FillRect{toMap(n.frame), c});
+    }
+    const Vec2 a = camera.ToWorld(Vec2{0, 0}), b = camera.ToWorld(viewport_);
+    out.cmds.push_back(FillRect{toMap(Rect::FromPoints(a, b)), Color{s.text.r, s.text.g, s.text.b, 20}, s.text, 1.f});
+    return out;
+}
+
+Vec2 Canvas::MinimapToWorld(Vec2 at, Vec2 size) const
+{
+    const auto [o, k] = MinimapFrame(size);
+    return o + at / k;
+}
+
+void Canvas::CenterOnWorld(Vec2 world) { camera.pan = viewport_ * 0.5f - world * camera.zoom; }
+
+void Canvas::DrawArrow(std::vector<DrawCmd>& c, const Arrow& a, const Camera& cam) const
+{
+    auto shownAs = [&](const std::string& id) -> const Node* {
+        if (const Node* n = NodeById(id)) return n;
+        const auto as = shownAs_.find(id);
+        return as == shownAs_.end() ? nullptr : NodeById(as->second);
+    };
+    const Node* from = shownAs(a.from);
+    const Node* to   = shownAs(a.to);
+    if (!from || !to) return;
+    const float z = cam.zoom;
+    const Rect  fa = cam.ToScreen(from->frame), fb = cam.ToScreen(to->frame);
+    const Vec2  p0{fa.x, fa.y + fa.h * 0.5f}, p1{fb.x, fb.y + fb.h * 0.5f};
+    std::vector<Vec2> pts;
+    if (from == to) {
+        // A loop out of its left side.
+        const float r = 14.f * std::max(z, 0.4f);
+        const Vec2  o{p0.x - r, p0.y};
+        for (int k = 0; k <= 24; ++k) {
+            const double t = 0.35 * 3.14159265358979 + (1.3 * 3.14159265358979) * k / 24.0;
+            pts.push_back({o.x + static_cast<float>(std::cos(t)) * r, o.y - static_cast<float>(std::sin(t)) * r});
+        }
+    } else {
+        // An arc bowing out to the left of both, from one's left side to the other's.
+        const float bow  = 40.f * z + Distance(p0, p1) * 0.25f;
+        const Vec2  ctrl{std::min(p0.x, p1.x) - bow, (p0.y + p1.y) * 0.5f};
+        for (int k = 0; k <= 24; ++k) {
+            const float t = static_cast<float>(k) / 24.f, u = 1.f - t;
+            pts.push_back(p0 * (u * u) + ctrl * (2 * u * t) + p1 * (t * t));
+        }
+    }
+    const Color col = style.glow;
+    c.push_back(Polyline{pts, col, 2.f, true});
+    // The head at the middle fills as the arrow's progress runs; a flash rings it.
+    const Vec2  mid = pts[pts.size() / 2];
+    Vec2        d   = pts[pts.size() / 2 + 1] - pts[pts.size() / 2 - 1];
+    const float len = Length(d);
+    if (len > 0.001f) d = d / len;
+    const Vec2  perp{-d.y, d.x};
+    const float h = std::clamp(8.f * z, 5.f, 10.f);
+    std::vector<Vec2> head{mid + d * h, mid - d * (h * 0.6f) + perp * (h * 0.7f), mid - d * (h * 0.6f) - perp * (h * 0.7f)};
+    c.push_back(Polygon{head, Color{col.r, col.g, col.b, static_cast<std::uint8_t>(60 + 195 * std::clamp(a.progress, 0.f, 1.f))}});
+    head.push_back(head.front());
+    c.push_back(Polyline{head, col, 1.5f});
+    if (a.flash > 0.f)
+        c.push_back(Circle{mid, h * 1.6f, Color{255, 255, 255, static_cast<std::uint8_t>(200 * std::clamp(a.flash, 0.f, 1.f))}, {}, 0.f});
+}
+
 DrawList Canvas::DrawAll(float zoom, float margin) const
 {
     const Rect b = (Sync(), Shown().Bounds());
@@ -1776,6 +1887,29 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
     }
 
     Sync();
+    // What the host lights, resolved to what is drawn: a hidden node's glow to its closed group, a merged wire's to the
+    // wire drawn for it, the brightest winning.
+    std::unordered_map<std::string_view, float> nodeGlow, wireGlow;
+    for (const auto& [id, v] : highlights.glow) {
+        const auto as = shownAs_.find(id);
+        float&     g  = nodeGlow[as == shownAs_.end() ? std::string_view(id) : std::string_view(as->second)];
+        g             = std::max(g, v);
+    }
+    for (const auto& [id, v] : highlights.edgeGlow) {
+        const auto as = edgeShownAs_.find(id);
+        float&     g  = wireGlow[as == edgeShownAs_.end() ? std::string_view(id) : std::string_view(as->second)];
+        g             = std::max(g, v);
+    }
+    auto glowOf = [](const std::unordered_map<std::string_view, float>& m, std::string_view id) {
+        const auto it = m.find(id);
+        return it == m.end() ? 0.f : std::clamp(it->second, 0.f, 1.f);
+    };
+    auto drawGlow = [&](const Rect& r, float v) {
+        if (v <= 0.f) return;
+        const float spread = 3.f + 7.f * v;
+        c.push_back(FillRect{r.Inflated(spread), Color{s.glow.r, s.glow.g, s.glow.b, static_cast<std::uint8_t>(50 + 130 * v)}, {}, 0.f,
+                             s.corner * z + spread});
+    };
     // Which ports have a wire: their pins draw filled.
     auto wired = [&](std::string_view node, std::string_view port) { return wiredPorts_.contains(PortKey(node, port)); };
     const bool  offering = chrome && mode_ == Mode::Connecting && started_;   // a wire is being dragged: ring where it may land
@@ -1809,7 +1943,10 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         Color fill = t.band, head = t.band;
         fill.a     = s.groupFill;
         head.a     = static_cast<std::uint8_t>(std::min(255, s.groupFill * 2));
+        drawGlow(r, glowOf(nodeGlow, g->id));   // a closed group glows with the brightest thing it holds
         c.push_back(FillRect{r, fill, sel ? s.selection : (hov ? s.text : t.band), sel ? 2.f : 1.25f, s.corner * z});
+        if (const auto ring = highlights.rings.find(g->id); ring != highlights.rings.end())
+            c.push_back(FillRect{r.Inflated(3.f), Color{0, 0, 0, 0}, ring->second, 2.f, s.corner * z + 3.f});
         const float hh = std::min(s.groupHeader * z, r.h);
         c.push_back(FillRect{{r.x + 1.f, r.y + 1.f, std::max(0.f, r.w - 2.f), std::max(0.f, hh - 1.f)}, head, {}, 0.f, s.corner * z});
         drawPins(*g, cam);
@@ -1837,7 +1974,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
     }
 
     // Edges, under the nodes; their labels go on top of everything, so a short edge between two cards still reads.
-    std::vector<DrawCmd> labels;
+    std::vector<DrawCmd> labels, topWires;
     const float      arrow = std::clamp(9.f * z, 5.f, 12.f);
     const Rect screenArea{-20.f, -20.f, viewport.x + 40.f, viewport.y + 40.f};
     for (std::size_t i = 0; i < Shown().edges.size(); ++i) {
@@ -1854,10 +1991,15 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         if (type.portColor && !e.fromPort.empty())
             if (const Node* from = NodeById(e.from))
                 if (const PortType* pt = schema_->FindPortType(PortTypeOf(*graph_, *schema_, *from, e.fromPort))) wireColor = pt->color;
-        const Color     color = sel ? s.selection : wireColor;
+        const bool      near  = chrome && s.highlightSelectedWires && (selNodes_.contains(e.from) || selNodes_.contains(e.to));
+        const Color     color = sel || near ? s.selection : wireColor;
         const auto      path  = ToScreen(cam, wire);
-        c.push_back(Polyline{path, color, sel ? type.width + 1.f : type.width, !type.dotted && (type.dashed || dashed_[i]), type.dotted});
-        if (type.arrow) c.push_back(Arrowhead(path, arrow, color));
+        std::vector<DrawCmd>& into = type.onTop ? topWires : c;   // a wire on top draws over the nodes
+        if (const float v = glowOf(wireGlow, e.id); v > 0.f)
+            into.push_back(Polyline{path, Color{s.glow.r, s.glow.g, s.glow.b, static_cast<std::uint8_t>(60 + 120 * v)}, type.width + 2.f + 6.f * v});
+        into.push_back(Polyline{path, color, sel ? type.width + 1.f : (near ? type.width + 0.7f : type.width), !type.dotted && (type.dashed || dashed_[i]),
+                               type.dotted});
+        if (type.arrow) into.push_back(Arrowhead(path, arrow, color));
         if (!e.label.empty() && s.fontSize * z >= 6.f) {
             const Vec2  mid = Midpoint(path);
             const float fs  = s.fontSize * z * 0.9f;
@@ -1904,6 +2046,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         if (!r.Intersects(Rect{0, 0, viewport.x, viewport.y})) return;
 
         if (!Visible(n)) return;
+        drawGlow(r, glowOf(nodeGlow, n.id));
         if (t.shape == NodeShape::Dial) {
             DrawDial(c, n, t, cam, sel, hov);
         } else if (t.shape == NodeShape::Dot) {
@@ -2037,6 +2180,10 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         }
         }   // card / note
 
+        if (const auto ring = highlights.rings.find(n.id); ring != highlights.rings.end())
+            c.push_back(FillRect{r.Inflated(3.f), Color{0, 0, 0, 0}, ring->second, 2.f, s.corner * z + 3.f});
+        if (highlights.dimmed.contains(n.id))
+            c.push_back(FillRect{r, Color{s.background.r, s.background.g, s.background.b, 150}, {}, 0.f, s.corner * z});
         // An alias draws dimmed, with a dashed outline.
         if (!n.aliasOf.empty())
             c.push_back(FillRect{r, Color{s.background.r, s.background.g, s.background.b, 120}, s.muted, 1.f, s.corner * z, true});
@@ -2054,6 +2201,9 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
             const bool sel = selNodes_.contains(g->id);
             if (sel || g->id == hovered_ || g->id == connectTo_) drawHandles(*g, cam.ToScreen(g->frame), sel);
         }
+
+    c.insert(c.end(), topWires.begin(), topWires.end());
+    for (const Arrow& a : highlights.arrows) DrawArrow(c, a, cam);
 
     if (chrome && docking && mode_ == Mode::Moving && started_ && origin_.size() == 1)
         if (const Node* moving = graph_->FindNode(origin_.front().first))

@@ -35,6 +35,9 @@ struct Style {
     float groupPadding = 14.f;  ///< between a member group's outline and what it holds
     float dockGap      = 10.f;  ///< between docked nodes stacked above or below their parent
     float dockSideGap  = 12.f;  ///< between a parent and a node docked on its left or right
+    Color glow{255, 196, 64};    ///< Highlights' glow and arrows
+    Color searchRing{255, 140, 60};   ///< the other search hits
+    bool  highlightSelectedWires = false;  ///< wires touching a selected node draw in the selection colour
     std::uint8_t groupFill = 22;   ///< the alpha of a group's band-coloured fill
 };
 

@@ -4,14 +4,23 @@
 ///        graph state; the host wires the canvas's callbacks.
 
 #include <grapher/Canvas.h>
+#include <grapher/Search.h>
 
 #include <QImage>
 #include <QPointF>
+#include <QPointer>
 #include <QWidget>
 
 #include <functional>
 #include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
+class QFrame;
+class QLabel;
+class QLineEdit;
+class QListWidget;
 class QPainter;
 
 namespace grapher::qt {
@@ -39,6 +48,29 @@ public:
     ///        off; key presses then go to the parent.
     void setOwnKeys(bool on) { ownKeys_ = on; }
 
+    /// @name The minimap (bottom right, at most 240x180 or a quarter of the view): the whole graph, the part in view, the
+    ///       selection and the rings; a click or drag there moves the view, and the wheel does nothing there.
+    /// @{
+    void setMinimapShown(bool on);
+    [[nodiscard]] bool     minimapShown() const;
+    [[nodiscard]] QWidget* minimap() const { return minimap_; }
+    /// @}
+
+    /// @name Search (a box over the top left): walking the hits (Up, Down) shows each, opening the groups around it, and
+    ///       rings the rest; Enter keeps the hit (searchAccepted), Esc goes back to the view before (searchCancelled), and
+    ///       leaving the box keeps the hit.
+    /// @{
+    using SearchFunction = std::function<SearchResult(std::string_view query)>;
+    /// @brief How the box finds hits; unset = grapher::Search over the canvas's graph.
+    void setSearchFunction(SearchFunction search) { search_ = std::move(search); }
+    /// @param query what to type in; empty keeps what the box last held
+    void openSearch(const QString& query = {});
+    [[nodiscard]] QWidget* searchBox() const { return searchBox_; }
+    /// @}
+
+    /// @brief Keep a host's widget (a picker, a row of buttons) over a corner of the canvas; several in one corner stack.
+    void addOverlay(QWidget* widget, Qt::Corner corner);
+
 signals:
     /// @brief Any press or wheel, before the canvas sees it (a host closes an inline editor on it).
     void interacted();
@@ -52,6 +84,8 @@ signals:
     /// @brief A row with an action other than a Choice was clicked (a Choice opens its menu and sets its field itself).
     void rowClicked(const QString& node, const QString& row, QPoint globalPos);
     void rowDoubleClicked(const QString& node, const QString& row);
+    void searchAccepted(const QString& node);
+    void searchCancelled();
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -64,8 +98,26 @@ protected:
     void keyPressEvent(QKeyEvent*) override;
     void leaveEvent(QEvent*) override;
     bool event(QEvent*) override;
+    bool eventFilter(QObject* watched, QEvent* e) override;
 
 private:
+    void placeOverlays();
+    void runSearch();
+    void goToHit(int row);
+    void closeSearch(bool keep);
+
+    QWidget*                                          minimap_   = nullptr;
+    QFrame*                                           searchBox_ = nullptr;
+    QLineEdit*                                        query_     = nullptr;
+    QListWidget*                                      hits_      = nullptr;
+    QLabel*                                           count_     = nullptr;
+    SearchFunction                                    search_;
+    std::vector<std::string>                          hitIds_;
+    Camera                                            beforeSearch_;
+    NodeSet                                           selectedBefore_;
+    std::unordered_map<std::string, Color>            ringsBefore_;
+    std::vector<std::pair<QPointer<QWidget>, Qt::Corner>> overlays_;
+
     Canvas&     canvas_;
     QPointF     rightDown_;
     ImageSource images_;

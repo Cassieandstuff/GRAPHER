@@ -3,7 +3,14 @@
 #include <QApplication>
 #include <QFontDatabase>
 #include <QFontMetricsF>
+#include <QApplication>
+#include <QFrame>
 #include <QHelpEvent>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QTimer>
+#include <QVBoxLayout>
 #include <QKeyEvent>
 #include <QLineF>
 #include <QMenu>
@@ -13,6 +20,7 @@
 #include <QPainterPath>
 #include <QWheelEvent>
 
+#include <algorithm>
 #include <cmath>
 
 namespace grapher::qt {
@@ -39,6 +47,42 @@ Modifiers ModsOf(Qt::KeyboardModifiers m)
 }
 
 template <class... F> struct Overloaded : F... { using F::operator()...; };
+
+constexpr int kOverlayMargin = 8;
+
+/// @brief The minimap: paints Canvas::DrawMinimap, and a press or drag on it moves the canvas's view there.
+class MinimapView final : public QWidget {
+public:
+    MinimapView(Canvas& canvas, QWidget* parent, std::function<void()> moved)
+        : QWidget(parent), canvas_(canvas), moved_(std::move(moved))
+    {
+        setObjectName(QStringLiteral("grapherMinimap"));
+        setCursor(Qt::PointingHandCursor);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        Paint(p, canvas_.DrawMinimap(V(QPointF(width(), height()))));
+    }
+    void mousePressEvent(QMouseEvent* e) override { Go(e->position()); }
+    void mouseMoveEvent(QMouseEvent* e) override
+    {
+        if (e->buttons() & (Qt::LeftButton | Qt::MiddleButton)) Go(e->position());
+    }
+    void wheelEvent(QWheelEvent* e) override { e->accept(); }
+
+private:
+    void Go(QPointF at)
+    {
+        canvas_.CenterOnWorld(canvas_.MinimapToWorld(V(at), V(QPointF(width(), height()))));
+        moved_();
+    }
+
+    Canvas&               canvas_;
+    std::function<void()> moved_;
+};
 
 } // namespace
 
@@ -133,6 +177,162 @@ void CanvasWidget::paintEvent(QPaintEvent*)
 {
     QPainter p(this);
     Paint(p, canvas_.Draw(), images_);
+    if (minimap_ && minimap_->isVisible()) minimap_->update();
+}
+
+void CanvasWidget::setMinimapShown(bool on)
+{
+    if (!minimap_) minimap_ = new MinimapView(canvas_, this, [this] { update(); });
+    minimap_->setVisible(on);
+    placeOverlays();
+}
+
+bool CanvasWidget::minimapShown() const { return minimap_ && minimap_->isVisible(); }
+
+void CanvasWidget::addOverlay(QWidget* widget, Qt::Corner corner)
+{
+    widget->setParent(this);
+    widget->show();
+    overlays_.emplace_back(widget, corner);
+    placeOverlays();
+}
+
+void CanvasWidget::placeOverlays()
+{
+    if (minimap_) {
+        const QSize s(std::min(240, width() / 4), std::min(180, height() / 4));
+        minimap_->setGeometry(width() - s.width() - kOverlayMargin, height() - s.height() - kOverlayMargin, s.width(), s.height());
+    }
+    // Each corner's widgets stack away from it; the bottom right starts above the minimap.
+    int stack[4] = {kOverlayMargin, kOverlayMargin, kOverlayMargin, kOverlayMargin};
+    if (minimapShown()) stack[Qt::BottomRightCorner] += minimap_->height() + kOverlayMargin;
+    std::erase_if(overlays_, [](const auto& o) { return o.first.isNull(); });
+    for (const auto& [w, corner] : overlays_) {
+        const QSize s    = w->sizeHint().expandedTo(w->minimumSize());
+        const bool  left = corner == Qt::TopLeftCorner || corner == Qt::BottomLeftCorner;
+        const bool  top  = corner == Qt::TopLeftCorner || corner == Qt::TopRightCorner;
+        int&        at   = stack[corner];
+        const int   x    = left ? kOverlayMargin : width() - s.width() - kOverlayMargin;
+        const int   y    = top ? at : height() - at - s.height();
+        w->setGeometry(x, y, s.width(), s.height());
+        at += s.height() + kOverlayMargin / 2;
+    }
+}
+
+void CanvasWidget::openSearch(const QString& query)
+{
+    if (!searchBox_) {
+        searchBox_ = new QFrame(this);
+        searchBox_->setObjectName(QStringLiteral("grapherSearch"));
+        searchBox_->setFrameShape(QFrame::StyledPanel);
+        searchBox_->setAutoFillBackground(true);
+        auto* layout = new QVBoxLayout(searchBox_);
+        layout->setContentsMargins(6, 6, 6, 6);
+        query_ = new QLineEdit(searchBox_);
+        query_->setObjectName(QStringLiteral("grapherSearchQuery"));
+        query_->setPlaceholderText(tr("Find"));
+        query_->installEventFilter(this);
+        count_ = new QLabel(searchBox_);
+        hits_  = new QListWidget(searchBox_);
+        hits_->setObjectName(QStringLiteral("grapherSearchHits"));
+        hits_->setMaximumHeight(220);
+        hits_->setFocusPolicy(Qt::NoFocus);
+        layout->addWidget(query_);
+        layout->addWidget(count_);
+        layout->addWidget(hits_);
+        connect(query_, &QLineEdit::textChanged, this, [this] { runSearch(); });
+        connect(hits_, &QListWidget::currentRowChanged, this, [this](int row) { goToHit(row); });
+        connect(hits_, &QListWidget::itemActivated, this, [this] { closeSearch(true); });
+    }
+    beforeSearch_   = canvas_.camera;
+    selectedBefore_ = canvas_.SelectedNodes();
+    ringsBefore_    = canvas_.highlights.rings;
+    searchBox_->setGeometry(kOverlayMargin, kOverlayMargin, std::min(360, width() - 2 * kOverlayMargin), 290);
+    searchBox_->show();
+    searchBox_->raise();
+    query_->setFocus();
+    if (!query.isEmpty() && query != query_->text()) query_->setText(query);   // runs the search
+    else runSearch();
+    query_->selectAll();
+}
+
+void CanvasWidget::runSearch()
+{
+    const std::string  q      = query_->text().toStdString();
+    const SearchResult result = search_ ? search_(q) : Search(canvas_.GetGraph(), canvas_.GetSchema(), q);
+    hitIds_.clear();
+    const QSignalBlocker quiet(hits_);
+    hits_->clear();
+    for (const SearchHit& h : result.hits) {
+        const Node*       n     = canvas_.GetGraph().FindNode(h.node);
+        const NodeType*   t     = n ? canvas_.GetSchema().FindNode(n->type) : nullptr;
+        const std::string title = n && t && !t->titleField.empty() && !n->Field(t->titleField).empty() ? n->Field(t->titleField) : h.node;
+        hits_->addItem(QString::fromStdString(title + "  \u00b7  " + h.where + ": " + h.text));
+        hitIds_.push_back(h.node);
+    }
+    count_->setText(result.total > result.hits.size() ? tr("%1 of %2").arg(result.hits.size()).arg(result.total)
+                                                      : tr("%n hit(s)", nullptr, static_cast<int>(result.hits.size())));
+    canvas_.highlights.rings = ringsBefore_;
+    if (!hitIds_.empty()) {
+        hits_->setCurrentRow(0);
+        goToHit(0);
+    }
+    update();
+}
+
+void CanvasWidget::goToHit(int row)
+{
+    if (row < 0 || row >= static_cast<int>(hitIds_.size())) return;
+    const std::string& id = hitIds_[static_cast<std::size_t>(row)];
+    canvas_.Reveal(id);
+    canvas_.SelectNodes({id});
+    canvas_.CenterOn(id);
+    // The other hits are ringed.
+    canvas_.highlights.rings = ringsBefore_;
+    for (const std::string& other : hitIds_)
+        if (other != id) canvas_.highlights.rings[other] = canvas_.style.searchRing;
+    update();
+}
+
+void CanvasWidget::closeSearch(bool keep)
+{
+    if (!searchBox_ || !searchBox_->isVisible()) return;
+    const int row = hits_->currentRow();
+    canvas_.highlights.rings = ringsBefore_;
+    searchBox_->hide();
+    setFocus();
+    if (keep && row >= 0 && row < static_cast<int>(hitIds_.size())) {
+        emit searchAccepted(QString::fromStdString(hitIds_[static_cast<std::size_t>(row)]));
+    } else if (!keep) {
+        canvas_.camera = beforeSearch_;
+        canvas_.SelectNodes(selectedBefore_);
+        emit searchCancelled();
+    }
+    update();
+}
+
+bool CanvasWidget::eventFilter(QObject* watched, QEvent* e)
+{
+    if (watched == query_ && e->type() == QEvent::KeyPress) {
+        const auto* k = static_cast<QKeyEvent*>(e);
+        switch (k->key()) {
+        case Qt::Key_Up:
+        case Qt::Key_Down:
+            if (hits_->count() > 0)
+                hits_->setCurrentRow(std::clamp(hits_->currentRow() + (k->key() == Qt::Key_Up ? -1 : 1), 0, hits_->count() - 1));
+            return true;
+        case Qt::Key_Return:
+        case Qt::Key_Enter: closeSearch(true); return true;
+        case Qt::Key_Escape: closeSearch(false); return true;
+        default: break;
+        }
+    }
+    if (watched == query_ && e->type() == QEvent::FocusOut)
+        QTimer::singleShot(0, this, [this] {
+            // Leaving the box keeps the hit.
+            if (searchBox_ && searchBox_->isVisible() && !searchBox_->isAncestorOf(QApplication::focusWidget())) closeSearch(true);
+        });
+    return QWidget::eventFilter(watched, e);
 }
 
 void CanvasWidget::setHostNavigation(bool on)
@@ -156,6 +356,7 @@ bool CanvasWidget::event(QEvent* e)
 void CanvasWidget::resizeEvent(QResizeEvent*)
 {
     canvas_.SetViewport({static_cast<float>(width()), static_cast<float>(height())});
+    placeOverlays();
 }
 
 void CanvasWidget::mousePressEvent(QMouseEvent* e)

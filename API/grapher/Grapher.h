@@ -12,5 +12,6 @@
 #include <grapher/Port.h>
 #include <grapher/Ports.h>
 #include <grapher/Schema.h>
+#include <grapher/Search.h>
 #include <grapher/SchemaJson.h>
 #include <grapher/Style.h>

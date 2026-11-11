@@ -12,6 +12,7 @@ core knows no UI toolkit; backends paint its draw lists.
 | `grapher/Graph.h` | `Node` (with ports of its own), `Edge` (port to port, or node to node), `Graph` — a value type, so undo is a copy |
 | `grapher/Groups.h` | group membership: a frame group holds what lies inside it, a member group what names it as `parent` (`ParentGroup`, `GroupMembers`) |
 | `grapher/Dial.h` | a dial's geometry: `DialAxis` (cyclic or open), `RingOf` |
+| `grapher/Search.h` | `Search`: nodes by their text (titles, ids, type names, rows, fields, bodies), best first |
 | `grapher/Layout.h` | `LayoutColumns` (columns by wire distance, few crossings) and `LayoutGraph` (inside out through member groups, kept nodes stay, open groups push) |
 | `grapher/Routing.h` | `RouteWires` — ports spread along node sides; wires that would cut through a node routed around it (orthogonal A*), drawn in their edge type's style |
 | `grapher/Canvas.h` | `Camera`, `Canvas` — gestures (select, move, resize, connect, marquee, pan, zoom) and `Draw()` |
@@ -85,6 +86,18 @@ sixteenths, and sets it like a choice (`SetValue`).
 **Wire styles.** An edge type can be dotted and set its width. With a canvas, a wire keeps the sides it leaves and enters
 by until its ends have moved well past where they would turn (`RoutingOptions::sideHysteresis`), so dragging along the
 middle doesn't flicker. A row style can be a chip (a rounded patch behind its label).
+
+**Highlights** are what a host lights over the graph without editing it (`Canvas::highlights`): a glow behind nodes
+and wires (a closed group glows with the brightest thing it holds, a merged wire with the brightest it stands for),
+coloured rings, dimmed nodes, and arrows between nodes (a dashed arc whose head fills with `progress`, a flash, a loop
+on one node). `Style::highlightSelectedWires` draws the wires of a selected node in the selection colour, and an edge
+type `onTop` draws over the nodes.
+
+**Minimap and search.** `Canvas::DrawMinimap` draws the whole graph small (a graph too big to read whole keeps a
+readable scale and follows the view), and `MinimapToWorld` / `CenterOnWorld` move the view from it; the Qt widget shows
+it in the bottom right (`setMinimapShown`). `grapher::Search` ranks nodes by their text; the Qt widget's search box
+(`openSearch`, or a host's own ranking through `setSearchFunction`) walks the hits, opening the groups around each and
+ringing the rest, keeps the hit on Enter and goes back on Esc. `addOverlay` keeps a host's widgets over a corner.
 
 **Large graphs.** The canvas keeps its routes, per-node and per-edge tables until a frame, port, edge or option
 changes, culls what is off screen, and hit-tests only what is near the pointer. On a graph of more than 2000 nodes a

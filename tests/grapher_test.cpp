@@ -1693,6 +1693,125 @@ void TestDial()
     CHECK(back && *back == styled);
 }
 
+// ── Highlights, minimap, search ─────────────────────────────────────────────
+
+bool HasFill(const grapher::DrawList& l, auto&& pred)
+{
+    for (const auto& cmd : l.cmds)
+        if (const auto* f = std::get_if<grapher::FillRect>(&cmd); f && pred(*f)) return true;
+    return false;
+}
+
+void TestHighlights()
+{
+    grapher::Schema s = FolderSchema();
+    grapher::EdgeType top{"top", "top"};
+    top.color = {9, 9, 9};
+    top.onTop = true;
+    s.edgeTypes.push_back(top);
+    grapher::Graph g = FolderGraph();   // F1 holds a and F2; F2 holds b; c alone; ab, ca, cb
+    g.edges.push_back({"cF", "c", "F1", "top"});
+    grapher::Canvas c(g, s);
+    c.SetViewport({1000, 600});
+    c.camera.pan = {100, 100};
+    const grapher::Color glow = c.style.glow;
+    auto glowAround = [&](std::string_view id) {
+        const grapher::Rect r = c.ScreenRectOf(id);
+        return HasFill(c.Draw(), [&](const grapher::FillRect& f) { return f.fill.r == glow.r && f.fill.g == glow.g && f.rect.Holds(r) && f.rect.w > r.w; });
+    };
+
+    // A node glows; closed, its group glows for it; a merged wire glows for the wires it stands for.
+    c.highlights.glow["a"] = 0.8f;
+    CHECK(glowAround("a") && !glowAround("c"));
+    c.SetCollapsed("F1", true);
+    CHECK(glowAround("F1"));
+    c.highlights.edgeGlow["cb"] = 1.f;   // merged into the wire drawn for "ca"
+    bool halo = false;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* p = std::get_if<grapher::Polyline>(&cmd); p && p->color.r == glow.r && p->color.g == glow.g && p->width > 5.f) halo = true;
+    CHECK(halo);
+    c.SetCollapsed("F1", false);
+
+    // Rings and dimming draw over the node; wires of a selected node take the selection's colour.
+    c.highlights.rings["c"] = grapher::Color{10, 200, 30};
+    c.highlights.dimmed.insert("b");
+    const grapher::Rect rc = c.ScreenRectOf("c"), rb = c.ScreenRectOf("b");
+    const auto list = c.Draw();
+    CHECK(HasFill(list, [&](const grapher::FillRect& f) { return f.stroke == (grapher::Color{10, 200, 30}) && f.rect.Holds(rc); }));
+    CHECK(HasFill(list, [&](const grapher::FillRect& f) { return f.rect == rb && f.fill.a == 150; }));
+    c.style.highlightSelectedWires = true;
+    c.SelectNodes({"c"});
+    int selectedWires = 0;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* p = std::get_if<grapher::Polyline>(&cmd); p && p->color == c.style.selection && p->points.size() > 2) ++selectedWires;
+    CHECK(selectedWires == 3);   // ca, cb, and the on-top cF
+
+    // A wire on top draws after every node; an arrow is a dashed arc with a head, and a loop on one node.
+    c.ClearSelection();
+    const auto drawn = c.Draw();
+    std::size_t lastNode = 0, topWire = 0;
+    for (std::size_t k = 0; k < drawn.cmds.size(); ++k) {
+        if (const auto* f = std::get_if<grapher::FillRect>(&drawn.cmds[k]); f && f->rect == c.ScreenRectOf("c")) lastNode = k;
+        if (const auto* p = std::get_if<grapher::Polyline>(&drawn.cmds[k]); p && p->color == (grapher::Color{9, 9, 9})) topWire = k;
+    }
+    CHECK(topWire > lastNode && lastNode > 0);
+    c.highlights.arrows = {{"a", "c", 0.5f, 1.f}, {"c", "c", 0.f, 0.f}};
+    int arcs = 0, heads = 0, flashes = 0;
+    for (const auto& cmd : c.Draw().cmds) {
+        if (const auto* p = std::get_if<grapher::Polyline>(&cmd); p && p->color == glow && p->dashed) ++arcs;
+        if (const auto* p = std::get_if<grapher::Polygon>(&cmd); p && p->fill.r == glow.r && p->points.size() == 3) ++heads;
+        if (const auto* f = std::get_if<grapher::Circle>(&cmd); f && f->fill == (grapher::Color{255, 255, 255, 200})) ++flashes;
+    }
+    CHECK(arcs == 2 && heads == 2 && flashes == 1);
+}
+
+void TestMinimapAndSearch()
+{
+    const grapher::Schema s = FolderSchema();
+    grapher::Graph        g = FolderGraph();
+    grapher::Canvas       c(g, s);
+    c.SetViewport({1000, 600});
+    c.style.highlightSelectedWires = true;
+    c.SelectNodes({"c"});
+
+    // The whole graph drawn small, the selection in its colour, the view framed; a point on it maps back to the world.
+    const grapher::Vec2 size{240, 180};
+    const auto          map = c.DrawMinimap(size);
+    CHECK(map.size == size && HasFill(map, [&](const grapher::FillRect& f) { return f.fill == c.style.selection; }));
+    const grapher::Vec2 w = c.MinimapToWorld({120, 90}, size);
+    CHECK(c.FrameOf("F1").x - 60 < w.x && w.x < c.FrameOf("c").Right() + 60);
+    c.CenterOnWorld(c.FrameOf("c").Center());
+    CHECK(Near(c.ScreenRectOf("c").Center(), {500, 300}));
+
+    // A graph too long to read whole keeps a readable scale and follows the view.
+    grapher::Graph tall;
+    for (int k = 0; k < 2000; ++k) tall.nodes.push_back({"t" + std::to_string(k), "box", {0, k * 100.f, 100, 60}});
+    grapher::Canvas tc(tall, s);
+    tc.SetViewport({1000, 600});
+    tc.CenterOn("t1500");
+    const grapher::Vec2 middle = tc.MinimapToWorld(size * 0.5f, size);
+    CHECK(std::abs(middle.y - tc.FrameOf("t1500").Center().y) < 200.f);
+
+    // Search: titles before ids before fields; the start and the whole of a word count most; case doesn't matter.
+    grapher::Schema named = s;
+    named.nodeTypes[0].fields = {{"name", "Name"}, {"note", "Note"}};
+    grapher::Graph h;
+    h.nodes.push_back({"x1", "box", {}, {{"name", "Running"}}});
+    h.nodes.push_back({"x2", "box", {}, {{"name", "Run"}}});
+    h.nodes.push_back({"x3", "box", {}, {{"name", "Walk"}, {"note", "runs late"}}});
+    h.nodes.push_back({"run", "box", {}, {{"name", "Idle"}}});
+    h.nodes.push_back({"x5", "box", {}, {{"name", "Sit"}}});
+    const auto found = grapher::Search(h, named, "RUN");
+    CHECK(found.total == 4 && found.hits.size() == 4);
+    if (found.hits.size() == 4) {
+        CHECK(found.hits[0].node == "x2" && found.hits[0].where == "title");   // the whole title
+        CHECK(found.hits[1].node == "run" && found.hits[1].where == "id");      // the whole id
+        CHECK(found.hits[2].node == "x1" && found.hits[3].node == "x3" && found.hits[3].where == "Note");
+    }
+    CHECK(grapher::Search(h, named, "run", 2).hits.size() == 2 && grapher::Search(h, named, "run", 2).total == 4);
+    CHECK(grapher::Search(h, named, "").hits.empty() && grapher::Search(h, named, "zzz").total == 0);
+}
+
 } // namespace
 
 int main()
@@ -1734,6 +1853,8 @@ int main()
     TestDocks();
     TestShowWithAndWireStyles();
     TestDial();
+    TestHighlights();
+    TestMinimapAndSearch();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

@@ -131,6 +131,26 @@ struct Intent {
 };
 /// @}
 
+/// @brief An arrow drawn between two nodes for a while (a transition under way): a dashed arc bowing out of their left
+///        sides (a loop when they are the same node), with a head at its middle that fills as `progress` goes 0..1, and a
+///        flash when `flash` is above 0.
+struct Arrow {
+    std::string from, to;
+    float       progress = 0.f;
+    float       flash    = 0.f;   ///< 0..1
+};
+
+/// @brief What the host lights over the graph, without editing it: a glow behind nodes and wires (0..1; a closed group
+///        glows with the brightest thing it holds, a merged wire with the brightest it stands for), coloured rings,
+///        nodes dimmed, and arrows. None of it is an edit.
+struct Highlights {
+    std::unordered_map<std::string, float> glow;       ///< by node id
+    std::unordered_map<std::string, float> edgeGlow;   ///< by edge id
+    std::unordered_map<std::string, Color> rings;      ///< by node id
+    NodeSet                                dimmed;
+    std::vector<Arrow>                     arrows;
+};
+
 /// @brief A click on a row with an action, for the host (or a backend, for a Choice) to act on.
 struct RowClick {
     std::string node, row;
@@ -153,6 +173,7 @@ public:
     Style          style;
     RoutingOptions routing;
     std::shared_ptr<WireRouter> router;   ///< a routing backend; null = the built-in RouteWires
+    Highlights     highlights;   ///< what the host lights; set it and repaint
     float          snap = 10.f;   ///< world grid that moves and resizes land on; 0 = free
     EditMode       editMode   = EditMode::Direct;
     SelectKeys     selectKeys = SelectKeys::Toggle;
@@ -283,6 +304,14 @@ public:
 
     /// @brief The picture as it is now: grid, edges, nodes, selection, gesture feedback.
     [[nodiscard]] DrawList Draw() const;
+    /// @brief The whole graph drawn small into `size` pixels: groups, nodes (selected and ringed ones in their colours) and
+    ///        the part in view. When the graph is too tall or wide to read at that size, it keeps a readable scale and
+    ///        follows the view.
+    [[nodiscard]] DrawList DrawMinimap(Vec2 size) const;
+    /// @return the world point a minimap of `size` shows at `at`
+    [[nodiscard]] Vec2 MinimapToWorld(Vec2 at, Vec2 size) const;
+    /// @brief Put a world point in the middle of the view.
+    void CenterOnWorld(Vec2 world);
     /// @brief The whole graph at `zoom` with `margin` pixels around it and no selection or grid: an export.
     [[nodiscard]] DrawList DrawAll(float zoom = 1.f, float margin = 40.f) const;
 
@@ -389,6 +418,11 @@ private:
     bool                                          snapDial_  = false;
     mutable bool                                  hasDocks_  = false;
     mutable bool                                  hasMembers_ = false;
+    mutable std::unordered_map<std::string, std::string> shownAs_;      ///< a hidden node -> the closed group showing it
+    mutable std::unordered_map<std::string, std::string> edgeShownAs_;  ///< a merged or remapped edge -> the one drawn
+    /// @brief The minimap's scale and corner for `size`: the world point at its origin, and pixels per world unit.
+    [[nodiscard]] std::pair<Vec2, float> MinimapFrame(Vec2 size) const;
+    void DrawArrow(std::vector<DrawCmd>& c, const Arrow& a, const Camera& cam) const;
     mutable std::vector<std::size_t>              dockParent_;   ///< per shown node: its dock parent's index
     mutable std::unordered_map<std::size_t, std::array<std::vector<std::size_t>, 4>> dockSide_;   ///< by parent: bottom, top, right, left
     mutable std::unordered_map<std::size_t, std::vector<std::size_t>> dockBeside_;   ///< by parent: what sits beside its rows

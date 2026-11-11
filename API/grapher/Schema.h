@@ -93,6 +93,7 @@ struct EdgeType {
     /// @brief A wire of this type takes the colour of the type its Out port carries (PortTypeOf), when it has one.
     bool        portColor = false;
     bool        dotted    = false;   ///< drawn dotted (wins over dashed)
+    bool        onTop     = false;   ///< drawn over the nodes (a wire between two groups that must stay readable)
     float       width     = 1.5f;    ///< the line's width at zoom 1, in pixels
     friend bool operator==(const EdgeType&, const EdgeType&) = default;
 };
