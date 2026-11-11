@@ -1520,6 +1520,20 @@ void TestLayoutDocks()
     const grapher::Rect G = frameOf(laid, "G"), M = frameOf(laid, "m"), N = frameOf(laid, "n");
     CHECK(M == k.nodes[1].frame);
     CHECK((G.Holds(M) && G.Holds(N) && G.x == M.x - o.padding && !N.Intersects(M)));
+
+    // A kept item takes no room in the columns: a wide one wired in the middle doesn't push the next column away, and
+    // what the layout places slides down clear of it.
+    grapher::Graph w;
+    w.nodes.push_back({"a", "box", {0, 0, 100, 60}});
+    w.nodes.push_back({"W", "box", {200, 0, 2000, 80}});
+    w.nodes.push_back({"b", "box", {0, 0, 100, 60}});
+    w.edges.push_back({"e1", "a", "W", "curve"});
+    w.edges.push_back({"e2", "W", "b", "curve"});
+    w.edges.push_back({"e3", "a", "b", "curve"});
+    laid = grapher::LayoutGraph(w, s, {"W"}, {}, o);
+    const grapher::Rect A = frameOf(laid, "a"), W = frameOf(laid, "W"), B = frameOf(laid, "b");
+    CHECK(W == w.nodes[1].frame);
+    CHECK((B.x == A.Right() + o.gaps.column && !B.Intersects(W) && !A.Intersects(W)));
 }
 
 void TestFixedGroupAndHover()

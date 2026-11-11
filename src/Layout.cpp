@@ -429,15 +429,18 @@ private:
             item[c]  = {span_[c].w, span_[c].h};
         }
 
-        // Columns for what the layout places; a kept item stays where it is, relative to its parent's content corner.
+        // Columns for what the layout places; a kept item stays where it is, relative to its parent's content corner, and takes
+        // no room in the columns (a wide one would push every later column away).
         std::unordered_map<std::size_t, int> local;
         std::vector<Vec2>                   sizes;
         for (const std::size_t c : kids) {
+            if (kept_[c]) continue;
             local.emplace(c, static_cast<int>(sizes.size()));
             sizes.push_back(item.at(c));
         }
         std::vector<std::pair<int, int>> edges;
-        for (const auto& [a, b] : wires_[Slot(g)]) edges.emplace_back(local.at(a), local.at(b));
+        for (const auto& [a, b] : wires_[Slot(g)])
+            if (local.contains(a) && local.contains(b)) edges.emplace_back(local.at(a), local.at(b));
         const std::vector<Vec2> placed = LayoutColumns(sizes, edges, o_.gaps);
         const Vec2 corner = g == kTop ? origin_ : Vec2{g_.nodes[g].frame.x + o_.padding, g_.nodes[g].frame.y + o_.header};
         std::vector<Rect> keptRects;
