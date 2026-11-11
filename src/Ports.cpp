@@ -80,6 +80,10 @@ std::vector<PortSlot> LayoutPorts(const Node& node, const Schema& schema, const 
             // On the title line (a group's header strip).
             const float y = card ? f.y + m.Top() + m.titleSize * 0.65f : f.y + std::min(f.h, m.groupHeader) * 0.5f;
             slot.at = {x, std::min(y, f.Bottom())};
+        } else if (const int bound = card && horizontal ? RowOfPort(node, p.id) : -1; bound >= 0) {
+            // On the line of the Row that claims it.
+            slot.row = RowRect(node, schema, m, static_cast<std::size_t>(bound));
+            slot.at  = {x, slot.row.y + m.Row() * 0.5f};
         } else if (card && horizontal) {
             int&        k = rowAt[slot.side == PortSide::Left ? 0 : 1];
             const float y = f.y + m.Header() + m.Row() * static_cast<float>(k);
@@ -104,12 +108,29 @@ const PortSlot* FindSlot(const std::vector<PortSlot>& slots, std::string_view id
     return nullptr;
 }
 
+int RowOfPort(const Node& node, std::string_view port)
+{
+    for (std::size_t k = 0; k < node.rows.size(); ++k)
+        if (!node.rows[k].port.empty() && node.rows[k].port == port) return static_cast<int>(k);
+    return -1;
+}
+
+float RowsTop(const Node& node, const Schema& schema, const CardMetrics& m)
+{
+    return node.frame.y + m.Header() + m.Row() * static_cast<float>(PortRows(node, schema));
+}
+
+Rect RowRect(const Node& node, const Schema& schema, const CardMetrics& m, std::size_t index)
+{
+    return {node.frame.x, RowsTop(node, schema, m) + m.Row() * static_cast<float>(index), node.frame.w, m.Row()};
+}
+
 int PortRows(const Node& node, const Schema& schema)
 {
     if (!IsCard(node, schema)) return 0;
     int left = 0, right = 0;
     for (const PortDef& p : PortsOf(node, schema)) {
-        if (p.onHeader) continue;
+        if (p.onHeader || RowOfPort(node, p.id) >= 0) continue;
         const PortSide s = SideOf(p);
         if (s == PortSide::Left) ++left;
         else if (s == PortSide::Right) ++right;
@@ -155,7 +176,9 @@ float CardHeight(const Node& node, const Schema& schema, const CardMetrics& m)
     if (t)
         for (const FieldDef& f : t->fields)
             if (f.onCard && f.id != t->titleField && std::find(bound.begin(), bound.end(), f.id) == bound.end()) ++fields;
-    return m.Header() + m.Row() * static_cast<float>(PortRows(node, schema) + fields) + m.padding;
+    const float image = t && t->imageHeight > 0.f ? t->imageHeight + m.padding * 0.5f : 0.f;
+    return m.Header() + m.Row() * static_cast<float>(PortRows(node, schema) + static_cast<int>(node.rows.size()) + fields) + image +
+           m.padding;
 }
 
 } // namespace grapher

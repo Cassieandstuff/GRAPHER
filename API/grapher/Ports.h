@@ -3,8 +3,8 @@
 /// @brief Where a node's ports sit, in world units: the one layout the canvas draws and hit-tests and every router ends
 ///        wires on. On a card, ports on the left and right stack in rows under the header (row k holds the k-th left
 ///        port and the k-th right port, as a material node's inputs and outputs pair up); a port `onHeader` sits on the
-///        title line; ports on the top or bottom spread evenly along that side. On any other shape every side's ports
-///        spread evenly along it.
+///        title line; ports on the top or bottom spread evenly along that side. A port a Row claims (Row::port) sits
+///        on that row's line instead. On any other shape every side's ports spread evenly along it.
 
 #include <grapher/Graph.h>
 #include <grapher/Schema.h>
@@ -48,10 +48,20 @@ struct PortSlot {
 /// @return the slot of port `id`, or nullptr
 [[nodiscard]] const PortSlot* FindSlot(const std::vector<PortSlot>& slots, std::string_view id);
 
-/// @return how many port rows a card of this node has (the longer of its left and right columns)
+/// @return how many rows a card gives the ports no Row claims (the longer of its left and right columns); the
+///        node's own rows (Node::rows) follow them
 [[nodiscard]] int PortRows(const Node& node, const Schema& schema);
 
-/// @return the height a card needs to show its header, its port rows and its on-card fields
+/// @return the index of the Row that claims port `port` (Row::port), or -1
+[[nodiscard]] int RowOfPort(const Node& node, std::string_view port);
+
+/// @return where a card's own rows (Node::rows) start, world units
+[[nodiscard]] float RowsTop(const Node& node, const Schema& schema, const CardMetrics& metrics);
+
+/// @return the line of row `index` of Node::rows, world units
+[[nodiscard]] Rect RowRect(const Node& node, const Schema& schema, const CardMetrics& metrics, std::size_t index);
+
+/// @return the height a card needs to show its header, its port rows, its own rows, its on-card fields and its image
 [[nodiscard]] float CardHeight(const Node& node, const Schema& schema, const CardMetrics& metrics);
 
 /// @brief The type port `port` of `node` carries now: its declared type, or, for a port with `typeFrom`, the type of

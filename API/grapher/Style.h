@@ -30,6 +30,7 @@ struct Style {
     float resizeGrip  = 12.f;
     float minNode     = 80.f;   ///< the smallest a node may be resized to
     float detailZoom  = 0.45f;  ///< below this zoom a card shows only its title
+    float textZoom    = 0.3f;   ///< below this zoom no text draws at all, only shapes
     float groupHeader = 30.f;   ///< a group's header strip: its title sits there, and a click there picks the group
     std::uint8_t groupFill = 22;   ///< the alpha of a group's band-coloured fill
 };

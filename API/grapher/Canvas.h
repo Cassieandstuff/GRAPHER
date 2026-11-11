@@ -2,8 +2,10 @@
 /// @file
 /// @brief The canvas: a camera over a Graph, the gestures that edit it (select, move, resize, connect, marquee, pan,
 ///        zoom) and the DrawList that shows it. UI-agnostic: a backend feeds it pointer events in screen pixels and
-///        paints what Draw returns. The host owns the Graph and the undo history; the canvas calls `onBeforeChange`
-///        right before it mutates the graph, so the host can snapshot it.
+///        paints what Draw returns. The host owns the Graph and the undo history. In EditMode::Direct the canvas
+///        calls `onBeforeChange` right before it mutates the graph, so the host can snapshot it. In EditMode::Propose
+///        it never touches the host's graph: a gesture plays out on a copy, and the edit arrives as an Intent the host
+///        applies (or refuses) through its own history, then calls Refresh.
 
 #include <grapher/DrawList.h>
 #include <grapher/Graph.h>
@@ -18,8 +20,11 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace grapher {
@@ -52,15 +57,71 @@ enum class HitKind {
     Connect,   ///< a node's connect handle (a node without ports)
     Edge,
     Port,      ///< a port's pin; Hit::port names it
+    Row,       ///< one of a node's rows (Node::rows); Hit::row names it
 };
 
 struct Hit {
     HitKind     kind = HitKind::None;
     std::string id;     ///< the node or edge
     std::string port;   ///< Port: the port on node `id`
+    std::string row;    ///< Row: the row of node `id`
 };
 
 using NodeSet = std::set<std::string, std::less<>>;
+
+enum class EditMode {
+    Direct,    ///< gestures edit the graph, between onBeforeChange and onChanged
+    Propose,   ///< gestures play out on a copy and arrive as an Intent; the host's graph is never touched
+};
+
+/// @brief What Shift and Ctrl do to a click or a box select.
+enum class SelectKeys {
+    Toggle,           ///< either toggles a clicked node; either adds a box to the selection
+    ExtendSubtract,   ///< Shift adds, Ctrl takes away (the Blender convention)
+};
+
+/// @name Intents: the edits a canvas in EditMode::Propose hands its host
+/// @{
+/// @brief Nodes that moved or were resized (a node dropped into a group slides in: its frame says where).
+struct MoveNodes {
+    std::vector<std::pair<std::string, Rect>> frames;   ///< every node whose frame changed, with its new frame
+};
+/// @brief A new wire, and the wires it replaces at a port that was full.
+struct ConnectWire {
+    Edge                     edge;
+    std::vector<std::string> replaced;
+};
+/// @brief A wire dragged from a node or port and let go over empty canvas (the host may offer to make something there).
+struct ConnectToNothing {
+    std::string node;
+    std::string port;   ///< empty: dragged from the node's connect handle
+    Vec2        at;     ///< world point it was let go at
+};
+/// @brief Nodes and wires to remove: the nodes, and every wire going with them or selected.
+struct RemoveItems {
+    NodeSet                  nodes;
+    std::vector<std::string> edges;
+};
+/// @brief A node to add, its id, type and frame chosen.
+struct CreateNode {
+    Node node;
+};
+/// @brief A choice picked on a row (RowAction::Choice): set `field` of `node` to `value`.
+struct SetValue {
+    std::string node, row, field, value;
+};
+struct Intent {
+    std::string label;   ///< what an undo step would be called ("Move", "Connect")
+    std::variant<MoveNodes, ConnectWire, ConnectToNothing, RemoveItems, CreateNode, SetValue> change;
+};
+/// @}
+
+/// @brief A click on a row with an action, for the host (or a backend, for a Choice) to act on.
+struct RowClick {
+    std::string node, row;
+    RowAction   action = RowAction::None;
+    Vec2        at;   ///< screen point
+};
 
 class Canvas {
 public:
@@ -78,10 +139,25 @@ public:
     RoutingOptions routing;
     std::shared_ptr<WireRouter> router;   ///< a routing backend; null = the built-in RouteWires
     float          snap = 10.f;   ///< world grid that moves and resizes land on; 0 = free
+    EditMode       editMode   = EditMode::Direct;
+    SelectKeys     selectKeys = SelectKeys::Toggle;
+    float          minZoom = 0.1f;
+    float          maxZoom = 4.f;
+    /// @brief The middle and right buttons pan. False when the host navigates the view itself (PanBy, ZoomAbout).
+    bool           panWithButtons = true;
 
-    std::function<void(std::string_view label)> onBeforeChange;   ///< right before the graph mutates
-    std::function<void()>                       onChanged;        ///< after a mutation is complete
+    std::function<void(std::string_view label)> onBeforeChange;   ///< Direct: right before the graph mutates
+    std::function<void()>                       onChanged;        ///< Direct: after a mutation is complete
     std::function<void()>                       onSelectionChanged;
+    /// @brief Propose: every edit. Direct: only what the canvas can't do itself (ConnectToNothing).
+    std::function<void(const Intent&)>          onIntent;
+
+    /// @brief The host applied (or refused) what the canvas proposed: show its graph again. A no-op in Direct mode.
+    void Refresh();
+    /// @return whether a proposal is showing (Propose mode, before Refresh)
+    [[nodiscard]] bool Proposing() const { return graph_ != host_; }
+    /// @brief Stop the gesture under way (Esc): a move or resize goes back where it started, a wire or box is dropped.
+    void CancelGesture();
 
     void SetViewport(Vec2 size) { viewport_ = size; }
     [[nodiscard]] Vec2 Viewport() const { return viewport_; }
@@ -133,7 +209,30 @@ public:
 
     /// @brief Fit every node in the viewport (zoom capped at 1).
     void Frame();
+    /// @brief Fit `ids` (every node when empty) with `margin` pixels around them, zoom no closer than `zoomCap`.
+    void Frame(const NodeSet& ids, float margin = 40.f, float zoomCap = 1.f);
+    /// @brief Put the node's centre in the middle of the view, at `zoom` when given.
+    void CenterOn(std::string_view nodeId, std::optional<float> zoom = std::nullopt);
+    /// @brief Pan as little as it takes to show the whole node with `margin` pixels around it (as much as fits).
+    void EnsureVisible(std::string_view nodeId, float margin = 60.f);
+    /// @brief Move the view by `pixels` (the content follows the hand: right and down positive).
+    void PanBy(Vec2 pixels);
+    /// @brief Scale the view by `factor` (> 1 closer), keeping `anchor` (screen) where it is, within minZoom and maxZoom.
+    /// @return false when the zoom was already at its limit
+    bool ZoomAbout(float factor, Vec2 anchor);
     [[nodiscard]] Rect ScreenRectOf(std::string_view nodeId) const;
+    /// @return the middle of the node's title line in screen pixels, or nullopt
+    [[nodiscard]] std::optional<Vec2> HeaderScreenPos(std::string_view nodeId) const;
+    /// @return the line of row `row` of the node in screen pixels, or nullopt
+    [[nodiscard]] std::optional<Rect> RowScreenRect(std::string_view nodeId, std::string_view row) const;
+    /// @return what to show over a screen point: a row's tooltip, else its node's; a port's label and type; an edge's label
+    [[nodiscard]] std::string TooltipAt(Vec2 screen) const;
+
+    /// @brief The last click on a row with an action, once: a backend acts on it after PointerUp.
+    [[nodiscard]] std::optional<RowClick> TakeRowClick();
+    /// @brief Pick `value` on a Choice row: sets its field (Direct) or proposes it (Propose).
+    /// @return false when the row isn't a Choice with a field
+    bool PickChoice(std::string_view nodeId, std::string_view row, std::string_view value);
 
     /// @brief The picture as it is now: grid, edges, nodes, selection, gesture feedback.
     [[nodiscard]] DrawList Draw() const;
@@ -141,7 +240,7 @@ public:
     [[nodiscard]] DrawList DrawAll(float zoom = 1.f, float margin = 40.f) const;
 
 private:
-    enum class Mode { Idle, Moving, Resizing, Connecting, Marquee, Panning };
+    enum class Mode { Idle, Moving, Resizing, Connecting, Marquee, Panning, RowPress };
 
     [[nodiscard]] DrawList Render(const Camera& cam, Vec2 viewport, bool chrome) const;
     /// @param groupInterior a group's empty interior counts as the group (a connection's target)
@@ -161,10 +260,18 @@ private:
     [[nodiscard]] std::string LandingPort(const Node& from, std::string_view port, const Node& to) const;
     [[nodiscard]] float Snap(float v) const;
     void Changed();
+    /// @brief The end of an edit: Direct reports onChanged, Propose hands `intent` to onIntent.
+    void Changed(Intent intent);
     void SelectionChanged();
     void Before(std::string_view label);
+    /// @brief Gather what a press on a node starts moving: the selection, and what its groups hold.
+    void StartMove();
+    /// @brief Propose: the frames on the copy that differ from the host's.
+    [[nodiscard]] MoveNodes MovedFrames() const;
 
-    Graph*        graph_;
+    Graph*        graph_;   ///< what the canvas shows and edits: the host's graph, or the copy a proposal plays out on
+    Graph*        host_;
+    Graph         scratch_;
     const Schema* schema_;
     Vec2          viewport_{800.f, 600.f};
 
@@ -175,6 +282,9 @@ private:
     Mode        mode_ = Mode::Idle;
     bool        started_ = false;   ///< the gesture moved past the drag threshold (a click never snapshots)
     bool        additive_ = false;
+    bool        subtract_ = false;   ///< a box select that takes away
+    std::string pressRow_;           ///< the row a RowPress started on
+    std::optional<RowClick> rowClick_;
     Vec2        downAt_;
     Vec2        pointer_;
     Vec2        panAtDown_;
@@ -185,9 +295,25 @@ private:
     std::vector<std::pair<std::string, Rect>> origin_;   ///< frames at the start of a move or resize
     NodeSet     carried_;           ///< moving because a selected group holds them, not because they are selected
 
+    /// @brief Bring the per-graph caches up to date (rerouting when a frame, a port, an edge or the options changed):
+    ///        the wires, each node's type and group flag, each edge's path and bounds, the wired ports, the id index.
+    void Sync() const;
+    /// @brief Sync unless nothing could have changed since the last one (the same graph, counts and canvas edits): a
+    ///        hit test runs on the picture last drawn.
+    void SyncForHit() const;
+    [[nodiscard]] const Node* NodeById(std::string_view id) const;
+
     mutable WirePaths   wires_;
     mutable std::size_t wiresKey_   = 0;
     mutable bool        wiresValid_ = false;
+    mutable std::vector<char>                     grouped_;    ///< per node: its type is a group
+    mutable std::vector<const std::vector<Vec2>*> paths_;      ///< per edge: its wire, or null
+    mutable std::vector<Rect>                     boxes_;      ///< per edge: its wire's bounds, world units
+    mutable std::unordered_set<std::string>       wiredPorts_; ///< "node\x1fport" for every port a wire uses
+    mutable std::unordered_map<std::string_view, std::size_t> index_;   ///< node id -> index
+    mutable const Graph* synced_     = nullptr;
+    mutable std::size_t  syncedEdits_ = 0;
+    std::size_t          edits_       = 0;   ///< bumped by every edit the canvas makes
     mutable double      routeMs_    = 0.0;   ///< how long the last built-in route around the nodes took
     mutable WirePaths   routed_;             ///< the backend's last paths
     mutable std::size_t backendKey_ = 0;     ///< the router and options the backend last routed with

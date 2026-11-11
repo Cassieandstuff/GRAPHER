@@ -77,6 +77,13 @@ const PortType* Schema::FindPortType(std::string_view id) const
     return nullptr;
 }
 
+const RowStyle* Schema::FindRowStyle(std::string_view id) const
+{
+    for (const RowStyle& s : rowStyles)
+        if (s.id == id) return &s;
+    return nullptr;
+}
+
 bool Schema::IsA(std::string_view type, std::string_view base) const
 {
     if (type == base) return true;
@@ -116,6 +123,13 @@ void Schema::PutNodeType(NodeType type)
 }
 
 // ── Graph ────────────────────────────────────────────────────────────────────
+
+const Row* Node::FindRow(std::string_view id) const
+{
+    for (const Row& r : rows)
+        if (r.id == id) return &r;
+    return nullptr;
+}
 
 const std::string& Node::Field(std::string_view key) const
 {

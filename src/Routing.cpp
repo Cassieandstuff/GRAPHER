@@ -9,6 +9,7 @@
 #include <map>
 #include <queue>
 #include <tuple>
+#include <unordered_map>
 
 namespace grapher {
 
@@ -17,6 +18,11 @@ namespace {
 constexpr int   kCurveSegments = 24;
 constexpr int   kCornerSteps   = 6;
 constexpr float kEps           = 0.01f;
+constexpr float kBucket        = 256.f;    ///< the side of a bucket of the obstacle index, world units
+/// @brief Up to this many obstacles, every wire that needs a route shares one grid; past it each routes on a grid of
+///        the nodes around it alone (kLocalMargin beyond its ends).
+constexpr std::size_t kOneGrid     = 400;
+constexpr float       kLocalMargin = 160.f;
 
 enum Side { Left = 0, Right = 1, Top = 2, Bottom = 3 };
 
@@ -99,17 +105,65 @@ bool SegmentHitsRect(Vec2 a, Vec2 b, const Rect& r)
     return clip(-dx, a.x - r.x) && clip(dx, r.Right() - a.x) && clip(-dy, a.y - r.y) && clip(dy, r.Bottom() - a.y) && t1 - t0 > 1e-4f;
 }
 
-/// @param solid which nodes block a wire (a group doesn't: wires pass over it)
-bool PathClear(const std::vector<Vec2>& pts, const std::vector<Rect>& nodes, const std::vector<char>& solid, std::size_t skipA,
+/// @brief A uniform grid of buckets over the solid nodes (a group is no obstacle: wires pass over it), so the nodes near
+///        a point or a box are found without looking at every node.
+class Buckets {
+public:
+    Buckets(const std::vector<Rect>& frames, const std::vector<char>& solid, float cell) : cell_(cell), seen_(frames.size(), 0)
+    {
+        for (std::size_t k = 0; k < frames.size(); ++k)
+            if (solid[k]) Cells(frames[k], [&](long long key) { cells_[key].push_back(k); });
+    }
+
+    /// @brief Calls `visit` once for each solid node whose bucket the box touches.
+    template <class F> void Visit(const Rect& box, F&& visit) const
+    {
+        ++stamp_;
+        Cells(box, [&](long long key) {
+            const auto it = cells_.find(key);
+            if (it == cells_.end()) return;
+            for (const std::size_t k : it->second) {
+                if (seen_[k] == stamp_) continue;
+                seen_[k] = stamp_;
+                visit(k);
+            }
+        });
+    }
+
+private:
+    template <class F> void Cells(const Rect& r, F&& f) const
+    {
+        const long long x0 = static_cast<long long>(std::floor(r.x / cell_)), x1 = static_cast<long long>(std::floor(r.Right() / cell_));
+        const long long y0 = static_cast<long long>(std::floor(r.y / cell_)), y1 = static_cast<long long>(std::floor(r.Bottom() / cell_));
+        for (long long y = y0; y <= y1; ++y)
+            for (long long x = x0; x <= x1; ++x) f((y << 32) ^ (x & 0xffffffffll));
+    }
+
+    float                                                    cell_;
+    std::unordered_map<long long, std::vector<std::size_t>> cells_;
+    mutable std::vector<std::uint32_t>                       seen_;
+    mutable std::uint32_t                                    stamp_ = 0;
+};
+
+bool PathClear(const std::vector<Vec2>& pts, const std::vector<Rect>& nodes, const Buckets& buckets, std::size_t skipA,
                std::size_t skipB, float pad)
 {
-    for (std::size_t k = 0; k < nodes.size(); ++k) {
-        if (k == skipA || k == skipB || !solid[k]) continue;
+    Vec2 lo = pts.front(), hi = lo;
+    for (const Vec2& p : pts) {
+        lo = {std::min(lo.x, p.x), std::min(lo.y, p.y)};
+        hi = {std::max(hi.x, p.x), std::max(hi.y, p.y)};
+    }
+    bool clear = true;
+    buckets.Visit(Rect::FromPoints(lo, hi).Inflated(pad), [&](std::size_t k) {
+        if (!clear || k == skipA || k == skipB) return;
         const Rect r = nodes[k].Inflated(pad);
         for (std::size_t i = 1; i < pts.size(); ++i)
-            if (SegmentHitsRect(pts[i - 1], pts[i], r)) return false;
-    }
-    return true;
+            if (SegmentHitsRect(pts[i - 1], pts[i], r)) {
+                clear = false;
+                return;
+            }
+    });
+    return clear;
 }
 
 /// @brief Drops repeated points and the middle of three collinear ones.
@@ -363,10 +417,13 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
     std::unordered_map<std::string_view, std::size_t> index;
     std::vector<Rect> frames;
     std::vector<char> solid;   // a group is no obstacle: wires run over it to and from what it holds
+    std::unordered_map<std::string_view, bool> grouped;   // by node type, so each type is looked up once
+    for (const NodeType& t : schema.nodeTypes) grouped.emplace(t.id, t.shape == NodeShape::Group);
     for (std::size_t k = 0; k < graph.nodes.size(); ++k) {
         index.emplace(graph.nodes[k].id, k);
         frames.push_back(graph.nodes[k].frame);
-        solid.push_back(IsGroup(graph.nodes[k], schema) ? 0 : 1);
+        const auto g = grouped.find(graph.nodes[k].type);
+        solid.push_back(g != grouped.end() && g->second ? 0 : 1);
     }
 
     // Ports are laid out once per node that has a wire on one.
@@ -429,6 +486,10 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
         }
     }
 
+    // Which nodes a segment could cut through: a bucket index over the obstacles, so a large graph checks only its
+    // neighbours.
+    const Buckets buckets(frames, solid, kBucket);
+
     WirePaths out;
     std::vector<std::size_t> needRoute;
     for (std::size_t w = 0; w < wires.size(); ++w) {
@@ -439,7 +500,7 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
         case EdgeLine::Elbow: plain = PlainElbow(wire.pa, wire.pb); break;
         default: plain = Bezier(wire.pa, wire.pb); break;
         }
-        const bool clear = !o.avoidNodes || PathClear(plain, frames, solid, wire.a, wire.b, o.clearance * 0.4f);
+        const bool clear = !o.avoidNodes || PathClear(plain, frames, buckets, wire.a, wire.b, o.clearance * 0.4f);
         if (wire.line != EdgeLine::Elbow && clear) out.emplace(wire.edge->id, std::move(plain));
         else if (!o.avoidNodes) out.emplace(wire.edge->id, RoundCorners(plain, o.cornerRadius));
         else {
@@ -449,63 +510,85 @@ WirePaths RouteWires(const Graph& graph, const Schema& schema, const RoutingOpti
     }
     if (needRoute.empty()) return out;
 
-    // One grid for every wire, so later wires see the lanes earlier ones took. Shorter wires go first: they have the
-    // fewest ways around, and the long ones can afford the detour.
-    const float stub = o.clearance + 2.f;
-    std::vector<Rect>  obstacles;
-    std::vector<float> xs, ys;
-    Rect               all = frames.front();
-    for (std::size_t k = 0; k < frames.size(); ++k) {
-        const Rect r = frames[k].Inflated(o.clearance);
-        all = Rect::Union(all, r);
-        if (!solid[k]) continue;
-        obstacles.push_back(r);
-        xs.insert(xs.end(), {r.x, r.Right()});
-        ys.insert(ys.end(), {r.y, r.Bottom()});
-    }
-    {
-        // The lane down the middle of each gap between neighbouring outlines.
-        auto lanes = [](std::vector<float> c) {
-            std::sort(c.begin(), c.end());
-            std::vector<float> mids;
-            for (std::size_t k = 1; k < c.size(); ++k)
-                if (c[k] - c[k - 1] > 8.f) mids.push_back((c[k] + c[k - 1]) * 0.5f);
-            return mids;
-        };
-        const auto mx = lanes(xs), my = lanes(ys);
-        xs.insert(xs.end(), mx.begin(), mx.end());
-        ys.insert(ys.end(), my.begin(), my.end());
-    }
-    const Rect ring = all.Inflated(o.clearance);
-    xs.insert(xs.end(), {ring.x, ring.Right()});
-    ys.insert(ys.end(), {ring.y, ring.Bottom()});
-    for (std::size_t w : needRoute)
-        for (const Port& p : {wires[w].pa, wires[w].pb}) {
-            const Vec2 s = p.p + p.n * stub;
-            xs.push_back(s.x);
-            ys.push_back(s.y);
-        }
-    Grid grid(obstacles, std::move(xs), std::move(ys));
-
+    // Shorter wires go first: they have the fewest ways around, and the long ones can afford the detour.
     std::stable_sort(needRoute.begin(), needRoute.end(), [&](std::size_t x, std::size_t y) {
         auto span = [&](std::size_t w) { return std::abs(wires[w].pa.p.x - wires[w].pb.p.x) + std::abs(wires[w].pa.p.y - wires[w].pb.p.y); };
         return span(x) < span(y);
     });
-    for (std::size_t w : needRoute) {
-        const Wire& wire = wires[w];
-        const Vec2  s    = wire.pa.p + wire.pa.n * stub;
-        const Vec2  t    = wire.pb.p + wire.pb.n * stub;
-        std::vector<Vec2> mid = grid.Route(s, wire.pa.n, t, wire.pb.n * -1.f, o);
-        if (mid.empty()) {
-            if (wire.line == EdgeLine::Elbow) out[wire.edge->id] = RoundCorners(out[wire.edge->id], o.cornerRadius);
-            continue;
+    const float stub = o.clearance + 2.f;
+
+    // Route `which` on one grid over `obstacles` (node indices), so later wires see the lanes earlier ones took.
+    auto route = [&](const std::vector<std::size_t>& which, const std::vector<std::size_t>& obstacleNodes, Rect area) {
+        std::vector<Rect>  obstacles;
+        std::vector<float> xs, ys;
+        for (const std::size_t k : obstacleNodes) {
+            const Rect r = frames[k].Inflated(o.clearance);
+            area = Rect::Union(area, r);
+            obstacles.push_back(r);
+            xs.insert(xs.end(), {r.x, r.Right()});
+            ys.insert(ys.end(), {r.y, r.Bottom()});
         }
-        std::vector<Vec2> path{wire.pa.p};
-        path.insert(path.end(), mid.begin(), mid.end());
-        path.push_back(wire.pb.p);
-        path = Simplify(path);
-        const float radius = wire.line == EdgeLine::Curve ? o.curveRadius : (wire.line == EdgeLine::Elbow ? o.cornerRadius : 0.f);
-        out[wire.edge->id] = RoundCorners(path, radius);
+        {
+            // The lane down the middle of each gap between neighbouring outlines.
+            auto lanes = [](std::vector<float> c) {
+                std::sort(c.begin(), c.end());
+                std::vector<float> mids;
+                for (std::size_t k = 1; k < c.size(); ++k)
+                    if (c[k] - c[k - 1] > 8.f) mids.push_back((c[k] + c[k - 1]) * 0.5f);
+                return mids;
+            };
+            const auto mx = lanes(xs), my = lanes(ys);
+            xs.insert(xs.end(), mx.begin(), mx.end());
+            ys.insert(ys.end(), my.begin(), my.end());
+        }
+        const Rect ring = area.Inflated(o.clearance);
+        xs.insert(xs.end(), {ring.x, ring.Right()});
+        ys.insert(ys.end(), {ring.y, ring.Bottom()});
+        for (std::size_t w : which)
+            for (const Port& p : {wires[w].pa, wires[w].pb}) {
+                const Vec2 s = p.p + p.n * stub;
+                xs.push_back(s.x);
+                ys.push_back(s.y);
+            }
+        Grid grid(obstacles, std::move(xs), std::move(ys));
+        for (std::size_t w : which) {
+            const Wire& wire = wires[w];
+            const Vec2  s    = wire.pa.p + wire.pa.n * stub;
+            const Vec2  t    = wire.pb.p + wire.pb.n * stub;
+            std::vector<Vec2> mid = grid.Route(s, wire.pa.n, t, wire.pb.n * -1.f, o);
+            if (mid.empty()) {
+                if (wire.line == EdgeLine::Elbow) out[wire.edge->id] = RoundCorners(out[wire.edge->id], o.cornerRadius);
+                continue;
+            }
+            std::vector<Vec2> path{wire.pa.p};
+            path.insert(path.end(), mid.begin(), mid.end());
+            path.push_back(wire.pb.p);
+            path = Simplify(path);
+            const float radius = wire.line == EdgeLine::Curve ? o.curveRadius : (wire.line == EdgeLine::Elbow ? o.cornerRadius : 0.f);
+            out[wire.edge->id] = RoundCorners(path, radius);
+        }
+    };
+
+    std::vector<std::size_t> solidNodes;
+    Rect                     all = frames.front();
+    for (std::size_t k = 0; k < frames.size(); ++k) {
+        all = Rect::Union(all, frames[k].Inflated(o.clearance));
+        if (solid[k]) solidNodes.push_back(k);
+    }
+    if (solidNodes.size() <= kOneGrid) {
+        route(needRoute, solidNodes, all);
+        return out;
+    }
+    // A large graph: each wire routes on a grid of the nodes around it alone, which keeps the grid small.
+    for (std::size_t w : needRoute) {
+        const Vec2  s    = wires[w].pa.p + wires[w].pa.n * stub;
+        const Vec2  t    = wires[w].pb.p + wires[w].pb.n * stub;
+        const Rect  area = Rect::FromPoints(s, t).Inflated(kLocalMargin + o.clearance * 4.f);
+        std::vector<std::size_t> near;
+        buckets.Visit(area, [&](std::size_t k) {
+            if (frames[k].Inflated(o.clearance).Intersects(area)) near.push_back(k);
+        });
+        route({w}, near, area);
     }
     return out;
 }

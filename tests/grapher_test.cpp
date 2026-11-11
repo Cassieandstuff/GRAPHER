@@ -835,6 +835,8 @@ void TestRerouteAndWireColour()
     CHECK(floatWires == 3 && disc);   // v -> r, r -> m.t, r -> m.a
 }
 
+grapher::Schema RowSchema();
+
 void TestSchemaJson()
 {
     const char* text = R"({
@@ -872,7 +874,7 @@ void TestSchemaJson()
     CHECK(s->edgeTypes[0].portColor);
 
     // Written and read back, a schema is the same; defaults are left out.
-    for (const grapher::Schema& each : {*s, PortSchema(), MakeSchema(), GroupSchema()}) {
+    for (const grapher::Schema& each : {*s, PortSchema(), MakeSchema(), GroupSchema(), RowSchema()}) {
         const std::string written = grapher::WriteSchema(each);
         const auto        back    = grapher::ParseSchema(written);
         CHECK(back.has_value() && *back == each);
@@ -905,6 +907,329 @@ void TestSchemaJson()
     CHECK(!c.Connect("n", "out", "m", "t").empty());
 }
 
+// ── Rows, proposals, navigation ─────────────────────────────────────────────
+
+int CountText(const grapher::DrawList& list, std::string_view text)
+{
+    int n = 0;
+    for (const auto& cmd : list.cmds)
+        if (const auto* t = std::get_if<grapher::Text>(&cmd); t && t->text == text) ++n;
+    return n;
+}
+
+grapher::Schema RowSchema()
+{
+    grapher::Schema s;
+    grapher::NodeType fact{"fact", "Fact"};
+    fact.width       = 200.f;
+    fact.height      = 160.f;
+    fact.imageHeight = 40.f;
+    s.nodeTypes.push_back(fact);
+    s.rowStyles.push_back({"key", grapher::Color{220, 180, 60}, std::nullopt, "+ ", true});
+    s.edgeTypes.push_back({"data", "data"});
+    return s;
+}
+
+grapher::Node RowNode()
+{
+    grapher::Node n{"n", "fact", {0, 0, 200, 170}};
+    n.ports   = {{"out", "", "", grapher::PortDir::Out}};
+    n.tooltip = "node tip";
+    n.image   = "thumb";
+    grapher::Row speed{"r1", "speed", "1.0"};
+    speed.tooltip = "speed tip";
+    grapher::Row mode{"c", "mode", "a", "key"};
+    mode.action  = grapher::RowAction::Choice;
+    mode.choices = {"a", "b"};
+    mode.field   = "mode";
+    grapher::Row play{"b", "play", "\xe2\x96\xb6"};
+    play.action = grapher::RowAction::Button;
+    grapher::Row child{"p", "child"};
+    child.port      = "out";
+    child.separator = true;
+    n.rows = {speed, mode, play, child};
+    return n;
+}
+
+void TestRows()
+{
+    const grapher::Schema s = RowSchema();
+    grapher::Graph g;
+    g.nodes.push_back(RowNode());
+    grapher::Canvas c(g, s);
+    c.SetViewport({800, 600});
+    int changed = 0;
+    c.onChanged = [&] { ++changed; };
+    const grapher::CardMetrics m;
+    const float header = m.Header(), row = m.Row();
+
+    // Rows follow the free port rows (none: the only port is claimed by a row) and carry their port's pin.
+    CHECK(grapher::PortRows(g.nodes[0], s) == 0 && std::abs(grapher::RowsTop(g.nodes[0], s, m) - header) < 0.001f);
+    const auto out = c.PortScreenPos("n", "out");
+    CHECK(out && Near(*out, {200, header + row * 3.5f}));
+    CHECK(std::abs(grapher::CardHeight(g.nodes[0], s, m) - (header + row * 4 + 40 + 5 + 10)) < 0.001f);
+    const auto line = c.RowScreenRect("n", "c");
+    CHECK(line && line->y == header + row);
+
+    // What is under the pointer, and what it says.
+    const grapher::Hit hit = c.HitTest({100, header + row * 1.5f});
+    CHECK(hit.kind == grapher::HitKind::Row && hit.id == "n" && hit.row == "c");
+    CHECK(c.TooltipAt({100, header + row * 0.5f}) == "speed tip");
+    CHECK(c.TooltipAt({100, header + row * 2.5f}) == "node tip");
+    CHECK(c.TooltipAt({100, 10}) == "node tip");
+
+    // A click on a plain row selects its node; a click on a choice is handed over, and a pick sets its field.
+    c.PointerDown({100, header + row * 0.5f}, grapher::Button::Left, {});
+    c.PointerUp({100, header + row * 0.5f}, grapher::Button::Left);
+    CHECK(c.SelectedNodes() == grapher::NodeSet{"n"} && !c.TakeRowClick());
+    c.PointerDown({100, header + row * 1.5f}, grapher::Button::Left, {});
+    c.PointerUp({100, header + row * 1.5f}, grapher::Button::Left);
+    const auto click = c.TakeRowClick();
+    CHECK(click && click->row == "c" && click->action == grapher::RowAction::Choice && !c.TakeRowClick());
+    CHECK(c.PickChoice("n", "c", "b") && g.nodes[0].Field("mode") == "b" && g.nodes[0].rows[1].value == "b" && changed == 1);
+    CHECK(!c.PickChoice("n", "r1", "x"));
+    // Dragged, a row moves its node like any press.
+    c.PointerDown({100, header + row * 2.5f}, grapher::Button::Left, {});
+    c.PointerMove({130, header + row * 2.5f});
+    c.PointerUp({150, header + row * 2.5f}, grapher::Button::Left);
+    CHECK(g.nodes[0].frame.x == 50.f && !c.TakeRowClick());
+
+    // Drawn: styled labels, values, the choice's mark, the button, one label for the port's row, the picture.
+    const auto list = c.Draw();
+    CHECK(CountText(list, "speed") == 1 && CountText(list, "1.0") == 1 && CountText(list, "+ mode") == 1);
+    CHECK(CountText(list, "b \xe2\x96\xbe") == 1 && CountText(list, "\xe2\x96\xb6") == 1 && CountText(list, "child") == 1);
+    bool picture = false, gold = false;
+    for (const auto& cmd : list.cmds) {
+        if (const auto* i = std::get_if<grapher::Image>(&cmd)) picture = i->key == "thumb" && i->box.h == 40.f;
+        if (const auto* t = std::get_if<grapher::Text>(&cmd); t && t->text == "+ mode") gold = t->bold && t->color == (grapher::Color{220, 180, 60});
+    }
+    CHECK(picture && gold);
+
+    // Far out, only shapes.
+    c.camera.zoom = 0.2f;
+    bool anyText = false;
+    for (const auto& cmd : c.Draw().cmds) anyText = anyText || std::holds_alternative<grapher::Text>(cmd);
+    CHECK(!anyText);
+}
+
+void TestPropose()
+{
+    const grapher::Schema s = PortSchema();
+    grapher::Graph g;
+    g.nodes.push_back({"v1", "value", {0, 0, 160, 80}});
+    g.nodes.push_back({"v2", "value", {0, 200, 160, 80}});
+    g.nodes.push_back({"m", "mix", {400, 0, 200, 120}});
+    g.edges.push_back({"old", "v2", "m", "data", "", "out", "a"});
+    const grapher::Graph before = g;
+    grapher::Canvas c(g, s);
+    c.SetViewport({1000, 700});
+    c.editMode = grapher::EditMode::Propose;
+    int snapshots = 0, changes = 0;
+    std::vector<grapher::Intent> intents;
+    c.onBeforeChange = [&](std::string_view) { ++snapshots; };
+    c.onChanged      = [&] { ++changes; };
+    c.onIntent       = [&](const grapher::Intent& i) { intents.push_back(i); };
+
+    // A move plays out on a copy and arrives as the frames that changed.
+    c.PointerDown({80, 60}, grapher::Button::Left, {});
+    c.PointerMove({130, 85});
+    CHECK(c.Proposing() && &c.GetGraph() != &g && c.GetGraph().FindNode("v1")->frame.x == 50.f);
+    c.PointerUp({180, 110}, grapher::Button::Left);
+    CHECK(g == before && snapshots == 0 && changes == 0 && intents.size() == 1);
+    if (intents.size() != 1) return;
+    const auto* move = std::get_if<grapher::MoveNodes>(&intents[0].change);
+    CHECK(intents[0].label == "Move" && move && move->frames.size() == 1);
+    CHECK(move && move->frames[0].first == "v1" && move->frames[0].second == (grapher::Rect{100, 50, 160, 80}));
+    CHECK(c.GetGraph().FindNode("v1")->frame.x == 100.f);   // the proposal shows until the host refreshes
+    g.nodes[0].frame = move->frames[0].second;   // the host takes it
+    c.Refresh();
+    CHECK(!c.Proposing() && &c.GetGraph() == &g);
+
+    // A wire into a full input names the wire it replaces.
+    intents.clear();
+    const std::string id = c.Connect("v1", "out", "m", "a");
+    const auto* wire = intents.size() == 1 ? std::get_if<grapher::ConnectWire>(&intents[0].change) : nullptr;
+    CHECK(!id.empty() && wire && wire->edge.id == id && wire->edge.from == "v1" && wire->replaced == std::vector<std::string>{"old"});
+    CHECK(g.edges.size() == 1 && g.edges[0].id == "old");
+    c.Refresh();
+
+    // Removing a node names every wire going with it; an added node arrives whole.
+    intents.clear();
+    c.SelectNodes({"m"});
+    CHECK(c.DeleteSelection());
+    const auto* gone = intents.size() == 1 ? std::get_if<grapher::RemoveItems>(&intents[0].change) : nullptr;
+    CHECK(gone && gone->nodes == grapher::NodeSet{"m"} && gone->edges == std::vector<std::string>{"old"} && g.nodes.size() == 3);
+    c.Refresh();
+    CHECK(c.SelectedNodes() == grapher::NodeSet{"m"});   // still there: the host never removed it
+    const std::string added = c.AddNode("mix", {700, 400});
+    const auto* made = std::get_if<grapher::CreateNode>(&intents.back().change);
+    CHECK(made && made->node.id == added && made->node.type == "mix" && !g.FindNode(added));
+    c.Refresh();
+    CHECK(c.SelectedNodes().empty());   // the host refused it: nothing is left selected
+
+    // Esc mid-move drops the proposal.
+    intents.clear();
+    c.PointerDown({180, 110}, grapher::Button::Left, {});
+    c.PointerMove({260, 160});
+    c.CancelGesture();
+    CHECK(!c.Busy() && !c.Proposing() && intents.empty());
+
+    // Direct: Esc mid-move puts the node back and ends the snapshot it began; a wire let go on nothing is handed over.
+    c.editMode = grapher::EditMode::Direct;
+    c.PointerDown({180, 110}, grapher::Button::Left, {});
+    c.PointerMove({260, 160});
+    CHECK(g.nodes[0].frame.x != 100.f);
+    c.CancelGesture();
+    CHECK(g.nodes[0].frame.x == 100.f && snapshots == 1 && changes == 1);
+    const auto pin = c.PortScreenPos("v1", "out");
+    c.PointerDown(*pin, grapher::Button::Left, {});
+    c.PointerMove(*pin + grapher::Vec2{100, 200});
+    c.PointerUp(*pin + grapher::Vec2{200, 400}, grapher::Button::Left);
+    const auto* loose = intents.size() == 1 ? std::get_if<grapher::ConnectToNothing>(&intents[0].change) : nullptr;
+    CHECK(loose && loose->node == "v1" && loose->port == "out" && Near(loose->at, *pin + grapher::Vec2{200, 400}));
+}
+
+void TestNavigation()
+{
+    const grapher::Schema s = PortSchema();
+    grapher::Graph g;
+    g.nodes.push_back({"v1", "value", {0, 0, 160, 80}});
+    g.nodes.push_back({"m", "mix", {400, 0, 200, 120}});
+    grapher::Canvas c(g, s);
+    c.SetViewport({1000, 600});
+
+    c.PanBy({10, 20});
+    CHECK(c.camera.pan == (grapher::Vec2{10, 20}));
+    CHECK(c.ZoomAbout(2.f, {10, 20}) && c.camera.zoom == 2.f && c.camera.pan == (grapher::Vec2{10, 20}));   // the anchor stays put
+    CHECK(c.ZoomAbout(100.f, {0, 0}) && c.camera.zoom == c.maxZoom && !c.ZoomAbout(2.f, {0, 0}));
+
+    c.Frame({"m"}, 40.f, 1.f);
+    CHECK(Near(c.ScreenRectOf("m").Center(), {500, 300}) && c.camera.zoom == 1.f);
+    c.CenterOn("v1", 0.5f);
+    CHECK(c.camera.zoom == 0.5f && Near(c.ScreenRectOf("v1").Center(), {500, 300}));
+    c.camera = {{-3000, -3000}, 1.f};
+    c.EnsureVisible("v1", 60.f);
+    const grapher::Rect r = c.ScreenRectOf("v1");
+    CHECK(r.x >= 59.9f && r.y >= 59.9f && r.Right() <= 940.1f && r.Bottom() <= 540.1f);
+    CHECK(Near(*c.HeaderScreenPos("v1"), {r.Center().x, r.y + 8.f + 15.f * 0.65f}));
+
+    // The host navigates: the right button no longer pans.
+    c.panWithButtons = false;
+    const grapher::Camera at = c.camera;
+    c.PointerDown({900, 500}, grapher::Button::Right, {});
+    c.PointerMove({950, 550});
+    c.PointerUp({950, 550}, grapher::Button::Right);
+    CHECK(c.camera.pan == at.pan);
+
+    // Shift adds, Ctrl takes away.
+    c.selectKeys = grapher::SelectKeys::ExtendSubtract;
+    c.Frame();
+    const grapher::Vec2 v = c.ScreenRectOf("v1").Center(), mm = c.ScreenRectOf("m").Center();
+    c.PointerDown(v, grapher::Button::Left, {});
+    c.PointerUp(v, grapher::Button::Left);
+    c.PointerDown(mm, grapher::Button::Left, {true, false, false});
+    c.PointerUp(mm, grapher::Button::Left);
+    CHECK((c.SelectedNodes() == grapher::NodeSet{"m", "v1"}));
+    c.PointerDown(mm, grapher::Button::Left, {true, false, false});   // Shift again keeps it
+    c.PointerUp(mm, grapher::Button::Left);
+    c.PointerDown(v, grapher::Button::Left, {false, true, false});
+    c.PointerUp(v, grapher::Button::Left);
+    CHECK((c.SelectedNodes() == grapher::NodeSet{"m"}));
+    const grapher::Rect mr = c.ScreenRectOf("m");
+    c.PointerDown({mr.x - 20, mr.y - 20}, grapher::Button::Left, {false, true, false});
+    c.PointerMove({mr.Right() + 10, mr.Bottom() + 10});
+    c.PointerUp({mr.Right() + 20, mr.Bottom() + 20}, grapher::Button::Left);
+    CHECK(c.SelectedNodes().empty());
+}
+
+/// @brief A router that only counts its calls, to tell a reroute from a cached frame.
+struct CountingRouter : grapher::WireRouter {
+    int calls = 0;
+    grapher::WirePaths Route(const grapher::Graph&, const grapher::Schema&, const grapher::RoutingOptions&) override
+    {
+        ++calls;
+        return {};
+    }
+};
+
+void TestLargeGraph()
+{
+    // 20,000 cards in 100 rows, each wired to its neighbour, one group around each row, and 300 other types in the
+    // schema. The budgets hold in an optimised build; a debug build prints its times.
+    grapher::Schema s;
+    grapher::NodeType card{"card", "Card"};
+    card.width = 160.f;
+    card.height = 80.f;
+    card.ports = {{"in", "In"}, {"out", "Out", "", grapher::PortDir::Out}};
+    s.nodeTypes.push_back(card);
+    grapher::NodeType folder{"folder", "Folder"};
+    folder.shape = grapher::NodeShape::Group;
+    s.nodeTypes.push_back(folder);
+    for (int k = 0; k < 300; ++k) s.nodeTypes.push_back({"type" + std::to_string(k), "Type"});
+    s.edgeTypes.push_back({"data", "data"});
+    grapher::Graph g;
+    g.nodes.reserve(20100);
+    constexpr int cols = 200, rows = 100;
+    for (int y = 0; y < rows; ++y) {
+        g.nodes.push_back({"g" + std::to_string(y), "folder", {-20.f, y * 140.f - 30.f, cols * 240.f, 120.f}});
+        for (int x = 0; x < cols; ++x) {
+            g.nodes.push_back({"n" + std::to_string(y * cols + x), "card", {x * 240.f, y * 140.f, 160.f, 80.f}});
+            if (x > 0)
+                g.edges.push_back({"e" + std::to_string(y * cols + x), "n" + std::to_string(y * cols + x - 1),
+                                   "n" + std::to_string(y * cols + x), "data", "", "out", "in"});
+        }
+    }
+    using Clock = std::chrono::steady_clock;
+    auto ms = [](Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); };
+
+    grapher::Canvas c(g, s);
+    c.SetViewport({1600, 900});
+    c.CenterOn("n10100", 0.35f);
+    auto t0 = Clock::now();
+    const auto first = c.Draw();
+    const double routeMs = ms(t0);
+    int visible = 0;
+    for (const auto& cmd : first.cmds)
+        if (const auto* t = std::get_if<grapher::Text>(&cmd); t && t->text == "Card") ++visible;
+    t0 = Clock::now();
+    for (int k = 0; k < 10; ++k) (void)c.Draw();
+    const double drawMs = ms(t0) / 10.0;
+    t0 = Clock::now();
+    int hits = 0;
+    for (int k = 0; k < 200; ++k) hits += c.HitTest({static_cast<float>(k * 8 % 1600), static_cast<float>(k * 37 % 900)}).kind != grapher::HitKind::None;
+    const double hitMs = ms(t0) / 200.0;
+    const grapher::Vec2 grab = c.ScreenRectOf("n10100").Center();
+    c.PointerDown(grab, grapher::Button::Left, {});
+    c.PointerMove(grab + grapher::Vec2{10, 0});
+    (void)c.Draw();
+    t0 = Clock::now();
+    c.PointerMove(grab + grapher::Vec2{30, 15});
+    (void)c.Draw();
+    const double dragMs = ms(t0);
+    c.PointerUp(grab + grapher::Vec2{30, 15}, grapher::Button::Left);
+    std::printf("  20k graph: %d cards in view; first route %.1f ms, draw %.2f ms, hit test %.3f ms, drag step %.2f ms\n", visible,
+                routeMs, drawMs, hitMs, dragMs);
+    CHECK(visible > 200 && visible < 600 && hits > 0);
+#ifdef NDEBUG
+    CHECK(drawMs <= 4.0);
+    CHECK(hitMs <= 0.2);
+    CHECK(dragMs <= 8.0);
+#endif
+
+    // Panning and zooming never reroute.
+    grapher::Canvas counted(g, s);
+    auto router    = std::make_shared<CountingRouter>();
+    counted.router = router;
+    counted.SetViewport({1600, 900});
+    (void)counted.Draw();
+    counted.PanBy({300, 200});
+    (void)counted.Draw();
+    counted.ZoomAbout(1.5f, {800, 450});
+    (void)counted.Draw();
+    (void)counted.HitTest({800, 450});
+    CHECK(router->calls == 1);
+}
+
 } // namespace
 
 int main()
@@ -934,6 +1259,10 @@ int main()
     TestPortDrawAndRouting();
     TestRerouteAndWireColour();
     TestSchemaJson();
+    TestRows();
+    TestPropose();
+    TestNavigation();
+    TestLargeGraph();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

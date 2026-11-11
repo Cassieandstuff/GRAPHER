@@ -3,8 +3,11 @@
 #include <QApplication>
 #include <QFontDatabase>
 #include <QFontMetricsF>
+#include <QHelpEvent>
 #include <QKeyEvent>
 #include <QLineF>
+#include <QMenu>
+#include <QToolTip>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -39,8 +42,9 @@ template <class... F> struct Overloaded : F... { using F::operator()...; };
 
 } // namespace
 
-void Paint(QPainter& p, const DrawList& list)
+void Paint(QPainter& p, const DrawList& list, const ImageSource& images)
 {
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
     static const QFont kMono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     p.setRenderHint(QPainter::Antialiasing);
     p.setRenderHint(QPainter::TextAntialiasing);
@@ -82,6 +86,7 @@ void Paint(QPainter& p, const DrawList& list)
                 QFont f = t.mono ? kMono : QApplication::font();
                 f.setPixelSize(std::max(1, static_cast<int>(std::lround(t.size))));
                 f.setBold(t.bold);
+                f.setItalic(t.italic);
                 p.setFont(f);
                 p.setPen(Q(t.color));
                 const QString text  = QString::fromUtf8(t.text.data(), static_cast<qsizetype>(t.text.size()));
@@ -97,6 +102,19 @@ void Paint(QPainter& p, const DrawList& list)
                     p.drawText(box, align | Qt::AlignVCenter, line);
                 }
             },
+            [&](const Image& img) {
+                if (!images || img.box.w < 1.f || img.box.h < 1.f) return;
+                const QImage picture = images(img.key);
+                if (picture.isNull()) return;
+                p.save();
+                if (img.radius > 0.f) {
+                    QPainterPath clip;
+                    clip.addRoundedRect(Q(img.box), img.radius, img.radius);
+                    p.setClipPath(clip);
+                }
+                p.drawImage(Q(img.box), picture);
+                p.restore();
+            },
         }, cmd);
     }
 }
@@ -111,7 +129,25 @@ CanvasWidget::CanvasWidget(Canvas& canvas, QWidget* parent) : QWidget(parent), c
 void CanvasWidget::paintEvent(QPaintEvent*)
 {
     QPainter p(this);
-    Paint(p, canvas_.Draw());
+    Paint(p, canvas_.Draw(), images_);
+}
+
+void CanvasWidget::setHostNavigation(bool on)
+{
+    hostNavigation_        = on;
+    canvas_.panWithButtons = !on;
+}
+
+bool CanvasWidget::event(QEvent* e)
+{
+    if (e->type() == QEvent::ToolTip) {
+        const auto*       help = static_cast<QHelpEvent*>(e);
+        const std::string tip  = canvas_.TooltipAt(V(help->pos()));
+        if (tip.empty()) QToolTip::hideText();
+        else QToolTip::showText(help->globalPos(), QString::fromStdString(tip), this);
+        return true;
+    }
+    return QWidget::event(e);
 }
 
 void CanvasWidget::resizeEvent(QResizeEvent*)
@@ -121,6 +157,7 @@ void CanvasWidget::resizeEvent(QResizeEvent*)
 
 void CanvasWidget::mousePressEvent(QMouseEvent* e)
 {
+    if (hostNavigation_ && e->button() == Qt::MiddleButton) return;
     emit interacted();
     setFocus(Qt::MouseFocusReason);
     if (e->button() == Qt::RightButton) rightDown_ = e->position();
@@ -142,13 +179,39 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent* e)
 
 void CanvasWidget::mouseReleaseEvent(QMouseEvent* e)
 {
+    if (hostNavigation_ && e->button() == Qt::MiddleButton) return;
     canvas_.PointerUp(V(e->position()), ButtonOf(e->button()));
     update();
+    if (const auto click = canvas_.TakeRowClick()) {
+        const QString node = QString::fromStdString(click->node), row = QString::fromStdString(click->row);
+        const Node*   n    = canvas_.GetGraph().FindNode(click->node);
+        const Row*    r    = n ? n->FindRow(click->row) : nullptr;
+        if (r && r->action == RowAction::Choice && !r->choices.empty()) {
+            // A choice offers its items where it was clicked, the current one checked.
+            QMenu menu(this);
+            for (const std::string& item : r->choices) {
+                QAction* a = menu.addAction(QString::fromStdString(item));
+                a->setCheckable(true);
+                a->setChecked(item == r->value);
+                a->setData(QString::fromStdString(item));
+            }
+            const QRect line = [&] {
+                const auto rr = canvas_.RowScreenRect(click->node, click->row);
+                return rr ? QRectF(rr->x, rr->y, rr->w, rr->h).toRect() : QRect(e->position().toPoint(), QSize(1, 1));
+            }();
+            if (QAction* picked = menu.exec(mapToGlobal(line.bottomLeft())))
+                if (canvas_.PickChoice(click->node, click->row, picked->data().toString().toStdString())) update();
+        } else {
+            emit rowClicked(node, row, e->globalPosition().toPoint());
+        }
+    }
     if (e->button() == Qt::RightButton && QLineF(rightDown_, e->position()).length() < 4.0) {
         const Hit  hit   = canvas_.HitTest(V(e->position()));
         const Vec2 world = canvas_.camera.ToWorld(V(e->position()));
         emit contextMenuRequested(e->globalPosition().toPoint(), Q(world), static_cast<int>(hit.kind),
                                   QString::fromStdString(hit.id));
+        emit contextMenuOn(e->globalPosition().toPoint(), Q(world), static_cast<int>(hit.kind), QString::fromStdString(hit.id),
+                           QString::fromStdString(hit.port), QString::fromStdString(hit.row));
     }
 }
 
@@ -157,6 +220,10 @@ void CanvasWidget::mouseDoubleClickEvent(QMouseEvent* e)
     if (e->button() != Qt::LeftButton) return;
     const Hit hit = canvas_.HitTest(V(e->position()));
     switch (hit.kind) {
+    case HitKind::Row:
+        emit rowDoubleClicked(QString::fromStdString(hit.id), QString::fromStdString(hit.row));
+        emit nodeDoubleClicked(QString::fromStdString(hit.id));
+        break;
     case HitKind::Node:
     case HitKind::Resize: emit nodeDoubleClicked(QString::fromStdString(hit.id)); break;
     case HitKind::Edge: emit edgeDoubleClicked(QString::fromStdString(hit.id)); break;
@@ -167,12 +234,25 @@ void CanvasWidget::mouseDoubleClickEvent(QMouseEvent* e)
 
 void CanvasWidget::wheelEvent(QWheelEvent* e)
 {
+    if (hostNavigation_) {
+        e->ignore();
+        return;
+    }
     emit interacted();
     if (canvas_.Wheel(V(e->position()), static_cast<float>(e->angleDelta().y()) / 120.f)) update();
 }
 
 void CanvasWidget::keyPressEvent(QKeyEvent* e)
 {
+    if (!ownKeys_) {
+        QWidget::keyPressEvent(e);
+        return;
+    }
+    if (e->key() == Qt::Key_Escape && canvas_.Busy()) {
+        canvas_.CancelGesture();
+        update();
+        return;
+    }
     if (e->key() == Qt::Key_Delete) {
         if (canvas_.DeleteSelection()) update();
         return;

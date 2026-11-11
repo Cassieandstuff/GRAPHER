@@ -53,9 +53,17 @@ struct Text {
     bool        wrap  = false;
     bool        mono  = false;   ///< a fixed-width face (pseudo-code)
     Align       align = Align::Left;
+    bool        italic = false;
 };
 
-using DrawCmd = std::variant<FillRect, Polyline, Polygon, Circle, Text>;
+/// @brief A picture the backend resolves by `key` (a node's thumbnail), scaled to fill `box`.
+struct Image {
+    Rect        box;
+    std::string key;
+    float       radius = 0.f;   ///< rounded corners
+};
+
+using DrawCmd = std::variant<FillRect, Polyline, Polygon, Circle, Text, Image>;
 
 struct DrawList {
     Vec2                 size;   ///< the surface the list was laid out for

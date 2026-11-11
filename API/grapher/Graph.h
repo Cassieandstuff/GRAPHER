@@ -14,6 +14,30 @@
 
 namespace grapher {
 
+/// @brief What a row does when clicked.
+enum class RowAction {
+    None,     ///< nothing: a click on it is a click on its node
+    Click,    ///< the host acts on it (Canvas::TakeRowClick)
+    Button,   ///< drawn as a button at its right end; the host acts on it
+    Choice,   ///< offers `choices`; picking one sets `field` (Canvas::PickChoice)
+};
+
+/// @brief One line of a node's card that the host fills: a fact (label and value), a line a port's pin sits on, a
+///        button, a choice. A node's rows follow its free port rows and come before its on-card fields.
+struct Row {
+    std::string              id;      ///< unique on its node, byte-exact
+    std::string              label;   ///< on the left
+    std::string              value;   ///< on the right
+    std::string              style;   ///< a RowStyle id; empty = plain
+    std::string              port;    ///< a port of the node whose pin sits on this line (its row is this one)
+    RowAction                action = RowAction::None;
+    std::vector<std::string> choices;   ///< Choice: what a pick offers
+    std::string              field;     ///< Choice: the node field a pick sets
+    std::string              tooltip;
+    bool                     separator = false;   ///< a faint rule above it
+    friend bool operator==(const Row&, const Row&) = default;
+};
+
 struct Node {
     std::string id;     ///< unique in its graph, stable across saves
     std::string type;   ///< a NodeType id; an unknown one draws neutral
@@ -24,7 +48,12 @@ struct Node {
     /// @brief Ports of this node alone, after its type's (a list's elements, a block's extra inputs). One with the id of
     ///        a type port replaces it in place.
     std::vector<PortDef> ports;
+    std::vector<Row>     rows;      ///< card lines the host fills (see Row)
+    std::string          tooltip;   ///< shown over the node where no row has one of its own
+    std::string          image;     ///< a picture the backend resolves by this key (a thumbnail); see NodeType::imageHeight
 
+    /// @return the row `id`, or nullptr
+    [[nodiscard]] const Row* FindRow(std::string_view id) const;
     /// @return the field's value, or an empty string
     [[nodiscard]] const std::string& Field(std::string_view key) const;
     friend bool operator==(const Node&, const Node&) = default;

@@ -161,6 +161,7 @@ NodeType ReadNodeType(Reader& r, const json::Value& o, std::size_t index)
     r.Str(o, "titleField", t.titleField, where);
     r.Str(o, "bodyLabel", t.bodyLabel, where);
     r.Str(o, "defaultEdge", t.defaultEdge, where);
+    r.Num(o, "imageHeight", t.imageHeight, where);
     const json::Array& fields = r.List(o, "fields", where);
     for (std::size_t k = 0; k < fields.size() && r.Ok(); ++k) {
         FieldDef f;
@@ -234,6 +235,7 @@ json::Value WriteNodeType(const NodeType& t)
     Put(o, "titleField", t.titleField, def.titleField, t.titleField);
     Put(o, "bodyLabel", t.bodyLabel, def.bodyLabel, t.bodyLabel);
     Put(o, "defaultEdge", t.defaultEdge, def.defaultEdge, t.defaultEdge);
+    Put(o, "imageHeight", t.imageHeight, def.imageHeight, static_cast<double>(t.imageHeight));
     if (!t.fields.empty()) {
         json::Array fields;
         for (const FieldDef& f : t.fields) {
@@ -286,6 +288,23 @@ std::expected<Schema, std::string> ParseSchema(std::string_view text)
         if (r.Ok() && (c.from.empty() || c.to.empty())) r.Fail(where, "needs both \"from\" and \"to\"");
         s.conversions.push_back(std::move(c));
     }
+    const json::Array& rowStyles = r.List(root, "rowStyles", "schema");
+    for (std::size_t k = 0; k < rowStyles.size() && r.Ok(); ++k) {
+        RowStyle    st;
+        std::string label;
+        if (!r.Named(rowStyles[k], st.id, label, "row style", k)) break;
+        const std::string where = "row style " + st.id;
+        for (const auto& [key, slot] : {std::pair{"color", &st.color}, std::pair{"valueColor", &st.valueColor}})
+            if (rowStyles[k].Find(key)) {
+                Color c;
+                r.Colour(rowStyles[k], key, c, where);
+                *slot = c;
+            }
+        r.Str(rowStyles[k], "prefix", st.prefix, where);
+        r.Bool(rowStyles[k], "bold", st.bold, where);
+        r.Bool(rowStyles[k], "italic", st.italic, where);
+        s.rowStyles.push_back(std::move(st));
+    }
     const json::Array& nodes = r.List(root, "nodes", "schema");
     for (std::size_t k = 0; k < nodes.size() && r.Ok(); ++k) s.nodeTypes.push_back(ReadNodeType(r, nodes[k], k));
     const json::Array& edges = r.List(root, "edges", "schema");
@@ -336,6 +355,21 @@ std::string WriteSchema(const Schema& s)
         json::Array a;
         for (const Conversion& c : s.conversions) a.emplace_back(json::Object{{"from", c.from}, {"to", c.to}});
         root.emplace_back("conversions", std::move(a));
+    }
+    if (!s.rowStyles.empty()) {
+        json::Array a;
+        for (const RowStyle& st : s.rowStyles) {
+            const RowStyle def;
+            json::Object o;
+            o.emplace_back("id", st.id);
+            if (st.color) o.emplace_back("color", st.color->ToHex());
+            if (st.valueColor) o.emplace_back("valueColor", st.valueColor->ToHex());
+            Put(o, "prefix", st.prefix, def.prefix, st.prefix);
+            Put(o, "bold", st.bold, def.bold, st.bold);
+            Put(o, "italic", st.italic, def.italic, st.italic);
+            a.emplace_back(std::move(o));
+        }
+        root.emplace_back("rowStyles", std::move(a));
     }
     json::Array nodes;
     for (const NodeType& t : s.nodeTypes) nodes.push_back(WriteNodeType(t));

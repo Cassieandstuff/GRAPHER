@@ -7,6 +7,7 @@
 #include <grapher/Port.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,6 +41,17 @@ enum class NodeShape {
     Dot,
 };
 
+/// @brief How a kind of row looks: a key's colour, a binding's prefix, a muted unset value.
+struct RowStyle {
+    std::string           id;
+    std::optional<Color>  color;        ///< the label's; unset = the style's text colour
+    std::optional<Color>  valueColor;   ///< the value's; unset = muted
+    std::string           prefix;       ///< put before the label ("+ ", "← ")
+    bool                  bold   = false;
+    bool                  italic = false;
+    friend bool operator==(const RowStyle&, const RowStyle&) = default;
+};
+
 struct NodeType {
     std::string           id;            ///< Node::type refers to it, byte-exact
     std::string           label;
@@ -53,6 +65,7 @@ struct NodeType {
     std::string           bodyLabel  = "Summary";
     std::string           defaultEdge;   ///< an EdgeType id a new edge to or from this type gets; empty = the schema's first
     std::vector<PortDef>  ports;         ///< every node of the type has these; a node's own ports follow (Node::ports)
+    float                 imageHeight = 0.f;   ///< room for Node::image at the foot of a card, world units; 0 = none
     friend bool operator==(const NodeType&, const NodeType&) = default;
 };
 
@@ -75,6 +88,7 @@ struct Schema {
     std::vector<EdgeType>   edgeTypes;   ///< the first is what a newly drawn edge gets, unless an end's type says otherwise
     std::vector<PortType>   portTypes;
     std::vector<Conversion> conversions;
+    std::vector<RowStyle>   rowStyles;
     SubtypeFlow             subtypeFlow = SubtypeFlow::OutIsA;
     /// @brief Bump after changing the types in place (a type defined at runtime), so a canvas drops what it cached.
     ///        PutNodeType bumps it.
@@ -83,6 +97,7 @@ struct Schema {
     [[nodiscard]] const NodeType* FindNode(std::string_view id) const;
     [[nodiscard]] const EdgeType* FindEdge(std::string_view id) const;
     [[nodiscard]] const PortType* FindPortType(std::string_view id) const;
+    [[nodiscard]] const RowStyle* FindRowStyle(std::string_view id) const;
     /// @brief The edge type a new edge between these node types gets: the source's default, else the target's, else the
     ///        first edge type; empty when there are none.
     [[nodiscard]] std::string EdgeFor(std::string_view fromType, std::string_view toType) const;

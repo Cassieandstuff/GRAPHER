@@ -36,6 +36,31 @@ drag, the ports it may land on are ringed. A node with ports has no connect hand
 The schema can be written as JSON (`grapher/SchemaJson.h` documents the format), so node types can come from data at
 runtime: parse one with `ParseNodeType` and add it with `Schema::PutNodeType`.
 
+**Rows** are card lines the host fills (`Node::rows`): a label and a value, styled by a `RowStyle` from the schema
+(colour, value colour, prefix, bold, italic), with a rule above when `separator` is set. A row may carry a port's pin
+(`Row::port`), so a list of pointers reads as a list of rows each wired from its own line. A row can act: `Click` and
+`Button` rows are handed to the host (`Canvas::TakeRowClick`, the Qt widget's `rowClicked`), and a `Choice` row offers
+its `choices` and sets a node field (`PickChoice`; the Qt widget pops the menu itself). Rows and nodes carry tooltips
+(`TooltipAt`). A node type with an `imageHeight` shows `Node::image` at the foot of the card: the draw list's `Image`
+command names it by key and the backend resolves it (`CanvasWidget::setImageSource`).
+
+**Two edit modes.** In `EditMode::Direct` (the default) the canvas edits the host's graph between `onBeforeChange`
+and `onChanged`. In `EditMode::Propose` it never touches it: a gesture plays out on a copy and arrives at `onIntent` as
+an `Intent` (`MoveNodes`, `ConnectWire` with the wires it replaces, `RemoveItems`, `CreateNode`, `SetValue`); the
+host applies it through its own history, or doesn't, and calls `Refresh`. A wire let go over empty canvas arrives as
+`ConnectToNothing` in either mode. `CancelGesture` (Esc) undoes a gesture under way.
+
+**Navigation and selection** are the host's to shape: `PanBy`, `ZoomAbout` (within `minZoom`..`maxZoom`), `Frame`
+(some nodes or all), `CenterOn`, `EnsureVisible`, and `panWithButtons = false` when the host reads the middle button
+and wheel itself (`CanvasWidget::setHostNavigation`). `SelectKeys::ExtendSubtract` makes Shift add and Ctrl take away;
+the default toggles. `CanvasWidget::setOwnKeys(false)` leaves every key to the host's commands.
+
+**Large graphs.** The canvas keeps its routes, per-node and per-edge tables until a frame, port, edge or option
+changes, culls what is off screen, and hit-tests only what is near the pointer. On a graph of more than 2000 nodes a
+drag reroutes only the dragged nodes' wires, and past 400 obstacles each wire that needs a detour routes on a grid of
+the nodes around it. `grapher_test` holds a 20,000-node case with its budgets (an optimised build: a frame ≤ 4 ms with
+routes cached, a hit test ≤ 0.2 ms, a drag step ≤ 8 ms; panning and zooming never reroute).
+
 | `grapher/DrawList.h` | what a backend paints: rects, polylines, polygons, circles, text, in screen pixels |
 | `grapher/Style.h` | background, grid and card chrome |
 | `grapher/qt/CanvasWidget.h` | the Qt backend: `CanvasWidget` and `Paint(QPainter&, DrawList)` |
