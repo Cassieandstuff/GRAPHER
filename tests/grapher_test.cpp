@@ -2457,15 +2457,15 @@ void TestKitResolve()
     CHECK((ra.w >= 170.f * z - 0.01f && ra.w <= 340.f * z + 0.01f));
     // What it draws: the header band, the title and subtitle in it, the body's rows.
     const auto list = c.Draw();
-    bool band = false, title = false, sub = false;
+    bool banded = false, title = false, sub = false;
     for (const auto& cmd : list.cmds) {
-        if (const auto* f = std::get_if<grapher::FillRect>(&cmd); f && f->fill == a.parts[0].fill && std::abs(f->rect.y - ra.y) < 0.01f) band = true;
+        if (const auto* f = std::get_if<grapher::FillRect>(&cmd); f && f->fill == a.parts[0].fill && std::abs(f->rect.y - ra.y) < 0.01f) banded = true;
         if (const auto* t = std::get_if<grapher::Text>(&cmd)) {
             title = title || (t->text == "Alpha" && t->bold && std::abs(t->size - 13.f * z) < 0.01f);
             sub   = sub || (t->text == "class · 0000x0001" && t->color == grapher::Color{0xeb, 0xeb, 0xf0, 0xbe});
         }
     }
-    CHECK((band && title && sub));
+    CHECK((banded && title && sub));
     // A hit says which part it is on.
     CHECK((c.HitTest({ra.Center().x, ra.y + 10.f * z}).part == "header" && c.HitTest({ra.Center().x, ra.Bottom() - 4.f * z}).part == "body"));
     // A kind defined at runtime takes effect at once.
