@@ -1243,8 +1243,7 @@ void TestLargeGraph()
     const double dockDragMs = ms(t0);
     CHECK(std::abs(dc.FrameOf("n10103").x - dc.FrameOf("n10102").x - follower) < 0.01f);   // it follows the dragged card
     dc.PointerUp(docked + grapher::Vec2{30, 60}, grapher::Button::Left);
-    std::printf("  20k graph, docked: first route %.1f ms, draw %.2f ms, drag step %.2f ms
-", dockRouteMs, dockDrawMs, dockDragMs);
+    std::printf("  20k graph, docked: first route %.1f ms, draw %.2f ms, drag step %.2f ms\n", dockRouteMs, dockDrawMs, dockDragMs);
 #ifdef NDEBUG
     CHECK(dockDrawMs <= 4.0);
     CHECK(dockDragMs <= 8.0);

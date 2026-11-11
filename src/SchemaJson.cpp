@@ -19,6 +19,7 @@ constexpr Names<PortGlyph> kGlyphs{{"circle", PortGlyph::Circle}, {"square", Por
 constexpr Names<PortDir>   kDirs{{"in", PortDir::In}, {"out", PortDir::Out}};
 constexpr Names<PortSide>  kSides{{"auto", PortSide::Auto}, {"left", PortSide::Left}, {"right", PortSide::Right}, {"top", PortSide::Top}, {"bottom", PortSide::Bottom}};
 constexpr Names<SubtypeFlow> kFlows{{"out-is-a", SubtypeFlow::OutIsA}, {"in-is-a", SubtypeFlow::InIsA}};
+constexpr Names<GroupMode>   kGroupModes{{"frame", GroupMode::Frame}, {"members", GroupMode::Members}};
 
 template <class E> std::string_view NameOf(Names<E> names, E e)
 {
@@ -162,6 +163,8 @@ NodeType ReadNodeType(Reader& r, const json::Value& o, std::size_t index)
     r.Str(o, "bodyLabel", t.bodyLabel, where);
     r.Str(o, "defaultEdge", t.defaultEdge, where);
     r.Num(o, "imageHeight", t.imageHeight, where);
+    r.Enum(o, "groupMode", kGroupModes, t.groupMode, where);
+    r.Bool(o, "showCount", t.showCount, where);
     const json::Array& fields = r.List(o, "fields", where);
     for (std::size_t k = 0; k < fields.size() && r.Ok(); ++k) {
         FieldDef f;
@@ -236,6 +239,8 @@ json::Value WriteNodeType(const NodeType& t)
     Put(o, "bodyLabel", t.bodyLabel, def.bodyLabel, t.bodyLabel);
     Put(o, "defaultEdge", t.defaultEdge, def.defaultEdge, t.defaultEdge);
     Put(o, "imageHeight", t.imageHeight, def.imageHeight, static_cast<double>(t.imageHeight));
+    Put(o, "groupMode", t.groupMode, def.groupMode, std::string(NameOf(kGroupModes, t.groupMode)));
+    Put(o, "showCount", t.showCount, def.showCount, t.showCount);
     if (!t.fields.empty()) {
         json::Array fields;
         for (const FieldDef& f : t.fields) {

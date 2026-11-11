@@ -16,6 +16,7 @@
 #include <grapher/Schema.h>
 #include <grapher/Style.h>
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -347,8 +348,12 @@ private:
     /// @brief Fill `view_` from the graph (see Shown).
     void BuildView() const;
     /// @brief Place `view_`'s docked nodes against their parents (and what docked member groups hold with them).
+    /// @brief Index `view_`'s docks: each node's dock parent, and each parent's lists by side and beside its rows.
+    void IndexDocks() const;
+    /// @brief Place docked nodes against their parents, carrying what docked member groups hold: the clusters of `roots`,
+    ///        or every one. Nodes marked `dragged` are out of every list.
     /// @param moved collects the nodes it moved (a drag reroutes their wires)
-    void DockView(const std::vector<std::size_t>& up, std::vector<std::size_t>* moved = nullptr) const;
+    void PlaceDocks(const std::vector<char>& dragged, const std::vector<std::size_t>& roots, std::vector<std::size_t>* moved) const;
     void DrawDial(std::vector<DrawCmd>& c, const Node& n, const NodeType& t, const Camera& cam, bool sel, bool hov) const;
     /// @brief Fit every open member group of `view_` around what it shows, deepest first.
     void FitView() const;
@@ -384,6 +389,11 @@ private:
     bool                                          snapDial_  = false;
     mutable bool                                  hasDocks_  = false;
     mutable bool                                  hasMembers_ = false;
+    mutable std::vector<std::size_t>              dockParent_;   ///< per shown node: its dock parent's index
+    mutable std::unordered_map<std::size_t, std::array<std::vector<std::size_t>, 4>> dockSide_;   ///< by parent: bottom, top, right, left
+    mutable std::unordered_map<std::size_t, std::vector<std::size_t>> dockBeside_;   ///< by parent: what sits beside its rows
+    mutable std::vector<Vec2>                     offset_;       ///< PlaceDocks' working offsets
+    mutable std::vector<char>                     visiting_;
     mutable std::unordered_map<std::string, std::uint8_t> sides_;   ///< each wire's last sides, so they don't flicker
     std::string                                   hold_;          ///< HoldInPlace's node
     Vec2                                          holdAt_;

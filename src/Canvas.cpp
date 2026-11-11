@@ -56,6 +56,7 @@ std::string PortKey(std::string_view node, std::string_view port)
 constexpr float kHandleAt = 0.8f;   ///< a dial's handles sit this far out along its radius
 
 PortSide DockSideOf(PortSide s) { return s == PortSide::Auto ? PortSide::Bottom : s; }
+int      DockSlotOf(PortSide s) { return s == PortSide::Bottom ? 0 : s == PortSide::Top ? 1 : s == PortSide::Right ? 2 : 3; }
 
 float Overlap(const Rect& a, const Rect& b)
 {
@@ -896,8 +897,6 @@ void Canvas::BuildView() const
         }
     };
     fit();
-    DockView(up);   // docked nodes take their places beside their parents, carrying what docked groups hold
-    if (hasDocks_) fit();
     // Wires into a closed group end on it; several that then join the same two ends draw as one, dashed.
     std::vector<Edge>               edges;
     std::vector<char>               dashed;
@@ -951,6 +950,17 @@ void Canvas::BuildView() const
         if (member[full] && !collapsed_.contains(view_.nodes[i].id)) fitOrder_.push_back(i);
     }
     std::ranges::stable_sort(fitOrder_, std::greater<>{}, [&](std::size_t g) { return shownDepth[g]; });
+
+    // Docked nodes take their places beside their parents, carrying what docked groups hold; the groups fit again.
+    IndexDocks();
+    if (hasDocks_) {
+        std::vector<char> dragged(view_.nodes.size(), 0);
+        if (mode_ == Mode::Moving && started_)
+            for (const auto& [id, frame] : origin_)
+                if (const auto it = shownAt.find(id); it != shownAt.end()) dragged[it->second] = 1;
+        PlaceDocks(dragged, {}, nullptr);
+        FitView();
+    }
 }
 
 bool Canvas::Visible(const Node& n) const
@@ -961,55 +971,54 @@ bool Canvas::Visible(const Node& n) const
     return false;
 }
 
-void Canvas::DockView(const std::vector<std::size_t>& up, std::vector<std::size_t>* moved) const
+void Canvas::IndexDocks() const
 {
+    constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+    const std::size_t     n     = view_.nodes.size();
     hasDocks_ = false;
-    const std::size_t n = view_.nodes.size();
+    dockParent_.assign(n, kNone);
+    dockSide_.clear();
+    dockBeside_.clear();
     std::unordered_map<std::string_view, std::size_t> at;
     at.reserve(n);
     for (std::size_t i = 0; i < n; ++i) at.emplace(view_.nodes[i].id, i);
-    // A node being dragged is out of every list, so the others close up behind it.
-    std::unordered_set<std::string_view> dragged;
-    if (mode_ == Mode::Moving && started_)
-        for (const auto& [id, frame] : origin_) dragged.insert(id);
-
-    constexpr std::array kSides{PortSide::Bottom, PortSide::Top, PortSide::Right, PortSide::Left};
-    auto slot = [](PortSide s) { return s == PortSide::Bottom ? 0 : s == PortSide::Top ? 1 : s == PortSide::Right ? 2 : 3; };
-    std::unordered_map<std::size_t, std::array<std::vector<std::size_t>, 4>> onSide;
-    std::unordered_map<std::size_t, std::vector<std::size_t>>                beside;
-    std::vector<char>                                                        docked(n, 0);
     for (std::size_t i = 0; i < n; ++i) {
         const Dock& d = view_.nodes[i].dock;
-        if (d.parent.empty() || dragged.contains(view_.nodes[i].id)) continue;
+        if (d.parent.empty()) continue;
         const auto p = at.find(d.parent);
         if (p == at.end() || p->second == i) continue;
         const PortSide side = DockSideOf(d.side);
-        if (!d.row.empty() && (side == PortSide::Left || side == PortSide::Right)) beside[p->second].push_back(i);
-        else onSide[p->second][static_cast<std::size_t>(slot(side))].push_back(i);
-        docked[i] = 1;
-        hasDocks_ = true;
+        if (!d.row.empty() && (side == PortSide::Left || side == PortSide::Right)) dockBeside_[p->second].push_back(i);
+        else dockSide_[p->second][static_cast<std::size_t>(DockSlotOf(side))].push_back(i);
+        dockParent_[i] = p->second;
+        hasDocks_      = true;
     }
-    if (!hasDocks_) return;
-    auto byOrder = [&](std::vector<std::size_t>& v) {
-        std::ranges::stable_sort(v, {}, [&](std::size_t i) { return view_.nodes[i].dock.order; });
-    };
-    for (auto& [p, sides] : onSide)
+    auto byOrder = [&](std::vector<std::size_t>& v) { std::ranges::stable_sort(v, {}, [&](std::size_t i) { return view_.nodes[i].dock.order; }); };
+    for (auto& [parent, sides] : dockSide_)
         for (auto& list : sides) byOrder(list);
+}
+
+void Canvas::PlaceDocks(const std::vector<char>& dragged, const std::vector<std::size_t>& roots, std::vector<std::size_t>* moved) const
+{
+    constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+    constexpr std::array  kSides{PortSide::Bottom, PortSide::Top, PortSide::Right, PortSide::Left};
+    const std::size_t     n = view_.nodes.size();
+    const CardMetrics     m = MetricsOf(style);
+    offset_.resize(n);
+    visiting_.assign(n, 0);
+    auto out = [&](std::size_t c) { return c < dragged.size() && dragged[c]; };   // a dragged node is out of every list
 
     // Each node's cluster (itself and what is docked to it, at any depth) relative to its own corner.
-    const CardMetrics           m = MetricsOf(style);
-    std::vector<Vec2>           offset(n);
-    std::vector<char>           visiting(n, 0);
     std::function<Rect(std::size_t)> cluster = [&](std::size_t i) -> Rect {
-        visiting[i]   = 1;
+        visiting_[i] = 1;
         const Rect& f = view_.nodes[i].frame;
         const Rect  own{0, 0, f.w, f.h};
         Rect        span = own;
-        if (const auto it = onSide.find(i); it != onSide.end())
+        if (const auto it = dockSide_.find(i); it != dockSide_.end())
             for (const PortSide side : kSides) {
                 float along = side == PortSide::Bottom ? own.Bottom() + style.dockGap : side == PortSide::Top ? -style.dockGap : 0.f;
-                for (const std::size_t c : it->second[static_cast<std::size_t>(slot(side))]) {
-                    if (visiting[c]) continue;   // a dock cycle ends here
+                for (const std::size_t c : it->second[static_cast<std::size_t>(DockSlotOf(side))]) {
+                    if (visiting_[c] || out(c)) continue;   // a dock cycle ends here; the others close up behind a dragged one
                     const Rect r = cluster(c);
                     Vec2       off;
                     switch (side) {
@@ -1031,15 +1040,15 @@ void Canvas::DockView(const std::vector<std::size_t>& up, std::vector<std::size_
                         along += r.h + style.dockGap;
                         break;
                     }
-                    offset[c] = off;
-                    span      = Rect::Union(span, Rect{r.x + off.x, r.y + off.y, r.w, r.h});
+                    offset_[c] = off;
+                    span       = Rect::Union(span, Rect{r.x + off.x, r.y + off.y, r.w, r.h});
                 }
             }
         // Beside a row: level with its line, further out for each one already there.
-        if (const auto it = beside.find(i); it != beside.end()) {
+        if (const auto it = dockBeside_.find(i); it != dockBeside_.end()) {
             float right = own.Right() + style.dockSideGap, left = own.x - style.dockSideGap;
             for (const std::size_t c : it->second) {
-                if (visiting[c]) continue;
+                if (visiting_[c] || out(c)) continue;
                 const Rect  r      = cluster(c);
                 const Dock& d      = view_.nodes[c].dock;
                 float       middle = own.h * 0.5f;
@@ -1057,46 +1066,49 @@ void Canvas::DockView(const std::vector<std::size_t>& up, std::vector<std::size_
                     off = {left - r.Right(), y};
                     left -= r.w + style.dockSideGap;
                 }
-                offset[c] = off;
-                span      = Rect::Union(span, Rect{r.x + off.x, r.y + off.y, r.w, r.h});
+                offset_[c] = off;
+                span       = Rect::Union(span, Rect{r.x + off.x, r.y + off.y, r.w, r.h});
             }
         }
-        visiting[i] = 0;
+        visiting_[i] = 0;
         return span;
     };
 
     // What a docked member group holds moves with it.
-    std::vector<std::vector<std::size_t>> held(n);
-    for (std::size_t i = 0; i < n; ++i)
-        if (up[i] != static_cast<std::size_t>(-1)) held[up[i]].push_back(i);
     std::function<void(std::size_t, Vec2)> shift = [&](std::size_t i, Vec2 d) {
         if (d.x == 0.f && d.y == 0.f) return;
         view_.nodes[i].frame.x += d.x;
         view_.nodes[i].frame.y += d.y;
         if (moved) moved->push_back(i);
-        for (const std::size_t k : held[i]) shift(k, d);
+        if (i < viewKids_.size())
+            for (const std::size_t k : viewKids_[i]) shift(k, d);
     };
     std::function<void(std::size_t)> place = [&](std::size_t i) {
-        visiting[i] = 1;
+        visiting_[i] = 1;
         const Vec2 corner{view_.nodes[i].frame.x, view_.nodes[i].frame.y};
         auto put = [&](std::size_t c) {
-            if (visiting[c]) return;
-            const Vec2 to = corner + offset[c];
-            shift(c, to - Vec2{view_.nodes[c].frame.x, view_.nodes[c].frame.y});
+            if (visiting_[c] || out(c)) return;
+            shift(c, corner + offset_[c] - Vec2{view_.nodes[c].frame.x, view_.nodes[c].frame.y});
             place(c);
         };
-        if (const auto it = onSide.find(i); it != onSide.end())
+        if (const auto it = dockSide_.find(i); it != dockSide_.end())
             for (const auto& list : it->second)
                 for (const std::size_t c : list) put(c);
-        if (const auto it = beside.find(i); it != beside.end())
+        if (const auto it = dockBeside_.find(i); it != dockBeside_.end())
             for (const std::size_t c : it->second) put(c);
-        visiting[i] = 0;
+        visiting_[i] = 0;
     };
+    auto layOut = [&](std::size_t r) {
+        cluster(r);
+        place(r);
+    };
+    if (!roots.empty()) {
+        for (const std::size_t r : roots) layOut(r);
+        return;
+    }
+    // Every cluster: from each node with something docked that is docked to nothing (or is being dragged).
     for (std::size_t i = 0; i < n; ++i)
-        if (!docked[i] && (onSide.contains(i) || beside.contains(i))) {
-            cluster(i);
-            place(i);
-        }
+        if ((dockSide_.contains(i) || dockBeside_.contains(i)) && (dockParent_[i] == kNone || out(i))) layOut(i);
 }
 
 std::optional<DockSlot> Canvas::FindDockSlot(std::string_view nodeId, const Rect& frame) const
@@ -1242,11 +1254,16 @@ void Canvas::Sync() const
         optionsKey = Mix(optionsKey, Bits(f));
 
     const auto  hs  = HashText;
-    std::size_t key = Mix(reinterpret_cast<std::uintptr_t>(schema_), (plain ? 1u : 0u) | (patch ? 2u : 0u) | (local ? 4u : 0u));
+    // A drag takes the dragged nodes out of their docks while it lasts, so whether one is under way is part of the key.
+    std::size_t key = Mix(reinterpret_cast<std::uintptr_t>(schema_),
+                          (plain ? 1u : 0u) | (patch ? 2u : 0u) | (local ? 4u : 0u) | (dragging && mode_ == Mode::Moving && hasDocks_ ? 8u : 0u));
     key = Mix(key, reinterpret_cast<std::uintptr_t>(graph_));
     key = Mix(Mix(Mix(key, optionsKey), static_cast<std::size_t>(schema_->revision)), viewRev_);
     for (const Node& n : graph_->nodes) {
         key = Mix(Mix(Mix(key, hs(n.id)), hs(n.type)), n.parent.empty() ? 0 : hs(n.parent));
+        if (!n.dock.parent.empty())
+            key = Mix(Mix(Mix(key, hs(n.dock.parent)), hs(n.dock.row)),
+                      static_cast<std::size_t>(n.dock.order) * 16 + static_cast<std::size_t>(n.dock.side) * 2 + (n.dock.flush ? 1 : 0));
         for (float f : {n.frame.x, n.frame.y, n.frame.w, n.frame.h}) key = Mix(key, Bits(f));
         for (const PortDef& p : n.ports)
             key = Mix(Mix(key, hs(p.id)), static_cast<std::size_t>(p.side) * 8 + static_cast<std::size_t>(p.dir) * 2 + (p.onHeader ? 1 : 0));
@@ -1285,10 +1302,22 @@ void Canvas::Sync() const
                 BuildView();   // a closed group moved with what it holds: start over
             } else {
                 if (hasDocks_) {
-                    // Docked nodes close up behind a dragged one, and follow a dragged parent: placed again in place,
-                    // and those that moved reroute too.
-                    std::vector<std::size_t> shifted;
-                    DockView(viewUp_, &shifted);
+                    // Docked nodes close up behind a dragged one and follow a dragged parent: only the clusters the
+                    // drag touches are placed again, and the nodes that moved reroute too.
+                    constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+                    std::vector<char>        dragged(view_.nodes.size(), 0);
+                    std::vector<std::size_t> roots, shifted;
+                    for (const auto& [id, frame] : origin_)
+                        if (const auto it = index_.find(id); it != index_.end()) dragged[it->second] = 1;
+                    for (const auto& [id, frame] : origin_)
+                        if (const auto it = index_.find(id); it != index_.end()) {
+                            roots.push_back(it->second);
+                            std::size_t top = dockParent_[it->second];
+                            for (std::size_t steps = 0; top != kNone && dockParent_[top] != kNone && !dragged[top] && steps < dockParent_.size(); ++steps)
+                                top = dockParent_[top];
+                            if (top != kNone) roots.push_back(top);
+                        }
+                    PlaceDocks(dragged, roots, &shifted);
                     for (const std::size_t i : shifted) moving.insert(view_.nodes[i].id);
                 }
                 FitView();
