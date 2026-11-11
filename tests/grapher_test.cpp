@@ -3007,7 +3007,8 @@ void TestKitEdges()
     // A rule never reroutes: selected, the same path, wider.
     r.c->SelectEdge("w1");
     bool same = false;
-    for (const auto* p : r.All<grapher::Polyline>(r.c->Draw())) same = same || (p->width == 5.f && p->points == route);
+    const auto chosenList = r.c->Draw();
+    for (const auto* p : r.All<grapher::Polyline>(chosenList)) same = same || (p->width == 5.f && p->points == route);
     CHECK(same);
 }
 
