@@ -230,7 +230,7 @@ public:
     GraphLayout(const Graph& graph, const Schema& schema, const std::set<std::string, std::less<>>& keep,
                 const std::set<std::string, std::less<>>& collapsed, const LayoutOptions& o)
         : g_(graph), s_(schema), o_(o), n_(graph.nodes.size()), parent_(n_, kTop), children_(n_ + 1), kept_(n_, 0), open_(n_, 0),
-          group_(n_, 0), size_(n_), rel_(n_), dockUp_(n_, kTop), span_(n_), offset_(n_), visiting_(n_, 0)
+          group_(n_, 0), size_(n_), rel_(n_), lo_(n_), dockUp_(n_, kTop), span_(n_), offset_(n_), visiting_(n_, 0)
     {
         std::unordered_map<std::string_view, std::size_t> index;
         for (std::size_t i = 0; i < n_; ++i) index.emplace(graph.nodes[i].id, i);
@@ -443,7 +443,7 @@ private:
         std::vector<Rect> keptRects;
         for (const std::size_t c : kids)
             if (kept_[c]) {
-                rel_[c] = Vec2{g_.nodes[c].frame.x + span_[c].x, g_.nodes[c].frame.y + span_[c].y} - corner;
+                rel_[c] = Vec2{g_.nodes[c].frame.x + lo_[c].x + span_[c].x, g_.nodes[c].frame.y + lo_[c].y + span_[c].y} - corner;
                 keptRects.push_back({rel_[c].x, rel_[c].y, item.at(c).x, item.at(c).y});
             }
         for (const std::size_t c : kids) {
@@ -467,8 +467,12 @@ private:
             lo = {std::min(lo.x, rel_[c].x), std::min(lo.y, rel_[c].y)};
             hi = {std::max(hi.x, rel_[c].x + item.at(c).x), std::max(hi.y, rel_[c].y + item.at(c).y)};
         }
-        if (g != kTop)
+        // A group holding a kept item keeps its corner, so what was kept stays put and its frame wraps it (reaching left or
+        // above its corner); otherwise its content starts at the corner.
+        const bool keeps = std::ranges::any_of(kids, [&](std::size_t c) { return kept_[c] != 0; });
+        if (g != kTop && !keeps)
             for (const std::size_t c : kids) rel_[c] = rel_[c] - lo;
+        if (g != kTop && keeps && open_[g]) lo_[g] = lo;
         return hi - lo;
     }
 
@@ -500,7 +504,7 @@ private:
     void PlaceNode(std::size_t i, Vec2 at, std::vector<std::pair<std::string, Rect>>& out) const
     {
         out.emplace_back(g_.nodes[i].id, Rect{at.x, at.y, size_[i].x, size_[i].y});
-        if (group_[i]) Place(i, at + Vec2{o_.padding, o_.header}, out);
+        if (group_[i]) Place(i, at - lo_[i] + Vec2{o_.padding, o_.header}, out);
         auto docked = [&](std::size_t c) {
             if (dockUp_[c] == i) PlaceNode(c, at + offset_[c], out);
         };
@@ -525,6 +529,7 @@ private:
     std::vector<std::vector<std::size_t>>            children_;   ///< by Slot(parent), docked nodes included
     std::vector<char>                                kept_, open_, group_;
     std::vector<Vec2>                                size_, rel_;
+    std::vector<Vec2>                                lo_;         ///< a group keeping its corner: where its content starts from it
     std::vector<std::size_t>                         dockUp_;     ///< the node each is docked to, in its group; kTop = none
     std::unordered_map<std::size_t, std::array<std::vector<std::size_t>, 4>> sides_;   ///< by parent: bottom, top, right, left
     std::unordered_map<std::size_t, std::vector<std::size_t>>             beside_;   ///< by parent: what sits beside its rows

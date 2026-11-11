@@ -46,6 +46,8 @@ struct LayoutOptions {
 ///        that would overlap one slides down until clear. Then an open group pushes its siblings clear of it.
 ///        A node docked to another of its group (Node::dock) is no item of its own: it and its parent lay out as one
 ///        cluster, placed by the canvas's dock rules, so the columns leave room for what is docked.
+///        A member group holding a kept node keeps its corner (the group's frame as given, its padding and header in):
+///        the kept nodes stay put relative to it, and its frame wraps them even where they reach left of or above it.
 /// @param origin where the top level starts
 /// @return every node's frame, member groups included (each wraps what it holds, below its header)
 [[nodiscard]] std::vector<std::pair<std::string, Rect>> LayoutGraph(const Graph& graph, const Schema& schema,

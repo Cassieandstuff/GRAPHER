@@ -1508,6 +1508,18 @@ void TestLayoutDocks()
     h.nodes[2].parent = "F";   // k2 lives in F: its dock to p is left out
     laid = grapher::LayoutGraph(h, s, {}, {}, o);
     CHECK((frameOf(laid, "F").Holds(frameOf(laid, "k2")) && frameOf(laid, "k1").y == frameOf(laid, "p").Bottom() + o.dockGap));
+
+    // A kept group with a kept member keeps its corner: the member stays put though it lies left of the corner, and the
+    // group's frame reaches out to wrap it; a member the layout places sits clear of it.
+    grapher::Graph k;
+    k.nodes.push_back({"G", "folder", {300, 300, 10, 10}});
+    k.nodes.push_back({"m", "box", {300 + o.padding - 50, 300 + o.header + 20, 100, 60}});
+    k.nodes.push_back({"n", "box", {0, 0, 100, 60}});
+    k.nodes[1].parent = k.nodes[2].parent = "G";
+    laid = grapher::LayoutGraph(k, s, {"G", "m"}, {}, o);
+    const grapher::Rect G = frameOf(laid, "G"), M = frameOf(laid, "m"), N = frameOf(laid, "n");
+    CHECK(M == k.nodes[1].frame);
+    CHECK((G.Holds(M) && G.Holds(N) && G.x == M.x - o.padding && !N.Intersects(M)));
 }
 
 void TestFrameGroupsUnchanged()
