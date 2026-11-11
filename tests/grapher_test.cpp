@@ -1555,7 +1555,7 @@ void TestFitBelowMinZoom()
         CHECK((r.x >= 0.f && r.Right() <= 1000.f && r.y >= 0.f && r.Bottom() <= 600.f));
     }
     CHECK(c.ZoomFloor() == fit);
-    CHECK_FALSE(c.Wheel({500, 300}, -3.f));   // already as far out as it goes
+    CHECK(!c.Wheel({500, 300}, -3.f));   // already as far out as it goes
     CHECK(c.Wheel({500, 300}, 5.f));
     CHECK(c.camera.zoom > fit);
     for (int k = 0; k < 40; ++k) c.Wheel({500, 300}, -1.f);
