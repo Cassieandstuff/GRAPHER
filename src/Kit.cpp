@@ -113,6 +113,49 @@ void Apply(const PartSpec& patch, PartSpec& to)
     set(patch.align, to.align);
 }
 
+void ApplyPin(const PinSpec& patch, PinSpec& to)
+{
+    auto set = [](const auto& from, auto& into) {
+        if (from) into = from;
+    };
+    set(patch.glyph, to.glyph);
+    set(patch.size, to.size);
+    set(patch.fill, to.fill);
+    set(patch.color, to.color);
+    set(patch.hollow, to.hollow);
+    set(patch.hit, to.hit);
+    set(patch.label, to.label);
+    for (const auto& [g, a] : patch.on) to.on[g] = a;
+}
+
+void ApplyRow(const RowSpec& patch, RowSpec& to)
+{
+    auto set = [](const auto& from, auto& into) {
+        if (from) into = from;
+    };
+    set(patch.color, to.color);
+    set(patch.valueColor, to.valueColor);
+    set(patch.prefix, to.prefix);
+    set(patch.suffix, to.suffix);
+    set(patch.align, to.align);
+    set(patch.valueAlign, to.valueAlign);
+    set(patch.bold, to.bold);
+    set(patch.italic, to.italic);
+    set(patch.chip, to.chip);
+    set(patch.editor, to.editor);
+    set(patch.min, to.min);
+    set(patch.max, to.max);
+    set(patch.step, to.step);
+    set(patch.reorder, to.reorder);
+    for (const auto& [g, a] : patch.on) to.on[g] = a;
+}
+
+int AlignOf(const std::optional<std::string>& a, int fallback)
+{
+    if (!a) return fallback;
+    return *a == "center" ? 1 : *a == "right" ? 2 : 0;
+}
+
 // ── colours ──
 
 struct Hsv {
@@ -293,14 +336,18 @@ std::optional<Selector> ParseSelector(std::string_view text)
             const std::string state = word();
             static constexpr std::pair<std::string_view, std::uint32_t> kStates[] = {
                 {"selected", StateSelected}, {"hovered", StateHovered}, {"dimmed", StateDimmed},
-                {"alias", StateAlias},       {"collapsed", StateCollapsed}, {"inGroup", StateInGroup}};
+                {"alias", StateAlias},       {"collapsed", StateCollapsed}, {"inGroup", StateInGroup},
+                {"wired", StateWired},       {"unwired", StateUnwired}};
             const auto it = std::find_if(std::begin(kStates), std::end(kStates), [&](const auto& p) { return p.first == state; });
             if (it == std::end(kStates)) return std::nullopt;
             out.states |= it->second;
         } else if (text[i] == '>') {
             ++i;
             skip();
-            out.part = word();
+            // A part is a name, or a kind of pin or row (`pin:<kind>`, `row:<kind>`): the rest of the selector.
+            const std::size_t b = i;
+            while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+            out.part = std::string(text.substr(b, i - b));
             skip();
             if (out.part.empty() || i != text.size()) return std::nullopt;
             break;
@@ -328,6 +375,17 @@ Kit KitFromSchema(const Schema& schema, const Style& style)
     selected.patch.stroke      = "$selection";
     selected.patch.strokeWidth = 2.f;
     kit.rules = {hovered, selected};
+    for (const RowStyle& rs : schema.rowStyles) {
+        RowKind k;
+        k.id = rs.id;
+        if (rs.color) k.spec.color = rs.color->ToHex();
+        if (rs.valueColor) k.spec.valueColor = rs.valueColor->ToHex();
+        if (!rs.prefix.empty()) k.spec.prefix = rs.prefix;
+        if (rs.bold) k.spec.bold = true;
+        if (rs.italic) k.spec.italic = true;
+        if (rs.chip) k.spec.chip = true;
+        kit.rows.push_back(std::move(k));
+    }
     kit.revision = schema.revision;
     return kit;
 }
@@ -351,6 +409,15 @@ Kit MergeKits(const Kit& under, const Kit& over)
         if (it != out.nodes.end()) *it = k;
         else out.nodes.push_back(k);
     }
+    auto merge = [](auto& into, const auto& from) {
+        for (const auto& k : from) {
+            auto it = std::find_if(into.begin(), into.end(), [&](const auto& n) { return n.id == k.id; });
+            if (it != into.end()) *it = k;
+            else into.push_back(k);
+        }
+    };
+    merge(out.pins, over.pins);
+    merge(out.rows, over.rows);
     out.rules.insert(out.rules.end(), over.rules.begin(), over.rules.end());
     for (const auto& [k, v] : over.reserved) out.reserved[k] = v;
     out.revision = under.revision + over.revision;
@@ -419,6 +486,7 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
         part.top         = p.top.value_or(0.8f);
         part.height      = p.height.value_or(0.f);
         part.dash        = p.dash.value_or(false);
+        part.on          = p.on;
         for (const PartSpec& c : p.content) {
             if (c.kind != PartKind::Text || !shows(c)) continue;
             LookText text;
@@ -445,6 +513,51 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
     // A header of a stated height is where the rows start: pins, hits and docks read it from the metrics.
     for (const LookPart& p : look.parts)
         if (p.kind == PartKind::Header && p.height > 0.f && m.header <= 0.f) m.header = p.height;
+    look.on = root.on;
+
+    // Pin kinds, unwired and wired, each patched by the rules on `pin:<kind>` this node (in that state) matches.
+    static constexpr std::pair<std::string_view, PortGlyph> kGlyphs[] = {
+        {"circle", PortGlyph::Circle}, {"square", PortGlyph::Square}, {"diamond", PortGlyph::Diamond}, {"arrow", PortGlyph::Arrow}};
+    for (const PinKind& pk : kit.pins)
+        for (int wired = 0; wired < 2; ++wired) {
+            PinSpec            spec  = pk.spec;
+            const std::uint32_t with = states | (wired ? StateWired : StateUnwired);
+            for (const Rule* r : order)
+                if (r->select.part == "pin:" + pk.id && Matches(r->select, type.id, tags, with)) ApplyPin(r->pin, spec);
+            PinLook& pin = look.pins[pk.id][static_cast<std::size_t>(wired)];
+            if (spec.glyph)
+                for (const auto& [name, g] : kGlyphs)
+                    if (name == *spec.glyph) pin.glyph = g;
+            pin.size  = spec.size.value_or(0.f);
+            pin.fill  = !spec.fill || *spec.fill == "wired" ? 0 : *spec.fill == "always" ? 1 : 2;
+            if (spec.color) pin.color = ResolveColor(*spec.color, type.band, kit);
+            if (spec.hollow) pin.hollow = ResolveColor(*spec.hollow, type.band, kit);
+            pin.hit   = spec.hit.value_or(4.f);
+            pin.label = spec.label.value_or(true);
+            pin.on    = spec.on;
+        }
+    // Row kinds, each patched by the rules on `row:<kind>` this node matches.
+    for (const RowKind& rk : kit.rows) {
+        RowSpec spec = rk.spec;
+        for (const Rule* r : order)
+            if (r->select.part == "row:" + rk.id && Matches(r->select, type.id, tags, states)) ApplyRow(r->row, spec);
+        RowLook& row = look.rows[rk.id];
+        if (spec.color) row.color = ResolveColor(*spec.color, type.band, kit);
+        if (spec.valueColor) row.valueColor = ResolveColor(*spec.valueColor, type.band, kit);
+        row.prefix     = spec.prefix.value_or(std::string());
+        row.suffix     = spec.suffix.value_or(std::string());
+        row.align      = AlignOf(spec.align, 0);
+        row.valueAlign = AlignOf(spec.valueAlign, 2);
+        row.bold       = spec.bold.value_or(false);
+        row.italic     = spec.italic.value_or(false);
+        row.chip       = spec.chip.value_or(false);
+        row.editor     = spec.editor.value_or(std::string());
+        row.min        = spec.min.value_or(0.f);
+        row.max        = spec.max.value_or(0.f);
+        row.step       = spec.step.value_or(0.f);
+        row.reorder    = spec.reorder.value_or(std::string());
+        row.on         = spec.on;
+    }
     return look;
 }
 

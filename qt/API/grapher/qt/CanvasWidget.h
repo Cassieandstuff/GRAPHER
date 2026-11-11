@@ -102,11 +102,16 @@ protected:
 
 private:
     void placeOverlays();
+    /// @brief Put the widget an edit in place asks for over its row: Enter or leaving it commits (one step), Esc cancels.
+    void openEditor(const EditRequest& edit);
+    /// @brief Open the edit a gesture asked for, if any.
+    void takeEdit();
     void runSearch();
     void goToHit(int row);
     void closeSearch(bool keep);
 
     QWidget*                                          minimap_   = nullptr;
+    QPointer<QWidget>                                 editor_;
     QWidget*                                          searchBox_ = nullptr;
     QLineEdit*                                        query_     = nullptr;
     QListWidget*                                      hits_      = nullptr;

@@ -563,6 +563,121 @@ bool Canvas::PickChoice(std::string_view nodeId, std::string_view rowId, std::st
 
 std::optional<RowClick> Canvas::TakeRowClick() { return std::exchange(rowClick_, std::nullopt); }
 
+std::optional<EditRequest> Canvas::TakeEditRequest() { return std::exchange(edit_, std::nullopt); }
+
+bool Canvas::CommitEdit(std::string_view nodeId, std::string_view rowId, std::string_view value)
+{
+    const Node* n = graph_->FindNode(nodeId);
+    const Row*  r = n ? n->FindRow(rowId) : nullptr;
+    if (!r) return false;
+    SetValue          set{std::string(nodeId), std::string(rowId), r->field, std::string(value)};
+    const std::string label = "Set " + (r->field.empty() ? r->label : r->field);
+    Before(label);
+    Node* m = graph_->FindNode(nodeId);   // Before may have swapped in the proposal's copy
+    if (!set.field.empty()) m->fields[set.field] = set.value;
+    for (Row& row : m->rows)
+        if (row.id == rowId) row.value = set.value;
+    Changed(Intent{label, std::move(set)});
+    return true;
+}
+
+bool Canvas::DoubleClick(Vec2 at, Modifiers mods) { return kit_ && Gesture("doubleClick", HitTest(at), at, mods); }
+bool Canvas::ContextMenu(Vec2 at, Modifiers mods) { return kit_ && Gesture("contextMenu", HitTest(at), at, mods); }
+
+std::string Canvas::BindingFor(const Hit& hit, std::string_view gesture) const
+{
+    const Node* n = graph_->FindNode(hit.id);
+    if (!kit_ || !n) return {};
+    auto in = [&](const std::map<std::string, std::string, std::less<>>& on) {
+        const auto it = on.find(gesture);
+        return it == on.end() ? std::string() : it->second;
+    };
+    // The most particular thing under the gesture binds it: its pin, its row, its part, then the card.
+    if (!hit.port.empty())
+        if (const auto def = PortOf(*n, *schema_, hit.port))
+            if (const PinLook* pin = PinLookOf(*n, *def, wiredPorts_.contains(PortKey(n->id, hit.port))))
+                if (std::string a = in(pin->on); !a.empty()) return a;
+    if (!hit.row.empty())
+        if (const Row* r = n->FindRow(hit.row))
+            if (std::string a = in(RowLookOf(*n, *r).on); !a.empty()) return a;
+    const NodeLook& look = LookOf(*n, StatesOf(*n) | (selNodes_.contains(n->id) ? StateSelected : 0u));
+    if (!hit.part.empty())
+        for (const LookPart& part : look.parts)
+            if (part.id == hit.part)
+                if (std::string a = in(part.on); !a.empty()) return a;
+    return in(look.on);
+}
+
+bool Canvas::Gesture(std::string_view gesture, const Hit& hit, Vec2 at, Modifiers mods)
+{
+    if (!kit_ || hit.kind == HitKind::None || hit.kind == HitKind::Edge) return false;
+    const std::string action = BindingFor(hit, gesture);
+    if (action.empty()) return false;
+    if (action == "edit") return BeginEdit(hit.id, hit.row);
+    if (onIntent) onIntent(Intent{action, InvokeAction{action, hit.id, hit.part, hit.row, hit.port, camera.ToWorld(at), mods}});
+    return true;
+}
+
+bool Canvas::BeginEdit(std::string_view nodeId, std::string_view rowId)
+{
+    const Node* n = graph_->FindNode(nodeId);
+    const Row*  r = n ? n->FindRow(rowId) : nullptr;
+    if (!r) return false;
+    const RowLook& look = RowLookOf(*n, *r);
+    if (look.editor.empty() || look.editor == "none") return false;
+    EditRequest e;
+    e.node   = std::string(nodeId);
+    e.row    = std::string(rowId);
+    e.field  = r->field;
+    e.editor = look.editor;
+    e.value  = !r->field.empty() && !n->Field(r->field).empty() ? n->Field(r->field) : r->value;
+    e.choices = r->choices;
+    if ((e.editor == "reference" || (e.editor == "choice" && e.choices.empty())) && choicesFor) e.choices = choicesFor(*n, *r);
+    e.min  = look.min;
+    e.max  = look.max;
+    e.step = look.step;
+    if (const auto line = RowScreenRect(nodeId, rowId)) e.at = *line;
+    edit_ = std::move(e);
+    return true;
+}
+
+const RowLook& Canvas::RowLookOf(const Node& n, const Row& row) const
+{
+    static const RowLook kPlain{};
+    const NodeLook& look = LookOf(n, StatesOf(n));
+    const auto      it   = look.rows.find(row.style);
+    return it == look.rows.end() ? kPlain : it->second;
+}
+
+const PinLook* Canvas::PinLookOf(const Node& n, const PortDef& def, bool wired) const
+{
+    if (!kit_) return nullptr;
+    EnsureKit();
+    if (effective_.pins.empty()) return nullptr;
+    const std::string type = def.typeFrom.empty() ? def.type : PortTypeOf(*graph_, *schema_, n, def.id);
+    const NodeLook&   look = LookOf(n, StatesOf(n));
+    const auto        it   = look.pins.find(type);
+    return it == look.pins.end() ? nullptr : &it->second[wired ? 1 : 0];
+}
+
+int Canvas::ReorderTarget(const Node& n, std::string_view rowId, Vec2 at) const
+{
+    int from = -1;
+    for (std::size_t k = 0; k < n.rows.size(); ++k)
+        if (n.rows[k].id == rowId) from = static_cast<int>(k);
+    if (from < 0) return -1;
+    // Its list: the run of rows around it whose kind names the same list.
+    const std::string list = RowLookOf(n, n.rows[static_cast<std::size_t>(from)]).reorder;
+    int lo = from, hi = from;
+    while (lo > 0 && RowLookOf(n, n.rows[static_cast<std::size_t>(lo - 1)]).reorder == list) --lo;
+    while (hi + 1 < static_cast<int>(n.rows.size()) && RowLookOf(n, n.rows[static_cast<std::size_t>(hi + 1)]).reorder == list) ++hi;
+    const Node*       shown = ShownNode(n.id);
+    const CardMetrics m     = MetricsFor(n);
+    const float       top   = RowsTop(shown ? *shown : n, *schema_, m);
+    const int         k     = static_cast<int>(std::floor((camera.ToWorld(at).y - top) / m.Row()));
+    return std::clamp(k, lo, hi);
+}
+
 namespace {
 
 struct Ends {
@@ -857,8 +972,12 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
     // A port's pin, or a port-less node's connect handle, sits on the outline; both reach a little past it.
     auto onOutline = [&](const Node& n, const Rect& r) -> Hit {
         const auto slots = SlotsOf(n);
-        for (const PortSlot& s : slots)
-            if (Distance(screen, camera.ToScreen(s.at)) <= pin) return {HitKind::Port, n.id, s.def.id};
+        for (const PortSlot& s : slots) {
+            float reachOf = pin;
+            if (const PinLook* look = kit_ ? PinLookOf(n, s.def, wiredPorts_.contains(PortKey(n.id, s.def.id))) : nullptr)
+                reachOf = (look->size > 0.f ? look->size * camera.zoom : PinRadius(camera.zoom)) + look->hit;
+            if (Distance(screen, camera.ToScreen(s.at)) <= reachOf) return {HitKind::Port, n.id, s.def.id};
+        }
         if (wholeNodeWires && slots.empty() && Distance(screen, ConnectHandle(r)) <= handle) return {HitKind::Connect, n.id};
         return {};
     };
@@ -1667,6 +1786,8 @@ bool Canvas::PointerDown(Vec2 at, Button button, Modifiers mods)
     }
 
     const Hit hit = HitTest(at);
+    downHit_      = hit;
+    downMods_     = mods;
     switch (hit.kind) {
     case HitKind::Handle:
         if (!selNodes_.contains(hit.id)) SelectNodes({hit.id});
@@ -1732,6 +1853,14 @@ bool Canvas::PointerDown(Vec2 at, Button button, Modifiers mods)
         // A press on a row that acts is a click on it unless it drags, when it moves the node like any other press.
         const Node* n = graph_->FindNode(hit.id);
         const Row*  r = hit.kind == HitKind::Row && n ? n->FindRow(hit.row) : nullptr;
+        // A row of a list a kit lets reorder drags among its list instead.
+        if (r && kit_ && !RowLookOf(*n, *r).reorder.empty()) {
+            mode_      = Mode::RowReorder;
+            active_    = hit.id;
+            pressRow_  = hit.row;
+            reorderTo_ = -1;
+            return true;
+        }
         if (r && r->action != RowAction::None) {
             mode_     = Mode::RowPress;
             active_   = hit.id;
@@ -1854,6 +1983,9 @@ bool Canvas::PointerMove(Vec2 at, Modifiers mods)
     case Mode::Panning:
         camera.pan = panAtDown_ + (at - downAt_);
         return true;
+    case Mode::RowReorder:
+        if (const Node* n = graph_->FindNode(active_)) reorderTo_ = ReorderTarget(*n, pressRow_, at);
+        return true;
     case Mode::Marquee:
     default:
         return true;
@@ -1887,7 +2019,27 @@ bool Canvas::PointerUp(Vec2 at, Button)
     case Mode::RowPress:
         if (const Node* n = graph_->FindNode(active_))
             if (const Row* r = n->FindRow(pressRow_)) rowClick_ = RowClick{active_, pressRow_, r->action, at};
+        Gesture("click", downHit_, at, downMods_);
         return true;
+    case Mode::RowReorder: {
+        if (!started_) {
+            Gesture("click", downHit_, at, downMods_);
+            return true;
+        }
+        const int   to = std::exchange(reorderTo_, -1);
+        const Node* n  = graph_->FindNode(active_);
+        int         from = -1;
+        for (std::size_t k = 0; n && k < n->rows.size(); ++k)
+            if (n->rows[k].id == pressRow_) from = static_cast<int>(k);
+        if (from < 0 || to < 0 || to == from) return true;
+        Before("Reorder");
+        Node* m   = graph_->FindNode(active_);
+        Row   row = std::move(m->rows[static_cast<std::size_t>(from)]);
+        m->rows.erase(m->rows.begin() + from);
+        m->rows.insert(m->rows.begin() + to, std::move(row));
+        Changed(Intent{"Reorder", ReorderRow{active_, pressRow_, to}});
+        return true;
+    }
     case Mode::Moving:
         if (started_) {
             // Dropped with its centre in a group: it goes in. Members carried by a moved group stay where they are in it.
@@ -1932,6 +2084,8 @@ bool Canvas::PointerUp(Vec2 at, Button)
                     if (Node* n = graph_->FindNode(id); n && n->parent != parent && n->id != parent) n->parent = parent;
             }
             Changed(Intent{"Move", MovedFrames()});
+        } else if (Gesture("click", downHit_, at, downMods_)) {
+            // a click the kit binds: its action runs
         } else if (followAliases) {
             // A click on an alias goes to the original.
             if (const Node* n = graph_->FindNode(pressed_); n && !n->aliasOf.empty() && graph_->FindNode(n->aliasOf)) {
@@ -1950,6 +2104,7 @@ bool Canvas::PointerUp(Vec2 at, Button)
         const std::string to     = std::exchange(connectTo_, {});
         const std::string toPort = std::exchange(connectPort_, {});
         const std::string held   = std::exchange(lifted_, {});
+        if (!started_ && Gesture("click", downHit_, at, downMods_)) return true;   // a click on a pin the kit binds
         const Edge*       lifted = held.empty() ? nullptr : graph_->FindEdge(held);
         if (lifted && to == lifted->to && toPort == lifted->toPort) return true;   // put back where it was
         if (lifted && to.empty()) {
@@ -1961,8 +2116,13 @@ bool Canvas::PointerUp(Vec2 at, Button)
             return true;
         }
         if (!to.empty()) Wire(active_, activePort_, to, toPort, held);   // one edge per pair of ends (CanWire)
-        else if (started_ && onIntent && HitTest(at).kind == HitKind::None)
-            onIntent(Intent{"Connect", ConnectToNothing{active_, activePort_, camera.ToWorld(at)}});
+        else if (started_ && onIntent && HitTest(at).kind == HitKind::None) {
+            // Let go on nothing: the pin's binding (a menu of what may take it), else the host hears of it.
+            const Node*       from = graph_->FindNode(active_);
+            const std::string type = from && !activePort_.empty() ? PortTypeOf(*graph_, *schema_, *from, activePort_) : std::string();
+            if (!Gesture("dragToNothing", Hit{HitKind::Port, active_, activePort_}, at, downMods_))
+                onIntent(Intent{"Connect", ConnectToNothing{active_, activePort_, camera.ToWorld(at), type}});
+        }
         return true;
     }
     case Mode::Marquee: {
@@ -2160,7 +2320,12 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
             const Color     color = pt ? pt->color : s.muted;
             const Vec2      at    = cm.ToScreen(slot.at);
             const Vec2      dir   = slot.def.dir == PortDir::Out ? slot.normal : slot.normal * -1.f;
-            DrawPin(c, at, dir, pt ? pt->glyph : PortGlyph::Circle, pinR, color, s.nodeFill, wired(n.id, slot.def.id));
+            const bool      on    = wired(n.id, slot.def.id);
+            if (const PinLook* pl = kit_ ? PinLookOf(n, slot.def, on) : nullptr)
+                DrawPin(c, at, dir, pl->glyph.value_or(pt ? pt->glyph : PortGlyph::Circle), pl->size > 0.f ? pl->size * cm.zoom : pinR,
+                        pl->color.value_or(color), pl->hollow.value_or(s.nodeFill), pl->fill == 1 || (pl->fill == 0 && on));
+            else
+                DrawPin(c, at, dir, pt ? pt->glyph : PortGlyph::Circle, pinR, color, s.nodeFill, on);
             if (!offering || n.id == active_) continue;
             const bool target = n.id == connectTo_ && slot.def.id == connectPort_;
             if (target || (!activePort_.empty() && CanWire(active_, activePort_, n.id, slot.def.id)))
@@ -2392,6 +2557,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                     const float half = std::max(0.f, both ? w * 0.5f : w);
                     const Rect  box{left ? x : r.Right() - pad - half, row.y, half, row.h};
                     std::string text = sl.def.label;
+                    if (const PinLook* pl = kit_ ? PinLookOf(n, sl.def, wired(n.id, sl.def.id)) : nullptr; pl && !pl->label) text.clear();
                     if (const std::string& v = n.Field(sl.def.field); !sl.def.field.empty() && !v.empty() &&
                                                                    !wired(n.id, sl.def.id))
                         text = text.empty() ? v : text + "  " + v;   // a literal or default shows while nothing is wired
@@ -2412,25 +2578,29 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                     if (y + rowH > foot + 0.5f) break;
                     if (row.separator)
                         c.push_back(Polyline{{{x, y}, {r.Right() - pad, y}}, s.nodeStroke, 1.f});
-                    const RowStyle* rs    = schema_->FindRowStyle(row.style);
-                    const Color     label = rs && rs->color ? *rs->color : s.text;
-                    const Color     value = rs && rs->valueColor ? *rs->valueColor : s.muted;
-                    const bool      bold  = rs && rs->bold, italic = rs && rs->italic;
+                    // Its kind's look: the kit's row kind, or the one its RowStyle makes.
+                    static const RowLook kPlainRow{};
+                    const auto      kind  = look.rows.find(row.style);
+                    const RowLook&  rl    = kind == look.rows.end() ? kPlainRow : kind->second;
+                    const Color     label = rl.color.value_or(s.text);
+                    const Color     value = rl.valueColor.value_or(s.muted);
+                    const bool      bold  = rl.bold, italic = rl.italic;
                     std::string     right = row.value;
                     if (row.action == RowAction::Choice) right += right.empty() ? "\u25be" : " \u25be";
+                    if (!rl.suffix.empty()) right += rl.suffix;
                     const float rw = right.empty() ? 0.f : std::min(w * 0.5f, fs * 0.6f * static_cast<float>(right.size()) + pad);
-                    const std::string text = (rs ? rs->prefix : std::string{}) + row.label;
-                    if (rs && rs->chip) {
+                    const std::string text = rl.prefix + row.label;
+                    if (rl.chip) {
                         const float cw = std::min(w - rw, fs * 0.6f * static_cast<float>(text.size()) + pad);
                         c.push_back(FillRect{{x - pad * 0.3f, y + rowH * 0.1f, cw, rowH * 0.8f}, Color{label.r, label.g, label.b, 40}, {}, 0.f, rowH * 0.4f});
                     }
-                    c.push_back(Text{{x, y, w - rw, rowH}, text, fs, label, bold, false, false, Align::Left, italic});
+                    c.push_back(Text{{x, y, w - rw, rowH}, text, fs, label, bold, false, false, static_cast<Align>(rl.align), italic});
                     if (row.action == RowAction::Button) {
                         const Rect b{r.Right() - pad - rw, y + rowH * 0.1f, rw, rowH * 0.8f};
                         c.push_back(FillRect{b, s.background, s.muted, 1.f, rowH * 0.3f});
                         c.push_back(Text{b, right, fs, s.text, false, false, false, Align::Center});
                     } else if (!right.empty()) {
-                        c.push_back(Text{{r.Right() - pad - rw, y, rw, rowH}, right, fs, value, false, false, false, Align::Right, italic});
+                        c.push_back(Text{{r.Right() - pad - rw, y, rw, rowH}, right, fs, value, false, false, false, static_cast<Align>(rl.valueAlign), italic});
                     }
                     y += rowH;
                 }
@@ -2492,6 +2662,18 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
     c.insert(c.end(), topWires.begin(), topWires.end());
     for (const Arrow& a : highlights.arrows) DrawArrow(c, a, cam);
 
+    // A row being reordered: a line where it would go.
+    if (chrome && mode_ == Mode::RowReorder && started_ && reorderTo_ >= 0)
+        if (const Node* n = ShownNode(active_)) {
+            int from = -1;
+            for (std::size_t k = 0; k < n->rows.size(); ++k)
+                if (n->rows[k].id == pressRow_) from = static_cast<int>(k);
+            if (from >= 0 && reorderTo_ != from) {
+                const Rect  line = cam.ToScreen(RowRect(*n, *schema_, MetricsFor(*n), static_cast<std::size_t>(reorderTo_)));
+                const float y    = reorderTo_ < from ? line.y : line.Bottom();
+                c.push_back(Polyline{{{line.x + 2.f, y}, {line.Right() - 2.f, y}}, s.selection, 2.f});
+            }
+        }
     if (chrome && docking && mode_ == Mode::Moving && started_ && origin_.size() == 1)
         if (const Node* moving = graph_->FindNode(origin_.front().first))
             if (const auto slot = FindDockSlot(moving->id, moving->frame)) {

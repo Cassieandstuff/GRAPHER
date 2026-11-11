@@ -19,6 +19,11 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QWheelEvent>
+#include <QCheckBox>
+#include <QColorDialog>
+#include <QDoubleValidator>
+#include <QFileDialog>
+#include <QSlider>
 
 #include <algorithm>
 #include <cmath>
@@ -322,6 +327,13 @@ void CanvasWidget::closeSearch(bool keep)
 
 bool CanvasWidget::eventFilter(QObject* watched, QEvent* e)
 {
+    // Esc leaves an edit in place without committing it.
+    if (editor_ && watched == editor_ && e->type() == QEvent::KeyPress && static_cast<QKeyEvent*>(e)->key() == Qt::Key_Escape) {
+        editor_->setProperty("cancelled", true);
+        if (qobject_cast<QLineEdit*>(editor_)) setFocus();   // its editingFinished sees the flag and only closes
+        else editor_->deleteLater();
+        return true;
+    }
     if (watched == query_ && e->type() == QEvent::KeyPress) {
         const auto* k = static_cast<QKeyEvent*>(e);
         switch (k->key()) {
@@ -391,11 +403,91 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent* e)
     }
 }
 
+void CanvasWidget::takeEdit()
+{
+    if (const auto edit = canvas_.TakeEditRequest()) openEditor(*edit);
+}
+
+void CanvasWidget::openEditor(const EditRequest& edit)
+{
+    if (editor_) editor_->close();
+    const QRect   line = QRectF(edit.at.x, edit.at.y, std::max(60.f, edit.at.w), std::max(18.f, edit.at.h)).toRect();
+    const QString value = QString::fromStdString(edit.value);
+    const std::string node = edit.node, row = edit.row;
+    auto commit = [this, node, row](const QString& v) {
+        if (canvas_.CommitEdit(node, row, v.toStdString())) update();
+    };
+    // Lists and dialogs answer at once; a line edits until Enter, leaving it, or Esc.
+    if (edit.editor == "choice" || edit.editor == "reference") {
+        QMenu menu(this);
+        for (const std::string& item : edit.choices) {
+            QAction* a = menu.addAction(QString::fromStdString(item));
+            a->setCheckable(true);
+            a->setChecked(item == edit.value);
+            a->setData(QString::fromStdString(item));
+        }
+        if (QAction* picked = menu.exec(mapToGlobal(line.bottomLeft()))) commit(picked->data().toString());
+        return;
+    }
+    if (edit.editor == "toggle") {
+        const bool on = value == "true" || value == "1";
+        commit(on ? QStringLiteral("false") : QStringLiteral("true"));
+        return;
+    }
+    if (edit.editor == "color") {
+        const QColor picked = QColorDialog::getColor(QColor(value), this, {}, QColorDialog::ShowAlphaChannel);
+        if (picked.isValid()) commit(picked.name(picked.alpha() == 255 ? QColor::HexRgb : QColor::HexArgb));
+        return;
+    }
+    if (edit.editor == "path") {
+        const QString picked = QFileDialog::getOpenFileName(this, {}, value);
+        if (!picked.isEmpty()) commit(picked);
+        return;
+    }
+    if (edit.editor == "slider") {
+        auto* slider = new QSlider(Qt::Horizontal, this);
+        const float step = edit.step > 0.f ? edit.step : (edit.max - edit.min) / 100.f;
+        const int   steps = step > 0.f ? static_cast<int>(std::lround((edit.max - edit.min) / step)) : 100;
+        slider->setRange(0, std::max(1, steps));
+        slider->setValue(step > 0.f ? static_cast<int>(std::lround((value.toFloat() - edit.min) / step)) : 0);
+        slider->setGeometry(line);
+        slider->installEventFilter(this);
+        auto value_ = [edit, step](int k) { return QString::number(edit.min + static_cast<float>(k) * step, 'g', 6); };
+        connect(slider, &QSlider::sliderReleased, this, [slider, commit, value_] {
+            commit(value_(slider->value()));
+            slider->deleteLater();
+        });
+        editor_ = slider;
+        slider->show();
+        slider->setFocus();
+        return;
+    }
+    // text and number: a line over the row
+    auto* field = new QLineEdit(value, this);
+    if (edit.editor == "number") {
+        auto* valid = new QDoubleValidator(field);
+        if (edit.max > edit.min) valid->setRange(edit.min, edit.max, 6);
+        field->setValidator(valid);
+    }
+    field->setGeometry(line);
+    field->selectAll();
+    field->setProperty("cancelled", false);
+    field->installEventFilter(this);
+    connect(field, &QLineEdit::editingFinished, this, [field, commit] {
+        if (!field->property("cancelled").toBool()) commit(field->text());
+        field->deleteLater();
+    });
+    editor_ = field;
+    field->show();
+    field->setFocus();
+}
+
 void CanvasWidget::mouseReleaseEvent(QMouseEvent* e)
 {
     if (hostNavigation_ && e->button() == Qt::MiddleButton) return;
     canvas_.PointerUp(V(e->position()), ButtonOf(e->button()));
     update();
+    takeEdit();
     if (const auto click = canvas_.TakeRowClick()) {
         const QString node = QString::fromStdString(click->node), row = QString::fromStdString(click->row);
         const Node*   n    = canvas_.GetGraph().FindNode(click->node);
@@ -420,6 +512,11 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent* e)
         }
     }
     if (e->button() == Qt::RightButton && QLineF(rightDown_, e->position()).length() < 4.0) {
+        if (canvas_.ContextMenu(V(e->position()), ModsOf(e->modifiers()))) {   // the kit binds it: its action runs
+            update();
+            takeEdit();
+            return;
+        }
         const Hit  hit   = canvas_.HitTest(V(e->position()));
         const Vec2 world = canvas_.camera.ToWorld(V(e->position()));
         emit contextMenuRequested(e->globalPosition().toPoint(), Q(world), static_cast<int>(hit.kind),
@@ -432,6 +529,11 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent* e)
 void CanvasWidget::mouseDoubleClickEvent(QMouseEvent* e)
 {
     if (e->button() != Qt::LeftButton) return;
+    if (canvas_.DoubleClick(V(e->position()), ModsOf(e->modifiers()))) {   // the kit binds it: its action, or an edit
+        update();
+        takeEdit();
+        return;
+    }
     const Hit hit = canvas_.HitTest(V(e->position()));
     // A double-click on a member group's header opens or closes it.
     if (hit.kind == HitKind::Node)

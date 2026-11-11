@@ -121,6 +121,7 @@ struct ConnectToNothing {
     std::string node;
     std::string port;   ///< empty: dragged from the node's connect handle
     Vec2        at;     ///< world point it was let go at
+    std::string type;   ///< the port's type as it carries it now (PortTypeOf), for a menu of what may take it
 };
 /// @brief Nodes and wires to remove: the nodes, and every wire going with them or selected.
 struct RemoveItems {
@@ -135,9 +136,34 @@ struct CreateNode {
 struct SetValue {
     std::string node, row, field, value;
 };
+/// @brief A gesture a kit binds to an action id (a pin's, a row's, a part's or a card's `on`): the host runs its action.
+///        Never an edit the canvas makes; sent in either mode.
+struct InvokeAction {
+    std::string action;
+    std::string node, part, row, port;   ///< where it landed
+    Vec2        at;                      ///< world point
+    Modifiers   mods;
+};
+/// @brief A row of a list (a row kind's `reorder`) dragged to another place among its list: `to` is its index in
+///        Node::rows once it is there.
+struct ReorderRow {
+    std::string node, row;
+    int         to = 0;
+};
 struct Intent {
     std::string label;   ///< what an undo step would be called ("Move", "Connect")
-    std::variant<MoveNodes, ConnectWire, ConnectToNothing, RemoveItems, CreateNode, SetValue> change;
+    std::variant<MoveNodes, ConnectWire, ConnectToNothing, RemoveItems, CreateNode, SetValue, InvokeAction, ReorderRow> change;
+};
+
+/// @brief An edit in place a kit's row kind asks for (its `editor`, opened by a gesture bound to `edit`): the backend
+///        puts a widget of that kind over `at` and hands back what was chosen (Canvas::CommitEdit), or nothing.
+struct EditRequest {
+    std::string              node, row, field;
+    std::string              editor;   ///< text, number, slider, toggle, choice, color, path, reference
+    std::string              value;    ///< what it holds now
+    std::vector<std::string> choices;  ///< a choice's or a reference's
+    float                    min = 0.f, max = 0.f, step = 0.f;
+    Rect                     at;       ///< the row's line, screen pixels
 };
 /// @}
 
@@ -230,6 +256,18 @@ public:
     [[nodiscard]] const NodeLook& LookOf(const Node& node, std::uint32_t states = 0) const;
     /// @brief How many looks have been resolved since the canvas began (a statistic: a steady frame resolves none).
     [[nodiscard]] std::size_t ResolvedLooks() const { return resolved_; }
+    /// @brief The choices of a row whose kind edits it from a list the host keeps (a `reference` editor, or a `choice` row
+    ///        with none of its own).
+    std::function<std::vector<std::string>(const Node& node, const Row& row)> choicesFor;
+    /// @brief The edit in place a gesture asked for, once: a backend opens it after the pointer event that began it.
+    [[nodiscard]] std::optional<EditRequest> TakeEditRequest();
+    /// @brief Set the edited row (and its field) to `value`: one step, proposed in Propose mode (SetValue).
+    /// @return false when there is no such row
+    bool CommitEdit(std::string_view nodeId, std::string_view rowId, std::string_view value);
+    /// @brief A double-click at `at`, for the kit's bindings first. @return true when one took it (an action or an edit)
+    bool DoubleClick(Vec2 at, Modifiers mods = {});
+    /// @brief A context-menu click at `at`, for the kit's bindings first. @return true when one took it
+    bool ContextMenu(Vec2 at, Modifiers mods = {});
     /// @brief How wide `text` draws at `size` (world units), for cards that fit their width; the backend supplies it.
     ///        Unset = an estimate from the character count.
     std::function<float(std::string_view text, float size, bool bold)> measure;
@@ -363,7 +401,7 @@ public:
     [[nodiscard]] DrawList DrawAll(float zoom = 1.f, float margin = 40.f) const;
 
 private:
-    enum class Mode { Idle, Moving, Resizing, Connecting, Marquee, Panning, RowPress, DialDrag };
+    enum class Mode { Idle, Moving, Resizing, Connecting, Marquee, Panning, RowPress, DialDrag, RowReorder };
 
     [[nodiscard]] DrawList Render(const Camera& cam, Vec2 viewport, bool chrome) const;
     /// @param groupInterior a group's empty interior counts as the group (a connection's target)
@@ -513,6 +551,21 @@ private:
     /// @return the part of a card's look under world height `wy` ("header" or "body"); empty for other shapes
     [[nodiscard]] std::string PartAt(const Node& n, float wy) const;
     [[nodiscard]] float MeasureText(std::string_view text, float size, bool bold) const;
+    /// @return the action the kit binds `gesture` to where `hit` landed (its pin, then its row, its part, its card); empty for none
+    [[nodiscard]] std::string BindingFor(const Hit& hit, std::string_view gesture) const;
+    /// @brief Run `gesture`'s binding where `hit` landed: an edit for `edit`, else an InvokeAction. @return whether one ran
+    bool Gesture(std::string_view gesture, const Hit& hit, Vec2 at, Modifiers mods);
+    bool BeginEdit(std::string_view nodeId, std::string_view rowId);
+    /// @return the row kind's look for a row of `n` (the default when its style names none)
+    [[nodiscard]] const RowLook& RowLookOf(const Node& n, const Row& row) const;
+    /// @return the kit's pin look for port `def` of `n`, wired or not; nullptr when its type has no pin kind
+    [[nodiscard]] const PinLook* PinLookOf(const Node& n, const PortDef& def, bool wired) const;
+    /// @return where a reordered row would go: its index in Node::rows, kept within its list
+    [[nodiscard]] int ReorderTarget(const Node& n, std::string_view rowId, Vec2 at) const;
+    Hit                          downHit_;     ///< what the press landed on
+    Modifiers                    downMods_;
+    std::optional<EditRequest>   edit_;
+    int                          reorderTo_ = -1;
 
     struct LookHash {
         using is_transparent = void;
