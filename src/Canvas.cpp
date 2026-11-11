@@ -649,14 +649,23 @@ const RowLook& Canvas::RowLookOf(const Node& n, const Row& row) const
     return it == look.rows.end() ? kPlain : it->second;
 }
 
-const PinLook* Canvas::PinLookOf(const Node& n, const PortDef& def, bool wired) const
+const NodeLook* Canvas::PinTableOf(const Node& n) const
 {
     if (!kit_) return nullptr;
     EnsureKit();
-    if (effective_.pins.empty()) return nullptr;
-    const std::string type = def.typeFrom.empty() ? def.type : PortTypeOf(*graph_, *schema_, n, def.id);
-    const NodeLook&   look = LookOf(n, StatesOf(n));
-    const auto        it   = look.pins.find(type);
+    return effective_.pins.empty() ? nullptr : &LookOf(n, StatesOf(n));
+}
+
+const PinLook* Canvas::PinLookOf(const Node& n, const PortDef& def, bool wired) const
+{
+    const NodeLook* look = PinTableOf(n);
+    return look ? PinLookIn(*look, n, def, wired) : nullptr;
+}
+
+const PinLook* Canvas::PinLookIn(const NodeLook& look, const Node& n, const PortDef& def, bool wired) const
+{
+    if (look.pins.empty()) return nullptr;
+    const auto it = def.typeFrom.empty() ? look.pins.find(def.type) : look.pins.find(PortTypeOf(*graph_, *schema_, n, def.id));
     return it == look.pins.end() ? nullptr : &it->second[wired ? 1 : 0];
 }
 
@@ -971,10 +980,11 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
 
     // A port's pin, or a port-less node's connect handle, sits on the outline; both reach a little past it.
     auto onOutline = [&](const Node& n, const Rect& r) -> Hit {
-        const auto slots = SlotsOf(n);
+        const auto      slots = SlotsOf(n);
+        const NodeLook* table = slots.empty() ? nullptr : PinTableOf(n);
         for (const PortSlot& s : slots) {
             float reachOf = pin;
-            if (const PinLook* look = kit_ ? PinLookOf(n, s.def, wiredPorts_.contains(PortKey(n.id, s.def.id))) : nullptr)
+            if (const PinLook* look = table ? PinLookIn(*table, n, s.def, wiredPorts_.contains(PortKey(n.id, s.def.id))) : nullptr)
                 reachOf = (look->size > 0.f ? look->size * camera.zoom : PinRadius(camera.zoom)) + look->hit;
             if (Distance(screen, camera.ToScreen(s.at)) <= reachOf) return {HitKind::Port, n.id, s.def.id};
         }
@@ -2314,14 +2324,16 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
     const bool  offering = chrome && mode_ == Mode::Connecting && started_;   // a wire is being dragged: ring where it may land
     const float pinR     = PinRadius(z);
     auto drawPins = [&](const Node& n, const Rect& frame, const Camera& cm) {
-        for (const PortSlot& slot : SlotsOf(n, frame)) {
+        const auto      slots = SlotsOf(n, frame);
+        const NodeLook* table = slots.empty() ? nullptr : PinTableOf(n);
+        for (const PortSlot& slot : slots) {
             const PortType* pt    = schema_->FindPortType(slot.def.typeFrom.empty() ? slot.def.type
                                                                                     : PortTypeOf(*graph_, *schema_, n, slot.def.id));
             const Color     color = pt ? pt->color : s.muted;
             const Vec2      at    = cm.ToScreen(slot.at);
             const Vec2      dir   = slot.def.dir == PortDir::Out ? slot.normal : slot.normal * -1.f;
             const bool      on    = wired(n.id, slot.def.id);
-            if (const PinLook* pl = kit_ ? PinLookOf(n, slot.def, on) : nullptr)
+            if (const PinLook* pl = table ? PinLookIn(*table, n, slot.def, on) : nullptr)
                 DrawPin(c, at, dir, pl->glyph.value_or(pt ? pt->glyph : PortGlyph::Circle), pl->size > 0.f ? pl->size * cm.zoom : pinR,
                         pl->color.value_or(color), pl->hollow.value_or(s.nodeFill), pl->fill == 1 || (pl->fill == 0 && on));
             else
@@ -2543,7 +2555,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                 if (km.header > 0.f) y = r.y + km.header * z;
 
                 // Port rows: a left port's label after its pin, a right port's before it; a row holding both splits.
-                const auto slots = SlotsOf(n, frame);
+                const auto      slots    = SlotsOf(n, frame);
+                const NodeLook* pinTable = slots.empty() ? nullptr : PinTableOf(n);
                 std::vector<std::string_view> shown;   // fields a port's row already shows
                 std::map<float, int> rowSides;          // row top -> 1 left, 2 right
                 for (const PortSlot& sl : slots)
@@ -2557,7 +2570,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                     const float half = std::max(0.f, both ? w * 0.5f : w);
                     const Rect  box{left ? x : r.Right() - pad - half, row.y, half, row.h};
                     std::string text = sl.def.label;
-                    if (const PinLook* pl = kit_ ? PinLookOf(n, sl.def, wired(n.id, sl.def.id)) : nullptr; pl && !pl->label) text.clear();
+                    if (const PinLook* pl = pinTable ? PinLookIn(*pinTable, n, sl.def, wired(n.id, sl.def.id)) : nullptr; pl && !pl->label)
+                        text.clear();
                     if (const std::string& v = n.Field(sl.def.field); !sl.def.field.empty() && !v.empty() &&
                                                                    !wired(n.id, sl.def.id))
                         text = text.empty() ? v : text + "  " + v;   // a literal or default shows while nothing is wired

@@ -2592,6 +2592,26 @@ void TestLargeGraphKit()
     std::printf("  20k graph with a kit (pins and rows): %zu looks resolved (%zu after the hover moved); draw %.2f ms, hit test %.3f ms, drag step %.2f ms\n",
                 looks, c.ResolvedLooks(), drawMs, hitMs, dragMs);
     CHECK((looks > 0 && looks <= 12 * 5 * 7 && hits > 0));
+    // Like for like (printed, not gated): the same graph with no kit, and the kit without its pin or its row kinds; then
+    // nearer, where rows draw (at 0.35 a card shows its title only).
+    auto timeDraw = [&](const grapher::Kit* k, float zoom) {
+        c.SetKit(k);
+        c.CenterOn("n10100", zoom);
+        (void)c.Draw();
+        const auto t = Clock::now();
+        for (int i = 0; i < 10; ++i) {
+            c.PointerMove({static_cast<float>(100 + i * 40), 450.f});
+            (void)c.Draw();
+        }
+        return ms(t) / 10.0;
+    };
+    grapher::Kit noPins = kit, noRows = kit;
+    noPins.pins.clear();
+    noRows.rows.clear();
+    const double plainMs = timeDraw(nullptr, 0.35f), noPinsMs = timeDraw(&noPins, 0.35f), noRowsMs = timeDraw(&noRows, 0.35f);
+    const double nearPlainMs = timeDraw(nullptr, 0.6f), nearKitMs = timeDraw(&kit, 0.6f);
+    std::printf("    like for like: no kit %.2f ms, the kit without pin kinds %.2f, without row kinds %.2f; at zoom 0.6 no kit %.2f, the kit %.2f\n",
+                plainMs, noPinsMs, noRowsMs, nearPlainMs, nearKitMs);
 #ifdef NDEBUG
     CHECK(drawMs <= 4.0);
     CHECK(hitMs <= 0.2);

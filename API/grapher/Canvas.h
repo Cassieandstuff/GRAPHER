@@ -560,6 +560,10 @@ private:
     [[nodiscard]] const RowLook& RowLookOf(const Node& n, const Row& row) const;
     /// @return the kit's pin look for port `def` of `n`, wired or not; nullptr when its type has no pin kind
     [[nodiscard]] const PinLook* PinLookOf(const Node& n, const PortDef& def, bool wired) const;
+    /// @brief The same from `n`'s look already in hand (one lookup per node, not per pin).
+    [[nodiscard]] const PinLook* PinLookIn(const NodeLook& look, const Node& n, const PortDef& def, bool wired) const;
+    /// @return `n`'s look when the kit has pin kinds, else nullptr: what PinLookIn needs, looked up once per node
+    [[nodiscard]] const NodeLook* PinTableOf(const Node& n) const;
     /// @return where a reordered row would go: its index in Node::rows, kept within its list
     [[nodiscard]] int ReorderTarget(const Node& n, std::string_view rowId, Vec2 at) const;
     Hit                          downHit_;     ///< what the press landed on
