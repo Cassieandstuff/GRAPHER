@@ -109,6 +109,18 @@ public:
         Str(o, "if", p.condition, where);
         if (!p.condition.empty() && !ParseSelector(p.condition)) Fail(where, "\"if\" is no selector: " + p.condition);
         Str(o, "editor", p.editor, where);
+        Str(o, "shape", p.shape, where);
+        Str(o, "format", p.format, where);
+        Str(o, "pin", p.pin, where);
+        Str(o, "glyph", p.glyph, where);
+        Bool(o, "hollow", p.hollow, where);
+        Str(o, "side", p.side, where);
+        Num(o, "length", p.length, where);
+        Str(o, "direction", p.direction, where);
+        if (p.shape && *p.shape != "box" && *p.shape != "pill") Fail(where, "\"shape\" takes box or pill");
+        if (!OneOf(p.glyph, kGlyphNames)) Fail(where, "\"glyph\" takes circle, square, diamond or arrow");
+        if (p.side && *p.side != "left" && *p.side != "right") Fail(where, "\"side\" takes left or right");
+        if (p.direction && *p.direction != "in" && *p.direction != "out") Fail(where, "\"direction\" takes in or out");
         if (const json::Object* on = Obj(o, "on", where))
             for (const auto& [gesture, action] : *on) {
                 if (const std::string* a = action.String()) p.on[gesture] = *a;
@@ -263,6 +275,14 @@ void PutFields(json::Object& o, const PartSpec& p)
     PutStr(o, "align", p.align);
     if (!p.condition.empty()) o.emplace_back("if", p.condition);
     if (!p.editor.empty()) o.emplace_back("editor", p.editor);
+    PutStr(o, "shape", p.shape);
+    PutStr(o, "format", p.format);
+    PutStr(o, "pin", p.pin);
+    PutStr(o, "glyph", p.glyph);
+    PutBool(o, "hollow", p.hollow);
+    PutStr(o, "side", p.side);
+    PutNum(o, "length", p.length);
+    PutStr(o, "direction", p.direction);
     if (!p.on.empty()) {
         json::Object on;
         for (const auto& [g, a] : p.on) on.emplace_back(g, a);

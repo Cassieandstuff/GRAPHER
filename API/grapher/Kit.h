@@ -28,8 +28,15 @@ enum class PartKind {
     Body,     ///< what follows the header: port rows, rows, fields, the body text, a picture
     Text,     ///< one line of text, in a header
     Accent,   ///< a strip down the card's left side
-    // Parsed and kept; drawn from K2 and K3:
-    Pins, Badge, Button, Chip, Bar, Glyph, Image, Rim, Stub,
+    /// @brief Pins a node shows besides its ports: a closed group's `ends` (`pin` names their pin kind).
+    Pins,
+    Badge, Button,   ///< parsed and kept; drawn from a later milestone
+    Chip,    ///< a pill's text on a rounded tint
+    Bar,     ///< a strip: a pill's leading bar, a dial's needle
+    Glyph,   ///< a pin-like mark: a pill's event diamond, a dial's handles
+    Image,   ///< parsed and kept
+    Rim,     ///< a dial's ring; its parts are the `needle` (bar), the `handle` (glyph), the `label` and `reading` (text)
+    Stub,    ///< a short wire with an arrowhead out of a pill's end
 };
 
 /// @brief A part as a kit states it. Every look field is optional, so a rule's patch sets only what it names.
@@ -62,6 +69,18 @@ struct PartSpec {
     std::string                                     condition; ///< `if`: a selector the node must match to show it
     std::map<std::string, std::string, std::less<>> on;        ///< gesture -> action id (acted on from K2)
     std::string                                     editor;    ///< from K2
+
+    // From K3:
+    std::optional<std::string> shape;       ///< the root's when its group is closed: box (a header-high frame), pill
+    /// @brief A text's template over its value: `{value}`, `{type}` (the type's label), `{count}` (what a group holds),
+    ///        `{arrow}` (a collapsible group's ▾ or ▸, with a space), `{fields}` (its on-card fields, " · " between).
+    std::optional<std::string> format;
+    std::optional<std::string> pin;         ///< a `pins` part's pin kind
+    std::optional<std::string> glyph;       ///< a glyph's: circle, square, diamond, arrow
+    std::optional<bool>        hollow;      ///< a glyph drawn as an outline
+    std::optional<std::string> side;        ///< a stub's end: left, right
+    std::optional<float>       length;      ///< a stub's, world units
+    std::optional<std::string> direction;   ///< a stub's arrow: in (toward the node), out
     friend bool operator==(const PartSpec&, const PartSpec&) = default;
 };
 
@@ -223,7 +242,7 @@ struct Kit {
 
 /// @brief A text line of a resolved look.
 struct LookText {
-    std::string id, from, placeholder;
+    std::string id, from, placeholder, format;
     Color       color, placeholderColor;
     float       size = 12.f, scale = 1.f, box = 1.3f, advance = 1.35f;
     bool        bold = false, italic = false;
@@ -272,8 +291,15 @@ struct LookPart {
     Color                 fill, stroke;
     float                 strokeWidth = 0.f, corner = 0.f, width = 0.f, top = 0.8f, height = 0.f;
     bool                  dash = false;
-    std::vector<LookText> texts;   ///< a header's lines
+    std::vector<LookText> texts;   ///< a header's lines; a text's or a chip's own line
     std::map<std::string, std::string, std::less<>> on;   ///< gesture -> action id
+    Color                    color{226, 228, 233};   ///< a glyph's, a bar's, a stub's
+    std::optional<PortGlyph> glyph;
+    float                    size = 0.f, length = 0.f;
+    bool                     hollow = false, out = false;
+    int                      side = 0;   ///< a stub's: 0 left, 1 right
+    std::string              pin;        ///< a `pins` part's pin kind
+    std::vector<LookPart>    content;    ///< its parts that are not text (a rim's needle and handle)
 };
 
 /// @brief What one node looks like: its card's paint, its visible parts in order, and its geometry. Resolved once per
@@ -290,6 +316,9 @@ struct NodeLook {
     /// @brief The kit's pin kinds as this node shows them, by PortType id: unwired, wired.
     std::map<std::string, std::array<PinLook, 2>, std::less<>> pins;
     std::map<std::string, RowLook, std::less<>>                rows;   ///< the kit's row kinds, by id
+    int                      shape = 0;          ///< a closed group's: 0 a header-high frame, 1 a pill
+    bool                     endPins = false;    ///< a closed group's merged wires end on pins at its two ends
+    std::string              endPin;             ///< their pin kind
 };
 
 /// @brief Resolve the look of a node of type `type` with `tags` in `states`, under `kit` (already merged and with its

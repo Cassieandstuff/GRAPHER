@@ -65,6 +65,11 @@ enum class HitKind {
     Handle,    ///< a dial's handle for one of its rows; Hit::row names it
 };
 
+/// @brief The ports a closed group shows at its two ends when its kit's look says so (a `pins` part with id `ends`): its
+///        merged wires end on them. They are drawn, not edited: a press on one is a press on the group.
+inline constexpr std::string_view kGroupIn  = "grapher:in";
+inline constexpr std::string_view kGroupOut = "grapher:out";
+
 struct Hit {
     HitKind     kind = HitKind::None;
     std::string id;     ///< the node or edge
@@ -552,7 +557,7 @@ private:
     /// @brief The KitState bits the node's own situation sets (dimmed, an alias, in a group); the gesture's come on top.
     [[nodiscard]] std::uint32_t StatesOf(const Node& n) const;
     /// @return the part of a card's look under world height `wy` ("header" or "body"); empty for other shapes
-    [[nodiscard]] std::string PartAt(const Node& n, float wy) const;
+    [[nodiscard]] std::string PartAt(const Node& n, Vec2 world) const;
     [[nodiscard]] float MeasureText(std::string_view text, float size, bool bold) const;
     /// @return the action the kit binds `gesture` to where `hit` landed (its pin, then its row, its part, its card); empty for none
     [[nodiscard]] std::string BindingFor(const Hit& hit, std::string_view gesture) const;

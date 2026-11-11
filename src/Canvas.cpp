@@ -12,6 +12,7 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -219,6 +220,178 @@ Rect ResizeGrip(const Rect& screen, const Style& s)
     return {screen.Right() - s.resizeGrip, screen.Bottom() - s.resizeGrip, s.resizeGrip, s.resizeGrip};
 }
 
+// ── Text lines and pill parts, from a look ──
+
+/// @brief What a text line's source gives: a field, a row's label, the type's label, the on-card fields.
+std::string SourceText(std::string_view from, const Node& n, const NodeType& t)
+{
+    if (from == "type") return t.label;
+    if (from.starts_with("field:")) return n.Field(from.substr(6));
+    if (from.starts_with("row:")) {
+        const Row* row = n.FindRow(from.substr(4));
+        return row ? row->label : std::string();
+    }
+    if (from == "fields" || from == "fields:all") {
+        std::string out;
+        for (const FieldDef& f : t.fields) {
+            const std::string& v = n.Field(f.id);
+            if (!f.onCard || v.empty() || (from == "fields" && f.id == t.titleField)) continue;
+            if (!out.empty()) out += " · ";
+            out += v;
+        }
+        return out;
+    }
+    return {};
+}
+
+struct LineExtras {
+    int              count = 0;    ///< what a group holds
+    std::string_view arrow;        ///< a collapsible group's ▾ or ▸ and a space
+};
+
+/// @return a text line's words (its source, else its placeholder, through its format) and whether it is the placeholder
+std::pair<std::string, bool> LineText(const LookText& line, const Node& n, const NodeType& t, const LineExtras& x = {})
+{
+    std::string value = SourceText(line.from, n, t);
+    const bool  empty = value.empty() && !line.placeholder.empty();
+    if (empty) {
+        value = line.placeholder;
+        if (const auto at = value.find("{type}"); at != std::string::npos) value.replace(at, 6, t.label);
+    }
+    if (line.format.empty()) return {std::move(value), empty};
+    std::string            out;
+    const std::string_view f = line.format;
+    for (std::size_t i = 0; i < f.size();) {
+        if (f[i] == '{')
+            if (const auto close = f.find('}', i); close != std::string_view::npos) {
+                const std::string_view name = f.substr(i + 1, close - i - 1);
+                bool                   known = true;
+                if (name == "value") out += value;
+                else if (name == "type") out += t.label;
+                else if (name == "count") out += std::to_string(x.count);
+                else if (name == "arrow") out += x.arrow;
+                else if (name == "fields") out += SourceText("fields", n, t);
+                else known = false;
+                if (known) {
+                    i = close + 1;
+                    continue;
+                }
+            }
+        out += f[i++];
+    }
+    return {std::move(out), empty};
+}
+
+struct PillItem {
+    const LookPart* part = nullptr;
+    Rect            box;
+    std::string     text;
+    bool            empty = false;
+};
+
+/// @brief A pill's parts laid out along its line in `r` (screen at zoom `z`, or world at 1): fixed-width parts (a bar, a
+///        glyph, a chip) take their width, texts share what is left; a stub stands outside its end.
+std::vector<PillItem> PillLayout(const Node& n, const NodeType& t, const NodeLook& look, const Rect& r, float z)
+{
+    std::vector<PillItem> items;
+    const float pad   = look.metrics.padding * z;
+    const Rect  inner{r.x + r.h * 0.4f, r.y, std::max(0.f, r.w - r.h * 0.8f), r.h};
+    float       fixed = 0.f;
+    int         flex = 0, flow = 0;
+    for (const LookPart& p : look.parts) {
+        PillItem it{&p, {}, {}, false};
+        switch (p.kind) {
+        case PartKind::Text:
+        case PartKind::Chip:
+            if (p.texts.empty()) continue;
+            std::tie(it.text, it.empty) = LineText(p.texts.front(), n, t);
+            if (p.kind == PartKind::Text) {
+                ++flex;
+            } else {
+                const LookText& l = p.texts.front();
+                it.box.w          = l.size * z * l.scale * 0.6f * static_cast<float>(it.text.size()) + pad;
+                fixed += it.box.w;
+            }
+            break;
+        case PartKind::Glyph:
+            it.box.w = (p.size > 0.f ? p.size : 5.f) * 2.f * z;
+            fixed += it.box.w;
+            break;
+        case PartKind::Bar:
+            it.box.w = std::max(1.f, (p.width > 0.f ? p.width : 3.f) * z);
+            fixed += it.box.w;
+            break;
+        case PartKind::Stub: {
+            const float len = (p.length > 0.f ? p.length : 16.f) * z;
+            it.box          = p.side == 1 ? Rect{r.Right(), r.y, len, r.h} : Rect{r.x - len, r.y, len, r.h};
+            items.push_back(std::move(it));
+            continue;
+        }
+        default:
+            continue;
+        }
+        ++flow;
+        items.push_back(std::move(it));
+    }
+    const float gap  = pad * 0.5f;
+    const float gaps = flow > 1 ? gap * static_cast<float>(flow - 1) : 0.f;
+    const float each = flex > 0 ? std::max(0.f, (inner.w - fixed - gaps) / static_cast<float>(flex)) : 0.f;
+    float       x    = inner.x;
+    if (flex == 0) x += std::max(0.f, (inner.w - fixed - gaps) * 0.5f);   // only fixed parts: centred
+    for (PillItem& it : items) {
+        const PartKind kind = it.part->kind;
+        if (kind == PartKind::Stub) continue;
+        const float w = kind == PartKind::Text ? each : it.box.w;
+        const float h = kind == PartKind::Bar ? r.h * 0.6f : kind == PartKind::Chip ? r.h * 0.8f : kind == PartKind::Glyph ? w : r.h;
+        it.box        = {x, r.y + (r.h - h) * 0.5f, w, h};
+        x += w + gap;
+    }
+    return items;
+}
+
+void DrawPillParts(std::vector<DrawCmd>& c, const std::vector<PillItem>& items, const NodeLook& look, const Rect& r, float z, bool text)
+{
+    for (const PillItem& it : items) {
+        const LookPart& p = *it.part;
+        switch (p.kind) {
+        case PartKind::Text:
+            if (text) {
+                const LookText& l = p.texts.front();
+                c.push_back(Text{it.box, it.text, l.size * z * l.scale, it.empty ? l.placeholderColor : l.color, l.bold, false, false,
+                                 static_cast<Align>(l.align), l.italic});
+            }
+            break;
+        case PartKind::Chip: {
+            const LookText& l    = p.texts.front();
+            const Color     tint = p.fill.a > 0 ? p.fill : Color{l.color.r, l.color.g, l.color.b, 40};
+            c.push_back(FillRect{it.box, tint, {}, 0.f, it.box.h * 0.5f});
+            if (text)
+                c.push_back(Text{it.box, it.text, l.size * z * l.scale, it.empty ? l.placeholderColor : l.color, l.bold, false, false,
+                                 Align::Center, l.italic});
+            break;
+        }
+        case PartKind::Glyph:
+            DrawPin(c, it.box.Center(), Vec2{1.f, 0.f}, p.glyph.value_or(PortGlyph::Diamond), it.box.w * 0.5f, p.color, look.fill, !p.hollow);
+            break;
+        case PartKind::Bar:
+            c.push_back(FillRect{it.box, p.fill.a > 0 ? p.fill : p.color, {}, 0.f, std::min(it.box.w, it.box.h) * 0.5f});
+            break;
+        case PartKind::Stub: {
+            // A short wire out of the pill's end: its arrow points at the pill (in) or away from it (out).
+            const float       cy   = r.y + r.h * 0.5f;
+            const Vec2        near = {p.side == 1 ? it.box.x : it.box.Right(), cy};
+            const Vec2        far  = {p.side == 1 ? it.box.Right() : it.box.x, cy};
+            std::vector<Vec2> path = p.out ? std::vector<Vec2>{near, far} : std::vector<Vec2>{far, near};
+            c.push_back(Polyline{path, p.color, std::max(1.f, 1.5f * z)});
+            c.push_back(Arrowhead(path, std::clamp(7.f * z, 4.f, 10.f), p.color));
+            break;
+        }
+        default:
+            break;
+        }
+    }
+}
+
 } // namespace
 
 // ── Setup ────────────────────────────────────────────────────────────────────
@@ -336,9 +509,16 @@ std::uint32_t Canvas::StatesOf(const Node& n) const
     return states;
 }
 
-std::string Canvas::PartAt(const Node& n, float wy) const
+std::string Canvas::PartAt(const Node& n, Vec2 world) const
 {
-    const NodeType& t = TypeOf(n);
+    const NodeType& t  = TypeOf(n);
+    const float     wy = world.y;
+    if (t.shape == NodeShape::Pill) {
+        const NodeLook& look = LookOf(n, StatesOf(n));
+        for (const PillItem& it : PillLayout(*LiveOf(n), t, look, n.frame, 1.f))
+            if (it.part->kind != PartKind::Stub && it.box.Contains(world)) return it.part->id;
+        return {};
+    }
     if (t.shape != NodeShape::Card && t.shape != NodeShape::Note) return {};
     const NodeLook& look = LookOf(n, StatesOf(n));
     for (const LookPart& part : look.parts)
@@ -1008,6 +1188,7 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
         const auto      slots = SlotsOf(n);
         const NodeLook* table = slots.empty() ? nullptr : PinTableOf(n);
         for (const PortSlot& s : slots) {
+            if (s.def.id == kGroupIn || s.def.id == kGroupOut) continue;   // a closed group's end pins: shown, not edited
             float reachOf = pin;
             if (const PinLook* look = table ? PinLookIn(*table, n, s.def, wiredPorts_.contains(PortKey(n.id, s.def.id))) : nullptr)
                 reachOf = (look->size > 0.f ? look->size * camera.zoom : PinRadius(camera.zoom)) + look->hit;
@@ -1037,10 +1218,10 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
                 const float       wy  = camera.ToWorld(screen).y;
                 if (wy >= top) {
                     const auto k = static_cast<std::size_t>((wy - top) / m.Row());
-                    if (k < live->rows.size()) return {HitKind::Row, n->id, {}, live->rows[k].id, kit_ ? PartAt(*n, wy) : std::string()};
+                    if (k < live->rows.size()) return {HitKind::Row, n->id, {}, live->rows[k].id, kit_ ? PartAt(*n, camera.ToWorld(screen)) : std::string()};
                 }
             }
-            return {HitKind::Node, n->id, {}, {}, kit_ ? PartAt(*n, camera.ToWorld(screen).y) : std::string()};
+            return {HitKind::Node, n->id, {}, {}, kit_ ? PartAt(*n, camera.ToWorld(screen)) : std::string()};
         }
     }
     for (std::size_t i = Shown().edges.size(); i-- > 0;) {
@@ -1141,11 +1322,8 @@ void Canvas::BuildView() const
                 for (const LookPart& part : look.parts) {
                     if (part.kind == PartKind::Accent) inset += part.width;
                     for (const LookText& text : part.texts) {
-                        std::string line = text.from == "type" ? TypeOf(node).label
-                                         : text.from.starts_with("field:") ? node.Field(std::string_view(text.from).substr(6))
-                                                                           : std::string();
-                        if (text.from.starts_with("row:"))
-                            if (const Row* row = node.FindRow(std::string_view(text.from).substr(4))) line = row->label;
+                        auto [line, placeholder] = LineText(text, node, TypeOf(node));
+                        if (placeholder) line.clear();
                         widest = std::max(widest, MeasureText(line, text.size * text.scale, text.bold));
                     }
                 }
@@ -1219,7 +1397,22 @@ void Canvas::BuildView() const
         }
     };
     fit();
-    // Wires into a closed group end on it; several that then join the same two ends draw as one, dashed.
+    // A closed group whose look shows its ends takes its merged wires on two pins: in at its left end, out at its right.
+    std::vector<char> ends(n, 0);
+    if (kit_)
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!member[i] || !collapsed_.contains(view_.nodes[i].id)) continue;
+            const NodeLook& look = LookOf(view_.nodes[i], StatesOf(view_.nodes[i]) | StateCollapsed);
+            if (!look.endPins) continue;
+            ends[i] = 1;
+            PortDef in{std::string(kGroupIn), {}, look.endPin, PortDir::In, PortSide::Left, 0};
+            PortDef out{std::string(kGroupOut), {}, look.endPin, PortDir::Out, PortSide::Right, 0};
+            in.onHeader = out.onHeader = true;
+            view_.nodes[i].ports.push_back(std::move(in));
+            view_.nodes[i].ports.push_back(std::move(out));
+        }
+    // Wires into a closed group end on it (on its end pins when it shows them); several that then join the same two ends
+    // draw as one, dashed.
     std::vector<Edge>               edges;
     std::vector<char>               dashed;
     std::unordered_map<std::string, std::string> seen;   // merged ends -> the edge drawn for them
@@ -1238,8 +1431,8 @@ void Canvas::BuildView() const
         if (ra == rb) continue;
         Edge x       = e;
         bool remapped = false;
-        if (ra != a->second) x.from = view_.nodes[ra].id, x.fromPort.clear(), remapped = true;
-        if (rb != b->second) x.to = view_.nodes[rb].id, x.toPort.clear(), remapped = true;
+        if (ra != a->second) x.from = view_.nodes[ra].id, x.fromPort = ends[ra] ? std::string(kGroupOut) : std::string(), remapped = true;
+        if (rb != b->second) x.to = view_.nodes[rb].id, x.toPort = ends[rb] ? std::string(kGroupIn) : std::string(), remapped = true;
         if (remapped) {
             const auto [it, fresh] = seen.emplace(x.from + '\x1f' + x.fromPort + '\x1f' + x.to + '\x1f' + x.toPort, x.id);
             if (!fresh) {
@@ -1523,33 +1716,59 @@ void Canvas::DrawDial(std::vector<DrawCmd>& c, const Node& n, const Rect& frame,
     auto dir = [](double a) { return Vec2{static_cast<float>(std::sin(a)), static_cast<float>(-std::cos(a))}; };
 
     const Rect r = cam.ToScreen(frame);
-    c.push_back(FillRect{r, s.nodeFill, sel ? s.selection : (hov ? s.muted : s.nodeStroke), sel ? 2.f : 1.f, s.corner * z});
+    // Its look: the card under it, and the rim's parts (the needle, the handles, the labels and the reading).
+    const NodeLook& look = LookOf(n, (sel ? StateSelected : 0u) | (hov ? StateHovered : 0u) | StatesOf(n));
+    const LookPart* rim  = nullptr;
+    for (const LookPart& part : look.parts)
+        if (part.kind == PartKind::Rim) rim = &part;
+    const LookPart* needle = nullptr;
+    const LookPart* handle = nullptr;
+    const LookText* label = nullptr;
+    const LookText* reading = nullptr;
+    if (rim) {
+        for (const LookPart& part : rim->content) {
+            if (part.id == "needle") needle = &part;
+            if (part.id == "handle") handle = &part;
+        }
+        for (const LookText& line : rim->texts) {
+            if (line.id == "label") label = &line;
+            if (line.id == "reading") reading = &line;
+        }
+    }
+    const Color needleColor  = needle ? needle->color : s.text;
+    const Color handleColor  = handle ? handle->color : Color{220, 180, 60};
+    const Color labelColor   = label ? label->color : s.text;
+    const Color readingColor = reading ? reading->color : s.muted;
+    c.push_back(FillRect{r, look.fill, look.stroke, look.strokeWidth, look.corner * z, look.dash});
     // The ring: whole when cyclic, else a 270° arc open at the bottom.
     const double      a0 = axis.cyclic ? 0.0 : -0.75 * kPi, a1 = axis.cyclic ? 2 * kPi : 0.75 * kPi;
     std::vector<Vec2> arc;
     for (int k = 0; k <= 64; ++k) arc.push_back(o + dir(a0 + (a1 - a0) * k / 64.0) * R);
-    c.push_back(Polyline{std::move(arc), t.band, std::max(1.5f, 3.f * z)});
+    c.push_back(Polyline{std::move(arc), rim ? rim->stroke : t.band, std::max(1.5f, (rim ? rim->width : 3.f) * z)});
     const std::string& named = t.titleField.empty() ? std::string{} : n.Field(t.titleField);
     c.push_back(Text{{r.x + s.padding * z, r.y + s.padding * 0.3f * z, r.w - 2 * s.padding * z, s.titleSize * z * 1.3f},
                      named.empty() ? t.label : named, s.titleSize * z, s.text, true, false, false, Align::Center});
     // The needle, and what it reads.
     const Vec2 tip = o + dir(axis.Angle(n.dial.value)) * (R * 0.7f);
-    c.push_back(Polyline{{o, tip}, s.text, 2.f});
-    c.push_back(Circle{o, std::max(2.f, 3.f * z), s.text, s.text, 0.f});
+    c.push_back(Polyline{{o, tip}, needleColor, needle && needle->width > 0.f ? needle->width : 2.f});
+    c.push_back(Circle{o, std::max(2.f, 3.f * z), needleColor, needleColor, 0.f});
     char       buf[32];
     const auto end = std::to_chars(buf, buf + sizeof buf, n.dial.value).ptr;
-    c.push_back(Text{{o.x - R, o.y + R * 0.2f, 2 * R, fs * 1.3f}, n.dial.label + "  " + std::string(buf, end), fs, s.muted, false,
-                     false, false, Align::Center});
+    c.push_back(Text{{o.x - R, o.y + R * 0.2f, 2 * R, fs * 1.3f}, n.dial.label + "  " + std::string(buf, end),
+                     reading ? reading->size * z * reading->scale : fs, readingColor, false, false, false, Align::Center});
     // Each row on the ring: a handle inside it (following a drag), its label outside.
-    const Color gold{220, 180, 60};
+    const float handleSize = handle && handle->size > 0.f ? handle->size : 5.f;
     for (const Row& row : n.rows) {
         if (row.port.empty()) continue;
         const bool  dragging = mode_ == Mode::DialDrag && active_ == n.id && pressRow_ == row.id;
         const float v        = dragging ? dialValue_ : RowNumber(row);
         const auto  a        = axis.Angle(v);
         const Vec2  h        = o + dir(a) * (R * kHandleAt);
-        const float d        = std::clamp(5.f * z, 3.f, 7.f);
-        c.push_back(Polygon{{{h.x, h.y - d}, {h.x + d, h.y}, {h.x, h.y + d}, {h.x - d, h.y}}, gold});
+        const float d        = std::clamp(handleSize * z, handleSize * 3.f / 5.f, handleSize * 7.f / 5.f);
+        if (!handle || (handle->glyph.value_or(PortGlyph::Diamond) == PortGlyph::Diamond && !handle->hollow))
+            c.push_back(Polygon{{{h.x, h.y - d}, {h.x + d, h.y}, {h.x, h.y + d}, {h.x - d, h.y}}, handleColor});
+        else
+            DrawPin(c, h, dir(a), *handle->glyph, d, handleColor, look.fill, !handle->hollow);
         const Vec2  l = o + dir(a) * (R * 1.32f);
         const float w = 110.f * z;
         std::string text = row.label;
@@ -1559,7 +1778,8 @@ void Canvas::DrawDial(std::vector<DrawCmd>& c, const Node& n, const Rect& frame,
         } else if (!row.value.empty()) {
             text += " " + row.value;
         }
-        c.push_back(Text{{l.x - w * 0.5f, l.y - fs * 0.65f, w, fs * 1.3f}, text, fs * 0.9f, s.text, false, false, false, Align::Center});
+        c.push_back(Text{{l.x - w * 0.5f, l.y - fs * 0.65f, w, fs * 1.3f}, text, label ? label->size * z * label->scale : fs * 0.9f,
+                         labelColor, label && label->bold, false, false, Align::Center, label && label->italic});
     }
 }
 
@@ -2381,38 +2601,48 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         const bool      hov = chrome && (g->id == hovered_ || g->id == connectTo_);
         const Rect      r   = cam.ToScreen(g->frame);
         if (!r.Intersects(Rect{0, 0, viewport.x, viewport.y})) continue;
-        Color fill = t.band, head = t.band;
-        fill.a     = s.groupFill;
-        head.a     = static_cast<std::uint8_t>(std::min(255, s.groupFill * 2));
+        // Its look: the body's tint and outline, the title bar, the title and the detail line; closed, maybe a pill.
+        const Node*     live   = LiveOf(*g);   // the host's own node: the view's copy keeps only its place
+        const bool      closed = IsCollapsed(g->id);
+        const NodeLook& look   = LookOf(*live, StatesOf(*live) | (sel ? StateSelected : 0u) | (hov ? StateHovered : 0u) |
+                                                 (closed ? StateCollapsed : 0u));
+        const bool      pill   = closed && look.shape == 1;
+        const float     corner = pill ? r.h * 0.5f : look.corner * z;
+        const LookPart* bar    = nullptr;
+        for (const LookPart& part : look.parts)
+            if (part.kind == PartKind::Header) bar = &part;
         drawGlow(r, glowOf(nodeGlow, g->id));   // a closed group glows with the brightest thing it holds
-        c.push_back(FillRect{r, fill, sel ? s.selection : (hov ? s.text : t.band), sel ? 2.f : 1.25f, s.corner * z});
+        c.push_back(FillRect{r, look.fill, look.stroke, look.strokeWidth, corner, look.dash});
         if (const auto ring = highlights.rings.find(g->id); ring != highlights.rings.end())
-            c.push_back(FillRect{r.Inflated(3.f), Color{0, 0, 0, 0}, ring->second, 2.f, s.corner * z + 3.f});
+            c.push_back(FillRect{r.Inflated(3.f), Color{0, 0, 0, 0}, ring->second, 2.f, corner + 3.f});
         const float hh = std::min(s.groupHeader * z, r.h);
-        c.push_back(FillRect{{r.x + 1.f, r.y + 1.f, std::max(0.f, r.w - 2.f), std::max(0.f, hh - 1.f)}, head, {}, 0.f, s.corner * z});
+        if (bar) c.push_back(FillRect{{r.x + 1.f, r.y + 1.f, std::max(0.f, r.w - 2.f), std::max(0.f, hh - 1.f)}, bar->fill, {}, 0.f, corner});
         drawPins(*g, g->frame, cam);
 
         const float fs = s.fontSize * z;
-        if (fs < 4.f) continue;
-        const Node*        live  = LiveOf(*g);   // the host's own node: the view's copy keeps only its place
-        const std::string& named = t.titleField.empty() ? std::string{} : live->Field(t.titleField);
-        std::string        title = named.empty() ? "Untitled " + t.label : named;
-        if (t.groupMode == GroupMode::Members && !t.fixed) title = (IsCollapsed(g->id) ? "▸ " : "▾ ") + title;   // its arrow
-        if (t.showCount) title += " (" + std::to_string(count_[static_cast<std::size_t>(g - Shown().nodes.data())]) + ")";
-        std::string        detail;
-        for (const FieldDef& f : t.fields) {
-            const std::string& v = live->Field(f.id);
-            if (!f.onCard || f.id == t.titleField || v.empty()) continue;
-            if (!detail.empty()) detail += " · ";
-            detail += v;
+        if (fs < 4.f || !bar) continue;
+        const LookText* titleLine = nullptr;
+        const LookText* detailLine = nullptr;
+        for (const LookText& line : bar->texts) {
+            if (line.id == "detail") detailLine = &line;
+            else if (!titleLine) titleLine = &line;
         }
-        const float pad = s.padding * z;
+        const bool       folds = t.groupMode == GroupMode::Members && !t.fixed;
+        const LineExtras extras{count_[static_cast<std::size_t>(g - Shown().nodes.data())], folds ? (closed ? "▸ " : "▾ ") : ""};
+        std::string title, detail;
+        bool        unnamed = false;
+        if (titleLine) std::tie(title, unnamed) = LineText(*titleLine, *live, t, extras);
+        if (detailLine) detail = LineText(*detailLine, *live, t, extras).first;
+        const float pad = s.padding * z + (pill ? r.h * 0.25f : 0.f);
         const float w   = std::max(0.f, r.w - 2 * pad);
-        const float ts  = fs * 1.1f;
+        const float ts  = titleLine ? titleLine->size * z * titleLine->scale : fs;
         const float tw  = detail.empty() ? w : std::min(w, ts * 0.62f * static_cast<float>(title.size()) + pad);
-        c.push_back(Text{{r.x + pad, r.y, tw, hh}, title, ts, named.empty() ? s.muted : s.text, true});
+        if (titleLine)
+            c.push_back(Text{{r.x + pad, r.y, tw, hh}, title, ts, unnamed ? titleLine->placeholderColor : titleLine->color, titleLine->bold,
+                             false, false, static_cast<Align>(titleLine->align), titleLine->italic});
         if (!detail.empty() && w - tw > 20.f)
-            c.push_back(Text{{r.x + pad + tw + pad * 0.5f, r.y, w - tw - pad * 0.5f, hh}, detail, fs, s.muted});
+            c.push_back(Text{{r.x + pad + tw + pad * 0.5f, r.y, w - tw - pad * 0.5f, hh}, detail, detailLine->size * z * detailLine->scale,
+                             detailLine->color, detailLine->bold, false, false, static_cast<Align>(detailLine->align), detailLine->italic});
     }
 
     // Edges, under the nodes; their labels go on top of everything, so a short edge between two cards still reads.
@@ -2509,17 +2739,10 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         } else if (t.shape == NodeShape::Dot) {
             c.push_back(Circle{r.Center(), std::min(r.w, r.h) * 0.5f, t.band, sel ? s.selection : (hov ? s.text : t.band), sel ? 2.f : 1.f});
         } else if (t.shape == NodeShape::Pill) {
-            c.push_back(FillRect{r, s.nodeFill, sel ? s.selection : (hov ? s.text : t.band), sel ? 2.f : 1.5f, r.h * 0.5f});
-            std::string text;
-            for (const FieldDef& f : t.fields) {
-                const std::string& v = n.Field(f.id);
-                if (!f.onCard || v.empty()) continue;
-                if (!text.empty()) text += " · ";
-                text += v;
-            }
-            if (s.fontSize * z >= 4.f)
-                c.push_back(Text{{r.x + r.h * 0.4f, r.y, std::max(0.f, r.w - r.h * 0.8f), r.h}, text.empty() ? t.label : text,
-                                 s.fontSize * z, text.empty() ? s.muted : s.text, true, false, false, Align::Center});
+            // A capsule, and its look's parts along its line: glyphs, bars, texts, chips, stubs.
+            const NodeLook& look = LookOf(n, (sel ? StateSelected : 0u) | (hov ? StateHovered : 0u) | StatesOf(n));
+            c.push_back(FillRect{r, look.fill, look.stroke, look.strokeWidth, r.h * 0.5f, look.dash});
+            DrawPillParts(c, PillLayout(n, t, look, r, z), look, r, z, s.fontSize * z >= 4.f);
         } else {
         // A card or a note, drawn from its look: the kit's, or the one its Schema and Style make.
         const NodeLook&    look = LookOf(n, (sel ? StateSelected : 0u) | (hov ? StateHovered : 0u) | StatesOf(n));
@@ -2566,16 +2789,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                     y                 = r.y + pad * head->top;
                     const float iconW = t.drillable ? 18.f * z : 0.f;
                     for (std::size_t k = 0; k < head->texts.size(); ++k) {
-                        const LookText& line = head->texts[k];
-                        std::string     text = line.from == "type" ? t.label : std::string();
-                        if (line.from.starts_with("field:")) text = n.Field(std::string_view(line.from).substr(6));
-                        if (line.from.starts_with("row:"))
-                            if (const Row* row = n.FindRow(std::string_view(line.from).substr(4))) text = row->label;
-                        const bool empty = text.empty() && !line.placeholder.empty();
-                        if (empty) {
-                            text = line.placeholder;
-                            if (const auto at = text.find("{type}"); at != std::string::npos) text.replace(at, 6, t.label);
-                        }
+                        const LookText& line          = head->texts[k];
+                        const auto [text, empty]      = LineText(line, n, t);
                         const float ts = line.size * z;
                         c.push_back(Text{{x, y, w - (k == 0 ? iconW : 0.f), ts * line.box}, text, ts * line.scale,
                                          empty ? line.placeholderColor : line.color, line.bold, false, false, static_cast<Align>(line.align),
