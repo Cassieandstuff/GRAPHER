@@ -51,6 +51,12 @@ struct Node {
     std::vector<Row>     rows;      ///< card lines the host fills (see Row)
     std::string          tooltip;   ///< shown over the node where no row has one of its own
     std::string          image;     ///< a picture the backend resolves by this key (a thumbnail); see NodeType::imageHeight
+    /// @brief The member group (GroupMode::Members) that holds this node; empty = the top level, or a frame group's
+    ///        geometry.
+    std::string          parent;
+    /// @brief This node stands in for node `aliasOf` where it is also shown (a node reached from far away): drawn
+    ///        dimmed with a dashed outline, and a click on it goes to the original.
+    std::string          aliasOf;
 
     /// @return the row `id`, or nullptr
     [[nodiscard]] const Row* FindRow(std::string_view rowId) const;

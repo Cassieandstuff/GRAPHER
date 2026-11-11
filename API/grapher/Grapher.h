@@ -7,6 +7,7 @@
 #include <grapher/Geometry.h>
 #include <grapher/Graph.h>
 #include <grapher/Groups.h>
+#include <grapher/Layout.h>
 #include <grapher/Port.h>
 #include <grapher/Ports.h>
 #include <grapher/Schema.h>

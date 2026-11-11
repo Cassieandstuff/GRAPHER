@@ -66,7 +66,15 @@ struct NodeType {
     std::string           defaultEdge;   ///< an EdgeType id a new edge to or from this type gets; empty = the schema's first
     std::vector<PortDef>  ports;         ///< every node of the type has these; a node's own ports follow (Node::ports)
     float                 imageHeight = 0.f;   ///< room for Node::image at the foot of a card, world units; 0 = none
+    GroupMode             groupMode = GroupMode::Frame;   ///< a group's: what it holds
+    bool                  showCount = false;   ///< a group's header says how many nodes it holds, nested ones included
     friend bool operator==(const NodeType&, const NodeType&) = default;
+};
+
+/// @brief What a group holds.
+enum class GroupMode {
+    Frame,     ///< the nodes inside its frame, as JSON Canvas groups do; moving a node in or out changes it
+    Members,   ///< the nodes whose Node::parent names it; its frame wraps them below its header, and it can collapse
 };
 
 enum class EdgeLine { Curve, Straight, Elbow };

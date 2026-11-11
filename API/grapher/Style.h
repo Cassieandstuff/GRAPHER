@@ -32,6 +32,7 @@ struct Style {
     float detailZoom  = 0.45f;  ///< below this zoom a card shows only its title
     float textZoom    = 0.3f;   ///< below this zoom no text draws at all, only shapes
     float groupHeader = 30.f;   ///< a group's header strip: its title sits there, and a click there picks the group
+    float groupPadding = 14.f;  ///< between a member group's outline and what it holds
     std::uint8_t groupFill = 22;   ///< the alpha of a group's band-coloured fill
 };
 

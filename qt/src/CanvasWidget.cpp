@@ -52,7 +52,9 @@ void Paint(QPainter& p, const DrawList& list, const ImageSource& images)
     for (const DrawCmd& cmd : list.cmds) {
         std::visit(Overloaded{
             [&](const FillRect& r) {
-                p.setPen(r.strokeWidth > 0.f ? QPen(Q(r.stroke), r.strokeWidth) : QPen(Qt::NoPen));
+                QPen pen = r.strokeWidth > 0.f ? QPen(Q(r.stroke), r.strokeWidth) : QPen(Qt::NoPen);
+                if (r.dashed) pen.setStyle(Qt::DashLine);
+                p.setPen(pen);
                 p.setBrush(Q(r.fill));
                 if (r.radius > 0.f) p.drawRoundedRect(Q(r.rect), r.radius, r.radius);
                 else p.drawRect(Q(r.rect));
@@ -219,6 +221,16 @@ void CanvasWidget::mouseDoubleClickEvent(QMouseEvent* e)
 {
     if (e->button() != Qt::LeftButton) return;
     const Hit hit = canvas_.HitTest(V(e->position()));
+    // A double-click on a member group's header opens or closes it.
+    if (hit.kind == HitKind::Node)
+        if (const Node* n = canvas_.GetGraph().FindNode(hit.id); n && IsMemberGroup(*n, canvas_.GetSchema())) {
+            const Rect r = canvas_.ScreenRectOf(hit.id);
+            if (e->position().y() <= r.y + canvas_.style.groupHeader * canvas_.camera.zoom) {
+                canvas_.SetCollapsed(hit.id, !canvas_.IsCollapsed(hit.id));
+                update();
+                return;
+            }
+        }
     switch (hit.kind) {
     case HitKind::Row:
         emit rowDoubleClicked(QString::fromStdString(hit.id), QString::fromStdString(hit.row));

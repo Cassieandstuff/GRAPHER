@@ -10,7 +10,8 @@ core knows no UI toolkit; backends paint its draw lists.
 | `grapher/Ports.h` | where a node's ports sit (`LayoutPorts`), the height a card needs (`CardHeight`) |
 | `grapher/SchemaJson.h` | the schema as JSON: `ParseSchema`, `ParseNodeType` (a type defined at runtime), `WriteSchema` |
 | `grapher/Graph.h` | `Node` (with ports of its own), `Edge` (port to port, or node to node), `Graph` — a value type, so undo is a copy |
-| `grapher/Groups.h` | group membership: a node belongs to the smallest group whose frame holds it (`ParentGroup`, `GroupMembers`) |
+| `grapher/Groups.h` | group membership: a frame group holds what lies inside it, a member group what names it as `parent` (`ParentGroup`, `GroupMembers`) |
+| `grapher/Layout.h` | `LayoutColumns` (columns by wire distance, few crossings) and `LayoutGraph` (inside out through member groups, kept nodes stay, open groups push) |
 | `grapher/Routing.h` | `RouteWires` — ports spread along node sides; wires that would cut through a node routed around it (orthogonal A*), drawn in their edge type's style |
 | `grapher/Canvas.h` | `Camera`, `Canvas` — gestures (select, move, resize, connect, marquee, pan, zoom) and `Draw()` |
 
@@ -54,6 +55,18 @@ host applies it through its own history, or doesn't, and calls `Refresh`. A wire
 (some nodes or all), `CenterOn`, `EnsureVisible`, and `panWithButtons = false` when the host reads the middle button
 and wheel itself (`CanvasWidget::setHostNavigation`). `SelectKeys::ExtendSubtract` makes Shift add and Ctrl take away;
 the default toggles. `CanvasWidget::setOwnKeys(false)` leaves every key to the host's commands.
+
+**Member groups** (`GroupMode::Members`) hold the nodes whose `Node::parent` names them, at any depth, and their frame
+is drawn around what they hold, below the header. They open and close (the arrow at the start of the header, or a
+double-click on it in the Qt widget; `SetCollapsed`, `SetAllCollapsed`, `Reveal`): a closed group is just its header,
+what it holds is not drawn, and the wires into it end on it, several joining the same ends merged into one dashed wire.
+Open and closed is the canvas's view state, never an edit (`onCollapseChanged` tells the host). Dragging a member group
+carries what it holds; a node dropped on a member group joins the innermost one under the pointer, and dropped on none
+leaves its own (an edit: `MoveNodes::parents` when proposed). A header can show how many nodes the group holds
+(`showCount`). An alias (`Node::aliasOf`) is a node standing in for another where that one is also reached: it draws
+dimmed with a dashed outline, and a click on it selects the original and opens the groups around it.
+`HoldInPlace` keeps a node's header still on screen through the host's next `Refresh`, so laying the graph out again
+after an edit doesn't move the view. `LayoutGraph` is the layout to run then.
 
 **Large graphs.** The canvas keeps its routes, per-node and per-edge tables until a frame, port, edge or option
 changes, culls what is off screen, and hit-tests only what is near the pointer. On a graph of more than 2000 nodes a

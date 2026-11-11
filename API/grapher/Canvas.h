@@ -85,6 +85,8 @@ enum class SelectKeys {
 /// @brief Nodes that moved or were resized (a node dropped into a group slides in: its frame says where).
 struct MoveNodes {
     std::vector<std::pair<std::string, Rect>> frames;   ///< every node whose frame changed, with its new frame
+    /// @brief Nodes dropped into another member group (or out of all: an empty parent), with their new Node::parent.
+    std::vector<std::pair<std::string, std::string>> parents;
 };
 /// @brief A new wire, and the wires it replaces at a port that was full.
 struct ConnectWire {
@@ -151,6 +153,28 @@ public:
     std::function<void()>                       onSelectionChanged;
     /// @brief Propose: every edit. Direct: only what the canvas can't do itself (ConnectToNothing).
     std::function<void(const Intent&)>          onIntent;
+    /// @brief A member group opened or closed (view state, not an edit: a host may keep it, or lay the graph out again).
+    std::function<void(std::string_view group, bool collapsed)> onCollapseChanged;
+    /// @brief A click on an alias (Node::aliasOf) selects the original and shows it, opening the groups around it.
+    bool followAliases = true;
+
+    /// @name Member groups, open and closed: the canvas's view state, never an edit
+    /// @{
+    void SetCollapsed(std::string_view group, bool collapsed);
+    [[nodiscard]] bool IsCollapsed(std::string_view group) const { return collapsed_.contains(group); }
+    [[nodiscard]] const NodeSet& CollapsedGroups() const { return collapsed_; }
+    /// @brief Open or close every member group, or those `which` picks.
+    void SetAllCollapsed(bool collapsed, const std::function<bool(const Node&)>& which = {});
+    /// @brief Open every member group around the node, so it shows.
+    void Reveal(std::string_view nodeId);
+    /// @return whether the node is inside a closed member group
+    [[nodiscard]] bool IsHidden(std::string_view nodeId) const;
+    /// @return the node's frame as drawn (a member group's wraps what it holds), world units; empty when hidden or unknown
+    [[nodiscard]] Rect FrameOf(std::string_view nodeId) const;
+    /// @}
+    /// @brief Keep the node's header where it is on screen through the next Refresh (the host laying the graph out again
+    ///        after an edit), so the view doesn't jump.
+    void HoldInPlace(std::string_view nodeId);
 
     /// @brief The host applied (or refused) what the canvas proposed: show its graph again. A no-op in Direct mode.
     void Refresh();
@@ -295,6 +319,13 @@ private:
     std::vector<std::pair<std::string, Rect>> origin_;   ///< frames at the start of a move or resize
     NodeSet     carried_;           ///< moving because a selected group holds them, not because they are selected
 
+    /// @brief What is drawn and hit: the graph itself, or, when it has member groups, a copy with their frames fitted,
+    ///        what closed groups hold left out, and the wires to it ending on the closed group (merged).
+    [[nodiscard]] const Graph& Shown() const { return useView_ ? view_ : *graph_; }
+    /// @brief Fill `view_` from the graph (see Shown).
+    void BuildView() const;
+    /// @brief Fit every open member group of `view_` around what it shows, deepest first.
+    void FitView() const;
     /// @brief Bring the per-graph caches up to date (rerouting when a frame, a port, an edge or the options changed):
     ///        the wires, each node's type and group flag, each edge's path and bounds, the wired ports, the id index.
     void Sync() const;
@@ -304,6 +335,8 @@ private:
     /// @brief Point edge `i`'s table entries at its wire (or none).
     void SetPath(std::size_t i) const;
     [[nodiscard]] const Node* NodeById(std::string_view id) const;
+    /// @brief The node as drawn (a member group's frame fitted), after a Sync; nullptr when hidden or unknown.
+    [[nodiscard]] const Node* ShownNode(std::string_view id) const;
 
     mutable WirePaths   wires_;
     mutable std::size_t wiresKey_   = 0;
@@ -313,6 +346,20 @@ private:
     mutable std::vector<Rect>                     boxes_;      ///< per edge: its wire's bounds, world units
     mutable std::unordered_set<std::string>       wiredPorts_; ///< "node\x1fport" for every port a wire uses
     mutable std::unordered_map<std::string_view, std::size_t> index_;   ///< node id -> index
+    mutable bool                                  useView_ = false;
+    mutable Graph                                 view_;
+    mutable std::vector<char>                     dashed_;    ///< per shown edge: it stands for wires into a closed group
+    mutable std::vector<int>                      count_;     ///< per shown node: a group's nodes, nested ones included
+    NodeSet                                       collapsed_;
+    std::size_t                                   viewRev_ = 0;   ///< bumped when a group opens or closes
+    std::vector<std::pair<std::string, Rect>>     dropTargets_;   ///< member groups a move may drop into, as they were
+    std::string                                   pressed_;       ///< the node a press landed on
+    std::string                                   hold_;          ///< HoldInPlace's node
+    Vec2                                          holdAt_;
+    mutable std::vector<std::size_t>              viewUp_;     ///< per shown node: the shown group holding it
+    mutable std::vector<std::vector<std::size_t>> viewKids_;   ///< per shown node: what it holds and shows
+    mutable std::vector<std::size_t>              fitOrder_;   ///< the shown open member groups, deepest first
+    mutable std::size_t  syncedNodes_ = 0, syncedEdges_ = 0;
     mutable const Graph* synced_     = nullptr;
     mutable std::size_t  syncedEdits_ = 0;
     std::size_t          edits_       = 0;   ///< bumped by every edit the canvas makes

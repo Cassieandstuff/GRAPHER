@@ -1230,6 +1230,205 @@ void TestLargeGraph()
     CHECK(router->calls == 1);
 }
 
+// ── Member groups and layout ────────────────────────────────────────────────
+
+void TestLayoutColumns()
+{
+    using grapher::Vec2;
+    const std::vector<Vec2> items(4, Vec2{100, 40});
+    // Columns follow the wires, and a cycle still gets a place.
+    const auto placed = grapher::LayoutColumns(items, {{0, 1}, {0, 2}, {1, 3}, {3, 1}, {2, 2}});
+    CHECK(placed.size() == 4 && placed[0].x == 0 && placed[1].x > placed[0].x && placed[3].x > placed[1].x);
+    const auto loose = grapher::LayoutColumns(items, {});
+    for (const Vec2& p : loose) CHECK(p.x == 0);
+    CHECK(loose[1].y >= loose[0].y + 40);
+    const auto ring = grapher::LayoutColumns(items, {{0, 1}, {1, 2}, {2, 3}, {3, 0}});
+    CHECK(ring[1].x > ring[0].x);
+    CHECK(grapher::LayoutColumns({}, {}).empty());
+    // Crossed wires untangle, and a parent sits level with the middle of its children.
+    const auto crossed = grapher::LayoutColumns(items, {{0, 3}, {1, 2}});
+    CHECK(crossed[0].y < crossed[1].y && crossed[3].y < crossed[2].y);
+    const auto fan = grapher::LayoutColumns(items, {{0, 1}, {0, 2}, {0, 3}});
+    CHECK(std::abs(fan[0].y - fan[2].y) < 0.01f && fan[1].y + 40 <= fan[2].y && fan[2].y + 40 <= fan[3].y);
+    // A large box lays out: a tree, and a tangle where every sweep runs.
+    std::vector<Vec2>                big(20000, Vec2{160, 60});
+    std::vector<std::pair<int, int>> tree, tangle;
+    for (int i = 1; i < 20000; ++i) tree.emplace_back((i - 1) / 4, i);
+    for (int i = 0; i < 20000; ++i) tangle.emplace_back(i, (i * 7919 + 13) % 20000);
+    CHECK(grapher::LayoutColumns(big, tree).size() == 20000);
+    CHECK(grapher::LayoutColumns(big, tangle).size() == 20000);
+}
+
+grapher::Schema FolderSchema()
+{
+    grapher::Schema s;
+    grapher::NodeType box{"box", "Box"};
+    box.width  = 100.f;
+    box.height = 60.f;
+    s.nodeTypes.push_back(box);
+    grapher::NodeType folder{"folder", "Folder"};
+    folder.shape     = grapher::NodeShape::Group;
+    folder.groupMode = grapher::GroupMode::Members;
+    folder.showCount = true;
+    s.nodeTypes.push_back(folder);
+    grapher::EdgeType curve{"curve", "curve"};
+    curve.color = {1, 2, 3};
+    s.edgeTypes.push_back(curve);
+    return s;
+}
+
+grapher::Graph FolderGraph()
+{
+    // F1 holds a and F2; F2 holds b; c stands alone. c wires to a and b, a to b.
+    grapher::Graph g;
+    g.nodes.push_back({"F1", "folder", {0, 0, 10, 10}});
+    g.nodes.push_back({"F2", "folder", {0, 0, 10, 10}});
+    g.nodes.push_back({"a", "box", {0, 0, 100, 60}});
+    g.nodes.push_back({"b", "box", {200, 0, 100, 60}});
+    g.nodes.push_back({"c", "box", {600, 0, 100, 60}});
+    g.nodes[1].parent = "F1";
+    g.nodes[2].parent = "F1";
+    g.nodes[3].parent = "F2";
+    g.edges.push_back({"ab", "a", "b", "curve"});
+    g.edges.push_back({"ca", "c", "a", "curve"});
+    g.edges.push_back({"cb", "c", "b", "curve"});
+    return g;
+}
+
+void TestMemberGroups()
+{
+    const grapher::Schema s = FolderSchema();
+    grapher::Graph        g = FolderGraph();
+    grapher::Canvas       c(g, s);
+    c.SetViewport({1000, 600});
+    c.camera.pan = {100, 100};
+    std::vector<std::pair<std::string, bool>> toggled;
+    c.onCollapseChanged = [&](std::string_view id, bool on) { toggled.emplace_back(std::string(id), on); };
+    const float pad = c.style.groupPadding, head = c.style.groupHeader;
+
+    CHECK(grapher::IsMemberGroup(g.nodes[0], s) && grapher::ParentGroup(g, s, g.nodes[3]) == "F2");
+    CHECK((grapher::GroupMembers(g, s, "F1") == std::vector<std::string>{"F2", "a", "b"}));
+
+    // Each group wraps what it holds, below its header; the outer one wraps the inner.
+    const grapher::Rect f2 = c.FrameOf("F2"), f1 = c.FrameOf("F1");
+    CHECK(f2 == (grapher::Rect{200 - pad, -head, 100 + 2 * pad, 60 + head + pad}));
+    CHECK(f1.x == -pad && f1.y == f2.y - head && f1.Right() == f2.Right() + pad);
+    CHECK(CountText(c.Draw(), "\xe2\x96\xbe Untitled Folder (2)") == 1);
+
+    // Closed: what it holds goes, and the wires into it end on it, merged into one dashed wire.
+    c.SetCollapsed("F1", true);
+    CHECK(toggled.size() == 1 && toggled[0] == std::pair<std::string, bool>{"F1", true});
+    CHECK(c.IsHidden("a") && c.IsHidden("F2") && !c.IsHidden("F1") && c.FrameOf("F1").h == head && c.FrameOf("a") == grapher::Rect{});
+    int wires = 0, dashed = 0;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* p = std::get_if<grapher::Polyline>(&cmd); p && p->color == (grapher::Color{1, 2, 3})) ++wires, dashed += p->dashed;
+    CHECK(wires == 1 && dashed == 1);
+    CHECK(c.HitTest(c.ScreenRectOf("F1").Center()).id == "F1");
+
+    // A press on its arrow opens it; Reveal opens every group around a node; all can close at once.
+    const grapher::Rect r = c.ScreenRectOf("F1");
+    c.PointerDown({r.x + 5, r.y + 5}, grapher::Button::Left, {});
+    c.PointerUp({r.x + 5, r.y + 5}, grapher::Button::Left);
+    CHECK(!c.IsCollapsed("F1") && !c.IsHidden("a"));
+    c.SetAllCollapsed(true);
+    CHECK(c.IsCollapsed("F1") && c.IsCollapsed("F2"));
+    c.Reveal("b");
+    CHECK(c.CollapsedGroups().empty() && !c.IsHidden("b"));
+
+    // Dragging a group carries what it holds; a node dropped on a group joins it, and dropped on none, leaves.
+    const grapher::Rect head1 = c.ScreenRectOf("F1");
+    const grapher::Vec2 grip{head1.x + head + 20, head1.y + 5};
+    c.PointerDown(grip, grapher::Button::Left, {});
+    c.PointerMove(grip + grapher::Vec2{20, 0});
+    c.PointerUp(grip + grapher::Vec2{40, 0}, grapher::Button::Left);
+    CHECK(g.nodes[2].frame.x == 40.f && g.nodes[3].frame.x == 240.f && g.nodes[4].frame.x == 600.f);
+    const grapher::Vec2 cAt = c.ScreenRectOf("c").Center(), into = c.ScreenRectOf("F2").Center();
+    c.PointerDown(cAt, grapher::Button::Left, {});
+    c.PointerMove(cAt + (into - cAt) * 0.5f);
+    c.PointerUp(into, grapher::Button::Left);
+    CHECK(g.nodes[4].parent == "F2");
+    const grapher::Vec2 aAt = c.ScreenRectOf("a").Center();
+    c.PointerDown(aAt, grapher::Button::Left, {});
+    c.PointerMove(aAt + grapher::Vec2{0, 200});
+    c.PointerUp(aAt + grapher::Vec2{0, 400}, grapher::Button::Left);
+    CHECK(g.nodes[2].parent.empty());
+
+    // Proposed, the new parent arrives with the frames.
+    c.editMode = grapher::EditMode::Propose;
+    std::vector<grapher::Intent> intents;
+    c.onIntent = [&](const grapher::Intent& i) { intents.push_back(i); };
+    const grapher::Vec2 aNow = c.ScreenRectOf("a").Center(), back = c.ScreenRectOf("F1").Center();
+    c.PointerDown(aNow, grapher::Button::Left, {});
+    c.PointerMove(aNow + (back - aNow) * 0.5f);
+    c.PointerUp(back, grapher::Button::Left);
+    const auto* move = intents.size() == 1 ? std::get_if<grapher::MoveNodes>(&intents[0].change) : nullptr;
+    CHECK(move && move->parents.size() == 1 && move->parents[0].first == "a" && !move->parents[0].second.empty());
+    CHECK(g.nodes[2].parent.empty());
+    c.Refresh();
+}
+
+void TestAliasesAndHolding()
+{
+    const grapher::Schema s = FolderSchema();
+    grapher::Graph        g = FolderGraph();
+    g.nodes.push_back({"b2", "box", {600, 300, 100, 60}});
+    g.nodes.back().aliasOf = "b";
+    grapher::Canvas c(g, s);
+    c.SetViewport({1000, 600});
+    c.SetCollapsed("F1", true);
+
+    // An alias draws dimmed with a dashed outline; a click on it selects the original, opening the groups around it.
+    bool outline = false;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* f = std::get_if<grapher::FillRect>(&cmd); f && f->dashed && f->rect == c.ScreenRectOf("b2")) outline = true;
+    CHECK(outline);
+    const grapher::Vec2 at = c.ScreenRectOf("b2").Center();
+    c.PointerDown(at, grapher::Button::Left, {});
+    c.PointerUp(at, grapher::Button::Left);
+    CHECK(c.SelectedNodes() == grapher::NodeSet{"b"} && !c.IsCollapsed("F1") && !c.IsHidden("b"));
+    const grapher::Rect shown = c.ScreenRectOf("b");
+    CHECK(shown.x >= 0 && shown.Right() <= 1000 && shown.y >= 0 && shown.Bottom() <= 600);
+
+    // Held in place: the host lays the graph out again, and the node stays where it was on screen.
+    const auto before = c.HeaderScreenPos("c");
+    c.HoldInPlace("c");
+    g.nodes[4].frame.x += 300;
+    g.nodes[4].frame.y -= 120;
+    c.Refresh();
+    CHECK(before && Near(*c.HeaderScreenPos("c"), *before));
+}
+
+void TestLayoutGraph()
+{
+    const grapher::Schema s = FolderSchema();
+    grapher::Graph        g = FolderGraph();
+    grapher::LayoutOptions o;
+    auto frameOf = [](const std::vector<std::pair<std::string, grapher::Rect>>& f, std::string_view id) {
+        for (const auto& [k, r] : f)
+            if (k == id) return r;
+        return grapher::Rect{};
+    };
+
+    // Inside out: each group wraps its laid-out content; nothing overlaps at the top level; wires run left to right.
+    auto laid = grapher::LayoutGraph(g, s, {}, {}, o);
+    CHECK(laid.size() == 5);
+    const grapher::Rect F1 = frameOf(laid, "F1"), F2 = frameOf(laid, "F2"), a = frameOf(laid, "a"), b = frameOf(laid, "b"), cc = frameOf(laid, "c");
+    CHECK(F1.Holds(a) && F1.Holds(F2) && F2.Holds(b) && !F1.Intersects(cc));
+    CHECK(a.x < F2.x && cc.x < F1.x);   // c wires into F1's content, a into F2's
+    CHECK(std::abs(F2.y + o.header - (b.y - 0.f)) <= o.header + 0.01f && b.x == F2.x + o.padding);
+
+    // A closed group is one header-high item.
+    laid = grapher::LayoutGraph(g, s, {}, {"F2"}, o);
+    CHECK(frameOf(laid, "F2").h == o.header);
+
+    // A kept node stays put; one placed by the layout slides clear of it; an open group pushes what it would cover.
+    g.nodes[4].frame = {0, 0, 100, 60};
+    laid = grapher::LayoutGraph(g, s, {"c"}, {}, o);
+    const grapher::Rect kept = frameOf(laid, "c"), F1b = frameOf(laid, "F1");
+    CHECK(kept == (grapher::Rect{0, 0, 100, 60}) || !kept.Intersects(F1b));
+    CHECK(!kept.Inflated(-1.f).Intersects(F1b));
+}
+
 } // namespace
 
 int main()
@@ -1263,6 +1462,10 @@ int main()
     TestPropose();
     TestNavigation();
     TestLargeGraph();
+    TestLayoutColumns();
+    TestMemberGroups();
+    TestAliasesAndHolding();
+    TestLayoutGraph();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

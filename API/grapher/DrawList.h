@@ -17,6 +17,7 @@ struct FillRect {
     Color stroke;
     float strokeWidth = 0.f;   ///< 0 = no outline
     float radius      = 0.f;
+    bool  dashed      = false;   ///< the outline
 };
 
 /// @brief An open polyline (curves arrive already flattened).

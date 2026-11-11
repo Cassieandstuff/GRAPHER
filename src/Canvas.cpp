@@ -260,8 +260,57 @@ void Canvas::Changed(Intent intent)
     }
 }
 
+void Canvas::SetCollapsed(std::string_view group, bool collapsed)
+{
+    if (collapsed == collapsed_.contains(group)) return;
+    if (collapsed) collapsed_.emplace(group);
+    else collapsed_.erase(collapsed_.find(group));
+    ++viewRev_;
+    if (onCollapseChanged) onCollapseChanged(group, collapsed);
+}
+
+void Canvas::SetAllCollapsed(bool collapsed, const std::function<bool(const Node&)>& which)
+{
+    for (const Node& n : graph_->nodes)
+        if (IsMemberGroup(n, *schema_) && (!which || which(n))) SetCollapsed(n.id, collapsed);
+}
+
+void Canvas::Reveal(std::string_view nodeId)
+{
+    const Node* n = graph_->FindNode(nodeId);
+    for (std::size_t steps = 0; n && !n->parent.empty() && steps <= graph_->nodes.size(); ++steps) {
+        SetCollapsed(n->parent, false);
+        n = graph_->FindNode(n->parent);
+    }
+}
+
+bool Canvas::IsHidden(std::string_view nodeId) const { return graph_->FindNode(nodeId) && !ShownNode(nodeId); }
+
+Rect Canvas::FrameOf(std::string_view nodeId) const
+{
+    const Node* n = ShownNode(nodeId);
+    return n ? n->frame : Rect{};
+}
+
+void Canvas::HoldInPlace(std::string_view nodeId)
+{
+    const auto at = HeaderScreenPos(nodeId);
+    hold_         = at ? std::string(nodeId) : std::string{};
+    holdAt_       = at.value_or(Vec2{});
+}
+
 void Canvas::Refresh()
 {
+    // The node held in place keeps its header where it was on screen.
+    if (!hold_.empty()) {
+        const std::string held = std::exchange(hold_, {});
+        if (graph_ != host_) {
+            if (mode_ != Mode::Idle) CancelGesture();
+            graph_   = host_;
+            scratch_ = {};
+        }
+        if (const auto now = HeaderScreenPos(held)) PanBy(holdAt_ - *now);
+    }
     if (graph_ == host_) return;
     if (mode_ != Mode::Idle) CancelGesture();
     graph_   = host_;
@@ -302,8 +351,13 @@ MoveNodes Canvas::MovedFrames() const
     std::unordered_map<std::string_view, const Rect*> before;
     before.reserve(host_->nodes.size());
     for (const Node& n : host_->nodes) before.emplace(n.id, &n.frame);
-    for (const Node& n : graph_->nodes)
+    std::unordered_map<std::string_view, const std::string*> parentBefore;
+    parentBefore.reserve(host_->nodes.size());
+    for (const Node& n : host_->nodes) parentBefore.emplace(n.id, &n.parent);
+    for (const Node& n : graph_->nodes) {
         if (const auto it = before.find(n.id); it != before.end() && !(*it->second == n.frame)) out.frames.emplace_back(n.id, n.frame);
+        if (const auto it = parentBefore.find(n.id); it != parentBefore.end() && *it->second != n.parent) out.parents.emplace_back(n.id, n.parent);
+    }
     return out;
 }
 
@@ -507,7 +561,7 @@ std::string Canvas::LandingPort(const Node& from, std::string_view port, const N
 
 std::optional<Vec2> Canvas::PortScreenPos(std::string_view nodeId, std::string_view port) const
 {
-    const Node* n = graph_->FindNode(nodeId);
+    const Node* n = ShownNode(nodeId);
     if (!n) return std::nullopt;
     const auto slots = SlotsOf(*n);
     const PortSlot* s = FindSlot(slots, port);
@@ -522,7 +576,7 @@ void Canvas::Frame() { Frame({}); }
 void Canvas::Frame(const NodeSet& ids, float margin, float zoomCap)
 {
     std::optional<Rect> b;
-    for (const Node& n : graph_->nodes)
+    for (const Node& n : (Sync(), Shown().nodes))
         if (ids.empty() || ids.contains(n.id)) b = b ? Rect::Union(*b, n.frame) : n.frame;
     if (!b) {
         if (ids.empty()) camera = {{viewport_.x * 0.5f, viewport_.y * 0.5f}, 1.f};
@@ -537,7 +591,7 @@ void Canvas::Frame(const NodeSet& ids, float margin, float zoomCap)
 
 void Canvas::CenterOn(std::string_view nodeId, std::optional<float> zoom)
 {
-    const Node* n = graph_->FindNode(nodeId);
+    const Node* n = ShownNode(nodeId);
     if (!n) return;
     if (zoom) camera.zoom = std::clamp(*zoom, minZoom, maxZoom);
     const Vec2 c = n->frame.Center();
@@ -546,7 +600,7 @@ void Canvas::CenterOn(std::string_view nodeId, std::optional<float> zoom)
 
 void Canvas::EnsureVisible(std::string_view nodeId, float margin)
 {
-    const Node* n = graph_->FindNode(nodeId);
+    const Node* n = ShownNode(nodeId);
     if (!n) return;
     const Rect r = camera.ToScreen(n->frame);
     // Per axis: as little as brings it in; when it can't fit, its top-left goes in first.
@@ -576,7 +630,7 @@ bool Canvas::Wheel(Vec2 at, float steps) { return ZoomAbout(std::pow(1.15f, step
 
 std::optional<Vec2> Canvas::HeaderScreenPos(std::string_view nodeId) const
 {
-    const Node* n = graph_->FindNode(nodeId);
+    const Node* n = ShownNode(nodeId);
     if (!n) return std::nullopt;
     const CardMetrics m = MetricsOf(style);
     const float       y = IsGroup(*n, *schema_) ? std::min(n->frame.h, m.groupHeader) * 0.5f : m.Top() + m.titleSize * 0.65f;
@@ -585,7 +639,7 @@ std::optional<Vec2> Canvas::HeaderScreenPos(std::string_view nodeId) const
 
 std::optional<Rect> Canvas::RowScreenRect(std::string_view nodeId, std::string_view row) const
 {
-    const Node* n = graph_->FindNode(nodeId);
+    const Node* n = ShownNode(nodeId);
     if (!n) return std::nullopt;
     for (std::size_t k = 0; k < n->rows.size(); ++k)
         if (n->rows[k].id == row) return camera.ToScreen(RowRect(*n, *schema_, MetricsOf(style), k));
@@ -597,13 +651,13 @@ std::string Canvas::TooltipAt(Vec2 screen) const
     const Hit hit = HitTest(screen);
     switch (hit.kind) {
     case HitKind::Row:
-        if (const Node* n = graph_->FindNode(hit.id)) {
+        if (const Node* n = ShownNode(hit.id)) {
             const Row* r = n->FindRow(hit.row);
             return r && !r->tooltip.empty() ? r->tooltip : n->tooltip;
         }
         return {};
     case HitKind::Port:
-        if (const Node* n = graph_->FindNode(hit.id))
+        if (const Node* n = ShownNode(hit.id))
             for (const PortDef& p : PortsOf(*n, *schema_))
                 if (p.id == hit.port) {
                     const std::string type = PortTypeOf(*graph_, *schema_, *n, p.id);
@@ -614,7 +668,7 @@ std::string Canvas::TooltipAt(Vec2 screen) const
         return {};
     case HitKind::Node:
     case HitKind::Resize:
-        if (const Node* n = graph_->FindNode(hit.id)) return n->tooltip;
+        if (const Node* n = ShownNode(hit.id)) return n->tooltip;
         return {};
     case HitKind::Edge:
         if (const Edge* e = graph_->FindEdge(hit.id)) return e->label;
@@ -625,7 +679,7 @@ std::string Canvas::TooltipAt(Vec2 screen) const
 
 Rect Canvas::ScreenRectOf(std::string_view nodeId) const
 {
-    const Node* n = graph_->FindNode(nodeId);
+    const Node* n = ShownNode(nodeId);
     return n ? camera.ToScreen(n->frame) : Rect{};
 }
 
@@ -643,8 +697,8 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
     // Only the nodes near the point are candidates. Topmost first: selected nodes draw last, so they are tested first.
     // Groups draw under everything, inner over outer.
     std::vector<const Node*> order, groups;
-    for (std::size_t i = graph_->nodes.size(); i-- > 0;) {
-        const Node& n = graph_->nodes[i];
+    for (std::size_t i = Shown().nodes.size(); i-- > 0;) {
+        const Node& n = Shown().nodes[i];
         if (!camera.ToScreen(n.frame).Inflated(reach).Contains(screen)) continue;
         if (grouped_[i]) groups.push_back(&n);
         else order.push_back(&n);
@@ -678,9 +732,9 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
             return {HitKind::Node, n->id};
         }
     }
-    for (std::size_t i = graph_->edges.size(); i-- > 0;) {
+    for (std::size_t i = Shown().edges.size(); i-- > 0;) {
         if (!paths_[i] || !camera.ToScreen(boxes_[i]).Inflated(kEdgeHitPx).Contains(screen)) continue;
-        if (PolylineDistance(screen, ToScreen(camera, *paths_[i])) <= kEdgeHitPx) return {HitKind::Edge, graph_->edges[i].id};
+        if (PolylineDistance(screen, ToScreen(camera, *paths_[i])) <= kEdgeHitPx) return {HitKind::Edge, Shown().edges[i].id};
     }
     for (const Node* n : groups) {
         const Rect r = camera.ToScreen(n->frame);
@@ -699,11 +753,12 @@ void Canvas::Settle(const NodeSet& roots, const NodeSet& moving)
     for (const std::string& id : roots) {
         Node* n = graph_->FindNode(id);
         if (!n) continue;
+        if (!n->parent.empty()) continue;   // a member group's member is its alone
         const bool  group  = IsGroup(*n, *schema_);
         const Vec2  centre = n->frame.Center();
         const Node* target = nullptr;
         for (const Node& g : graph_->nodes) {
-            if (g.id == id || moving.contains(g.id) || !IsGroup(g, *schema_) || !g.frame.Contains(centre)) continue;
+            if (g.id == id || moving.contains(g.id) || !IsGroup(g, *schema_) || IsMemberGroup(g, *schema_) || !g.frame.Contains(centre)) continue;
             if (group && g.frame.Area() <= n->frame.Area()) continue;
             if (!target || g.frame.Area() < target->frame.Area()) target = &g;
         }
@@ -732,19 +787,147 @@ const WirePaths& Canvas::Wires() const
     return wires_;
 }
 
+const Node* Canvas::ShownNode(std::string_view id) const
+{
+    Sync();
+    return NodeById(id);
+}
+
 const Node* Canvas::NodeById(std::string_view id) const
 {
-    if (synced_ == graph_ && index_.size() == graph_->nodes.size())
-        if (const auto it = index_.find(id); it != index_.end() && it->second < graph_->nodes.size() && graph_->nodes[it->second].id == id)
-            return &graph_->nodes[it->second];
-    return graph_->FindNode(id);
+    const Graph& shown = Shown();
+    if (synced_ == graph_ && index_.size() == shown.nodes.size())
+        if (const auto it = index_.find(id); it != index_.end() && it->second < shown.nodes.size() && shown.nodes[it->second].id == id)
+            return &shown.nodes[it->second];
+    return shown.FindNode(id);
 }
 
 void Canvas::SyncForHit() const
 {
-    if (!wiresValid_ || synced_ != graph_ || syncedEdits_ != edits_ || grouped_.size() != graph_->nodes.size() ||
-        paths_.size() != graph_->edges.size())
+    if (!wiresValid_ || synced_ != graph_ || syncedEdits_ != edits_ || syncedNodes_ != graph_->nodes.size() ||
+        syncedEdges_ != graph_->edges.size() || grouped_.size() != Shown().nodes.size() || paths_.size() != Shown().edges.size())
         Sync();
+}
+
+void Canvas::BuildView() const
+{
+    view_ = *graph_;
+    constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+    const std::size_t     n     = view_.nodes.size();
+    std::unordered_map<std::string_view, const NodeType*> types;
+    for (const NodeType& t : schema_->nodeTypes) types.emplace(t.id, &t);
+    std::unordered_map<std::string_view, std::size_t> at;
+    at.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) at.emplace(view_.nodes[i].id, i);
+    std::vector<char> member(n, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto t = types.find(view_.nodes[i].type);
+        member[i]    = t != types.end() && t->second->shape == NodeShape::Group && t->second->groupMode == GroupMode::Members;
+    }
+    // Each node's member group, a cycle in the parents cut where it closes.
+    std::vector<std::size_t> up(n, kNone), depth(n, 0);
+    for (std::size_t i = 0; i < n; ++i)
+        if (const std::string& p = view_.nodes[i].parent; !p.empty())
+            if (const auto it = at.find(p); it != at.end() && member[it->second] && it->second != i) up[i] = it->second;
+    for (std::size_t i = 0; i < n; ++i) {
+        std::size_t steps = 0;
+        for (std::size_t a = up[i]; a != kNone; a = up[a])
+            if (++steps > n) {
+                up[i] = kNone;
+                steps = 0;
+                break;
+            }
+        depth[i] = steps;
+    }
+    // What a closed group holds is shown as that group: the outermost closed one around it.
+    std::vector<std::size_t> rep(n, kNone);
+    std::vector<int>         count(n, 0);
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t a = up[i]; a != kNone; a = up[a]) {
+            if (collapsed_.contains(view_.nodes[a].id)) rep[i] = a;
+            if (!member[i]) ++count[a];
+        }
+    // Frames: deepest groups first, each around what it holds (a closed one keeps only its header).
+    std::vector<std::vector<std::size_t>> kids(n);
+    std::vector<std::size_t>              groups;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (up[i] != kNone) kids[up[i]].push_back(i);
+        if (member[i]) groups.push_back(i);
+    }
+    std::ranges::stable_sort(groups, std::greater<>{}, [&](std::size_t g) { return depth[g]; });
+    for (const std::size_t g : groups) {
+        Rect& f = view_.nodes[g].frame;
+        if (!kids[g].empty()) {
+            Rect u = view_.nodes[kids[g].front()].frame;
+            for (const std::size_t c : kids[g]) u = Rect::Union(u, view_.nodes[c].frame);
+            f = {u.x - style.groupPadding, u.y - style.groupHeader, u.w + 2 * style.groupPadding, u.h + style.groupHeader + style.groupPadding};
+        }
+        if (collapsed_.contains(view_.nodes[g].id)) f.h = style.groupHeader;
+    }
+    // Wires into a closed group end on it; several that then join the same two ends draw as one, dashed.
+    std::vector<Edge>               edges;
+    std::vector<char>               dashed;
+    std::unordered_set<std::string> seen;
+    edges.reserve(view_.edges.size());
+    for (const Edge& e : view_.edges) {
+        const auto a = at.find(e.from), b = at.find(e.to);
+        if (a == at.end() || b == at.end()) {
+            edges.push_back(e);
+            dashed.push_back(0);
+            continue;
+        }
+        const std::size_t ra = rep[a->second] != kNone ? rep[a->second] : a->second;
+        const std::size_t rb = rep[b->second] != kNone ? rep[b->second] : b->second;
+        if (ra == rb) continue;
+        Edge x       = e;
+        bool remapped = false;
+        if (ra != a->second) x.from = view_.nodes[ra].id, x.fromPort.clear(), remapped = true;
+        if (rb != b->second) x.to = view_.nodes[rb].id, x.toPort.clear(), remapped = true;
+        if (remapped && !seen.insert(x.from + '\x1f' + x.fromPort + '\x1f' + x.to + '\x1f' + x.toPort).second) continue;
+        edges.push_back(std::move(x));
+        dashed.push_back(remapped ? 1 : 0);
+    }
+    // Leave out what closed groups hold.
+    std::vector<Node> shown;
+    count_.clear();
+    shown.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+        if (rep[i] == kNone) {
+            shown.push_back(std::move(view_.nodes[i]));
+            count_.push_back(count[i]);
+        }
+    view_.nodes = std::move(shown);
+    view_.edges = std::move(edges);
+    dashed_     = std::move(dashed);
+
+    // For FitView: the open groups of the view, deepest first, and what each shows.
+    std::unordered_map<std::string_view, std::size_t> shownAt;
+    for (std::size_t i = 0; i < view_.nodes.size(); ++i) shownAt.emplace(view_.nodes[i].id, i);
+    viewKids_.assign(view_.nodes.size(), {});
+    viewUp_.assign(view_.nodes.size(), kNone);
+    fitOrder_.clear();
+    std::vector<std::size_t> shownDepth(view_.nodes.size(), 0);
+    for (std::size_t i = 0; i < view_.nodes.size(); ++i) {
+        const std::size_t full = at.at(view_.nodes[i].id);
+        shownDepth[i]          = depth[full];
+        if (up[full] != kNone) {
+            viewUp_[i] = shownAt.at(view_.nodes[up[full]].id);
+            viewKids_[viewUp_[i]].push_back(i);
+        }
+        if (member[full] && !collapsed_.contains(view_.nodes[i].id)) fitOrder_.push_back(i);
+    }
+    std::ranges::stable_sort(fitOrder_, std::greater<>{}, [&](std::size_t g) { return shownDepth[g]; });
+}
+
+void Canvas::FitView() const
+{
+    for (const std::size_t g : fitOrder_) {
+        if (viewKids_[g].empty()) continue;
+        Rect u = view_.nodes[viewKids_[g].front()].frame;
+        for (const std::size_t c : viewKids_[g]) u = Rect::Union(u, view_.nodes[c].frame);
+        view_.nodes[g].frame = {u.x - style.groupPadding, u.y - style.groupHeader, u.w + 2 * style.groupPadding,
+                                u.h + style.groupHeader + style.groupPadding};
+    }
 }
 
 void Canvas::Sync() const
@@ -753,7 +936,7 @@ void Canvas::Sync() const
     // With a backend, a slow live reroute leaves the settled wires alone and patches only the dragged nodes' wires.
     const bool     patch = router && dragging && backendMs_ > kLiveRouteMs;
     // A large graph without one does the same with the built-in router: only the dragged nodes' wires move.
-    const bool     local = !router && dragging && graph_->nodes.size() > kLargeGraph && wiresValid_;
+    const bool     local = !router && dragging && graph_->nodes.size() > kLargeGraph && wiresValid_ && synced_ == graph_;
     const bool     plain = (!router || patch) && dragging && routeMs_ > kLiveRouteMs && !local;
     RoutingOptions o     = routing;
     if (plain) o.avoidNodes = false;
@@ -762,15 +945,15 @@ void Canvas::Sync() const
     std::size_t optionsKey = Mix(reinterpret_cast<std::uintptr_t>(router.get()),
                                  (o.avoidNodes ? 1u : 0u) | (o.spreadPorts ? 2u : 0u));
     for (float f : {o.clearance, o.bendCost, o.shareCost, o.crossCost, o.laneSpacing, o.cornerRadius, o.curveRadius,
-                    o.card.padding, o.card.titleSize, o.card.fontSize, o.card.groupHeader})
+                    o.card.padding, o.card.titleSize, o.card.fontSize, o.card.groupHeader, style.groupPadding})
         optionsKey = Mix(optionsKey, Bits(f));
 
     const auto  hs  = HashText;
     std::size_t key = Mix(reinterpret_cast<std::uintptr_t>(schema_), (plain ? 1u : 0u) | (patch ? 2u : 0u) | (local ? 4u : 0u));
     key = Mix(key, reinterpret_cast<std::uintptr_t>(graph_));
-    key = Mix(Mix(key, optionsKey), static_cast<std::size_t>(schema_->revision));
+    key = Mix(Mix(Mix(key, optionsKey), static_cast<std::size_t>(schema_->revision)), viewRev_);
     for (const Node& n : graph_->nodes) {
-        key = Mix(Mix(key, hs(n.id)), hs(n.type));
+        key = Mix(Mix(Mix(key, hs(n.id)), hs(n.type)), n.parent.empty() ? 0 : hs(n.parent));
         for (float f : {n.frame.x, n.frame.y, n.frame.w, n.frame.h}) key = Mix(key, Bits(f));
         for (const PortDef& p : n.ports)
             key = Mix(Mix(key, hs(p.id)), static_cast<std::size_t>(p.side) * 8 + static_cast<std::size_t>(p.dir) * 2 + (p.onHeader ? 1 : 0));
@@ -786,45 +969,46 @@ void Canvas::Sync() const
         return;
     }
 
+    std::unordered_map<std::string_view, const NodeType*> types;
+    types.reserve(schema_->nodeTypes.size());
+    for (const NodeType& t : schema_->nodeTypes) types.emplace(t.id, &t);
+
     const auto start   = std::chrono::steady_clock::now();
     const auto elapsed = [&] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(); };
-    if (router && !patch) {
-        // A backend's first route with a router or options builds everything; only the reroutes after it time a drag step.
-        const bool incremental = backendKey_ == optionsKey && !routed_.empty();
-        routed_     = router->Route(*graph_, *schema_, o);
-        backendMs_  = incremental ? elapsed() : -1.0;
-        backendKey_ = optionsKey;
-        wires_      = routed_;
-    } else if (patch) {
-        std::unordered_set<std::string_view> moving;
-        for (const auto& [id, frame] : origin_) moving.insert(id);
-        const WirePaths quick = RouteWires(*graph_, *schema_, o);
-        if (!plain) routeMs_ = elapsed();
-        wires_.clear();
-        for (const Edge& e : graph_->edges) {
-            const bool touched = moving.contains(e.from) || moving.contains(e.to);
-            const auto settled = routed_.find(e.id);
-            const auto live    = quick.find(e.id);
-            if (!touched && settled != routed_.end()) wires_.emplace(e.id, settled->second);
-            else if (live != quick.end()) wires_.emplace(e.id, live->second);
-        }
-    } else if (local) {
-        // Only the wires of the dragged nodes reroute, among the nodes they join; the rest keep their settled paths.
+    if (local) {
+        // Only the wires of the dragged nodes (and of the open groups around them, which grow with them) reroute, among
+        // the nodes they join; the rest keep their settled paths.
         std::unordered_set<std::string_view> moving, joined;
         for (const auto& [id, frame] : origin_) moving.insert(id);
+        bool rebuilt = false;
+        if (useView_) {
+            for (const auto& [id, frame] : origin_) {
+                const auto it = index_.find(id);
+                const Node* real = graph_->FindNode(id);
+                if (it == index_.end() || !real) rebuilt = true;
+                else view_.nodes[it->second].frame = real->frame;
+            }
+            if (rebuilt) BuildView();   // a closed group moved with what it holds: start over
+            else FitView();
+            if (!rebuilt)
+                for (const auto& [id, frame] : origin_)
+                    if (const auto it = index_.find(id); it != index_.end())
+                        for (std::size_t a = viewUp_[it->second]; a != static_cast<std::size_t>(-1); a = viewUp_[a]) moving.insert(view_.nodes[a].id);
+        }
+        const Graph&             shown = Shown();
         Graph                    sub;
         std::vector<std::size_t> touched;
-        for (std::size_t i = 0; i < graph_->edges.size(); ++i)
-            if (const Edge& e = graph_->edges[i]; moving.contains(e.from) || moving.contains(e.to)) {
+        for (std::size_t i = 0; i < shown.edges.size(); ++i)
+            if (const Edge& e = shown.edges[i]; moving.contains(e.from) || moving.contains(e.to)) {
                 touched.push_back(i);
                 sub.edges.push_back(e);
                 joined.insert(e.from);
                 joined.insert(e.to);
             }
-        for (const Node& n : graph_->nodes)
+        for (const Node& n : shown.nodes)
             if (joined.contains(n.id)) sub.nodes.push_back(n);
         for (auto& [id, path] : RouteWires(sub, *schema_, o)) wires_[id] = std::move(path);
-        if (paths_.size() == graph_->edges.size()) {
+        if (!rebuilt && paths_.size() == shown.edges.size()) {
             // A drag changes no node or edge, only frames: the tables keep their shape, and only the touched wires'
             // paths and bounds change.
             for (const std::size_t i : touched) SetPath(i);
@@ -834,33 +1018,68 @@ void Canvas::Sync() const
             return;
         }
     } else {
-        wires_ = RouteWires(*graph_, *schema_, o);
-        if (!plain) routeMs_ = elapsed();
+        useView_ = false;
+        for (const Node& n : graph_->nodes)
+            if (const auto t = types.find(n.type); t != types.end() && t->second->groupMode == GroupMode::Members && t->second->shape == NodeShape::Group) {
+                useView_ = true;
+                break;
+            }
+        if (useView_) BuildView();
+        else view_ = {};
+        const Graph& shown = Shown();
+        if (router && !patch) {
+            // A backend's first route with a router or options builds everything; only the reroutes after it time a drag step.
+            const bool incremental = backendKey_ == optionsKey && !routed_.empty();
+            routed_     = router->Route(shown, *schema_, o);
+            backendMs_  = incremental ? elapsed() : -1.0;
+            backendKey_ = optionsKey;
+            wires_      = routed_;
+        } else if (patch) {
+            std::unordered_set<std::string_view> moving;
+            for (const auto& [id, frame] : origin_) moving.insert(id);
+            const WirePaths quick = RouteWires(shown, *schema_, o);
+            if (!plain) routeMs_ = elapsed();
+            wires_.clear();
+            for (const Edge& e : shown.edges) {
+                const bool touched = moving.contains(e.from) || moving.contains(e.to);
+                const auto settled = routed_.find(e.id);
+                const auto live    = quick.find(e.id);
+                if (!touched && settled != routed_.end()) wires_.emplace(e.id, settled->second);
+                else if (live != quick.end()) wires_.emplace(e.id, live->second);
+            }
+        } else {
+            wires_ = RouteWires(shown, *schema_, o);
+            if (!plain) routeMs_ = elapsed();
+        }
     }
-    wiresKey_   = key;
-    wiresValid_ = true;
+    wiresKey_    = key;
+    wiresValid_  = true;
     synced_      = graph_;
     syncedEdits_ = edits_;
+    syncedNodes_ = graph_->nodes.size();
+    syncedEdges_ = graph_->edges.size();
 
-    // Per node and per edge, so a frame needs no lookups by id.
-    std::unordered_map<std::string_view, const NodeType*> types;
-    types.reserve(schema_->nodeTypes.size());
-    for (const NodeType& t : schema_->nodeTypes) types.emplace(t.id, &t);
-    const std::size_t nodes = graph_->nodes.size();
+    // Per shown node and edge, so a frame needs no lookups by id.
+    const Graph&      shown = Shown();
+    const std::size_t nodes = shown.nodes.size();
     grouped_.assign(nodes, 0);
     index_.clear();
     index_.reserve(nodes);
     for (std::size_t i = 0; i < nodes; ++i) {
-        const Node& n = graph_->nodes[i];
+        const Node& n = shown.nodes[i];
         const auto  t = types.find(n.type);
         grouped_[i]   = t != types.end() && t->second->shape == NodeShape::Group;
         index_.emplace(n.id, i);
     }
-    paths_.assign(graph_->edges.size(), nullptr);
-    boxes_.assign(graph_->edges.size(), Rect{});
+    if (!useView_) {
+        dashed_.assign(shown.edges.size(), 0);
+        count_.assign(nodes, 0);
+    }
+    paths_.assign(shown.edges.size(), nullptr);
+    boxes_.assign(shown.edges.size(), Rect{});
     wiredPorts_.clear();
-    for (std::size_t i = 0; i < graph_->edges.size(); ++i) {
-        const Edge& e = graph_->edges[i];
+    for (std::size_t i = 0; i < shown.edges.size(); ++i) {
+        const Edge& e = shown.edges[i];
         if (!e.fromPort.empty()) wiredPorts_.insert(PortKey(e.from, e.fromPort));
         if (!e.toPort.empty()) wiredPorts_.insert(PortKey(e.to, e.toPort));
         SetPath(i);
@@ -870,7 +1089,7 @@ void Canvas::Sync() const
 void Canvas::SetPath(std::size_t i) const
 {
     paths_[i] = nullptr;
-    const auto w = wires_.find(graph_->edges[i].id);
+    const auto w = wires_.find(Shown().edges[i].id);
     if (w == wires_.end() || w->second.size() < 2) return;
     paths_[i] = &w->second;
     Vec2 lo = w->second.front(), hi = lo;
@@ -913,6 +1132,17 @@ bool Canvas::PointerDown(Vec2 at, Button button, Modifiers mods)
         return true;
     case HitKind::Row:
     case HitKind::Node: {
+        pressed_ = hit.id;
+        // The start of a member group's header is its arrow: a press there opens or closes it.
+        if (const Node* g = ShownNode(hit.id); g && hit.kind == HitKind::Node && IsMemberGroup(*g, *schema_)) {
+            const Rect  r    = camera.ToScreen(g->frame);
+            const float head = style.groupHeader * camera.zoom;
+            if (at.y <= r.y + head && at.x <= r.x + head) {
+                SetCollapsed(hit.id, !IsCollapsed(hit.id));
+                mode_ = Mode::Idle;
+                return true;
+            }
+        }
         if (mods.ctrl || mods.shift) {
             NodeSet next = selNodes_;
             if (selectKeys == SelectKeys::Toggle) {
@@ -965,6 +1195,11 @@ void Canvas::StartMove()
                 if (!selNodes_.contains(m)) carried_.insert(std::move(m));
     for (const Node& n : graph_->nodes)
         if (selNodes_.contains(n.id) || carried_.contains(n.id)) origin_.emplace_back(n.id, n.frame);
+    // The member groups a drop may join, as they are now: a group grows with a member dragged inside it.
+    Sync();
+    dropTargets_.clear();
+    for (const Node& n : Shown().nodes)
+        if (IsMemberGroup(n, *schema_) && !selNodes_.contains(n.id) && !carried_.contains(n.id)) dropTargets_.emplace_back(n.id, n.frame);
 }
 
 bool Canvas::PointerMove(Vec2 at)
@@ -1057,7 +1292,26 @@ bool Canvas::PointerUp(Vec2 at, Button)
                 if (const Node* n = graph_->FindNode(id); n && IsGroup(*n, *schema_))
                     for (const std::string& m : GroupMembers(*graph_, *schema_, id)) roots.erase(m);
             Settle(roots, moving);
+            if (useView_) {
+                // Dropped on a member group, a node joins the innermost one under the pointer; dropped on none, it
+                // leaves its own.
+                const Vec2                                 w      = camera.ToWorld(at);
+                const std::pair<std::string, Rect>*        target = nullptr;
+                for (const auto& t : dropTargets_)
+                    if (t.second.Contains(w) && (!target || t.second.Area() < target->second.Area())) target = &t;
+                const std::string parent = target ? target->first : std::string{};
+                for (const std::string& id : roots)
+                    if (Node* n = graph_->FindNode(id); n && n->parent != parent && n->id != parent) n->parent = parent;
+            }
             Changed(Intent{"Move", MovedFrames()});
+        } else if (followAliases) {
+            // A click on an alias goes to the original.
+            if (const Node* n = graph_->FindNode(pressed_); n && !n->aliasOf.empty() && graph_->FindNode(n->aliasOf)) {
+                const std::string original = n->aliasOf;
+                SelectNodes({original});
+                Reveal(original);
+                EnsureVisible(original);
+            }
         }
         carried_.clear();
         return true;
@@ -1096,7 +1350,7 @@ DrawList Canvas::Draw() const { return Render(camera, viewport_, true); }
 
 DrawList Canvas::DrawAll(float zoom, float margin) const
 {
-    const Rect b = graph_->Bounds();
+    const Rect b = (Sync(), Shown().Bounds());
     Camera     cam;
     cam.zoom = zoom;
     cam.pan  = {margin - b.x * zoom, margin - b.y * zoom};
@@ -1153,8 +1407,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
 
     // Groups, under everything else: outer ones first, so a nested group sits on its parent.
     std::vector<const Node*> groups;
-    for (std::size_t i = 0; i < graph_->nodes.size(); ++i)
-        if (grouped_[i]) groups.push_back(&graph_->nodes[i]);
+    for (std::size_t i = 0; i < Shown().nodes.size(); ++i)
+        if (grouped_[i]) groups.push_back(&Shown().nodes[i]);
     std::stable_sort(groups.begin(), groups.end(), [](const Node* a, const Node* b) { return a->frame.Area() > b->frame.Area(); });
     for (const Node* g : groups) {
         const NodeType& t   = TypeOf(*g);
@@ -1173,7 +1427,9 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         const float fs = s.fontSize * z;
         if (fs < 4.f) continue;
         const std::string& named = t.titleField.empty() ? std::string{} : g->Field(t.titleField);
-        const std::string  title = named.empty() ? "Untitled " + t.label : named;
+        std::string        title = named.empty() ? "Untitled " + t.label : named;
+        if (t.groupMode == GroupMode::Members) title = (IsCollapsed(g->id) ? "▸ " : "▾ ") + title;   // its arrow
+        if (t.showCount) title += " (" + std::to_string(count_[static_cast<std::size_t>(g - Shown().nodes.data())]) + ")";
         std::string        detail;
         for (const FieldDef& f : t.fields) {
             const std::string& v = g->Field(f.id);
@@ -1194,8 +1450,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
     std::vector<DrawCmd> labels;
     const float      arrow = std::clamp(9.f * z, 5.f, 12.f);
     const Rect screenArea{-20.f, -20.f, viewport.x + 40.f, viewport.y + 40.f};
-    for (std::size_t i = 0; i < graph_->edges.size(); ++i) {
-        const Edge& e = graph_->edges[i];
+    for (std::size_t i = 0; i < Shown().edges.size(); ++i) {
+        const Edge& e = Shown().edges[i];
         if (!paths_[i] || !cam.ToScreen(boxes_[i]).Intersects(screenArea)) continue;   // off screen
         const std::vector<Vec2>& wire = *paths_[i];
         static const EdgeType kPlain{};
@@ -1208,7 +1464,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                 if (const PortType* pt = schema_->FindPortType(PortTypeOf(*graph_, *schema_, *from, e.fromPort))) wireColor = pt->color;
         const Color     color = sel ? s.selection : wireColor;
         const auto      path  = ToScreen(cam, wire);
-        c.push_back(Polyline{path, color, sel ? 2.5f : 1.5f, type.dashed});
+        c.push_back(Polyline{path, color, sel ? 2.5f : 1.5f, type.dashed || dashed_[i]});   // dashed: into a closed group
         if (type.arrow) c.push_back(Arrowhead(path, arrow, color));
         if (!e.label.empty() && s.fontSize * z >= 6.f) {
             const Vec2  mid = Midpoint(path);
@@ -1221,8 +1477,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
 
     // A connection being drawn.
     if (chrome && mode_ == Mode::Connecting)
-        if (const Node* from = graph_->FindNode(active_)) {
-            const Node* to = connectTo_.empty() ? nullptr : graph_->FindNode(connectTo_);
+        if (const Node* from = Shown().FindNode(active_)) {
+            const Node* to = connectTo_.empty() ? nullptr : Shown().FindNode(connectTo_);
             // Each end is its port's pin when it has one, else the side of the node facing the other end.
             auto pinOf = [&](const Node& n, const std::string& port) -> std::optional<Anchor> {
                 if (port.empty()) return std::nullopt;
@@ -1382,14 +1638,17 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         }
         }   // card / note
 
+        // An alias draws dimmed, with a dashed outline.
+        if (!n.aliasOf.empty())
+            c.push_back(FillRect{r, Color{s.background.r, s.background.g, s.background.b, 120}, s.muted, 1.f, s.corner * z, true});
         drawPins(n, cam);
         if (sel || hov) drawHandles(n, r, sel);
     };
-    for (std::size_t i = 0; i < graph_->nodes.size(); ++i)
-        if (!grouped_[i] && (!chrome || !selNodes_.contains(graph_->nodes[i].id))) drawNode(graph_->nodes[i]);
+    for (std::size_t i = 0; i < Shown().nodes.size(); ++i)
+        if (!grouped_[i] && (!chrome || !selNodes_.contains(Shown().nodes[i].id))) drawNode(Shown().nodes[i]);
     if (chrome)
         for (const std::string& id : selNodes_)
-            if (const auto it = index_.find(id); it != index_.end() && !grouped_[it->second]) drawNode(graph_->nodes[it->second]);
+            if (const auto it = index_.find(id); it != index_.end() && !grouped_[it->second]) drawNode(Shown().nodes[it->second]);
     // A group's handles go over what it holds, or its grip could hide under a member.
     if (chrome)
         for (const Node* g : groups) {
