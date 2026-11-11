@@ -1,8 +1,10 @@
 #include <grapher/Layout.h>
 
 #include <grapher/Groups.h>
+#include <grapher/Ports.h>
 
 #include <algorithm>
+#include <array>
 #include <deque>
 #include <limits>
 #include <unordered_map>
@@ -221,12 +223,14 @@ std::vector<Vec2> LayoutColumns(const std::vector<Vec2>& sizes, const std::vecto
 namespace {
 
 /// @brief LayoutGraph's working state: the member-group tree as indices, and each item's place relative to its parent.
+///        An item is a node docked to nothing (in its group) with its whole dock cluster: what is docked to it, at any
+///        depth, placed by the dock rules around it.
 class GraphLayout {
 public:
     GraphLayout(const Graph& graph, const Schema& schema, const std::set<std::string, std::less<>>& keep,
                 const std::set<std::string, std::less<>>& collapsed, const LayoutOptions& o)
-        : g_(graph), o_(o), n_(graph.nodes.size()), parent_(n_, kTop), children_(n_ + 1), kept_(n_, 0), open_(n_, 0),
-          group_(n_, 0), size_(n_), rel_(n_)
+        : g_(graph), s_(schema), o_(o), n_(graph.nodes.size()), parent_(n_, kTop), children_(n_ + 1), kept_(n_, 0), open_(n_, 0),
+          group_(n_, 0), size_(n_), rel_(n_), dockUp_(n_, kTop), span_(n_), offset_(n_), visiting_(n_, 0)
     {
         std::unordered_map<std::string_view, std::size_t> index;
         for (std::size_t i = 0; i < n_; ++i) index.emplace(graph.nodes[i].id, i);
@@ -241,9 +245,25 @@ public:
             const auto p = graph.nodes[i].parent.empty() ? index.end() : index.find(graph.nodes[i].parent);
             if (p != index.end() && group_[p->second] && p->second != i && !Above(i, p->second, index)) parent_[i] = p->second;
         }
+        // Docks between two nodes of one group make clusters; a dock across groups, or round a cycle, is left out.
+        for (std::size_t i = 0; i < n_; ++i) {
+            const Dock& d = graph.nodes[i].dock;
+            if (d.parent.empty()) continue;
+            const auto p = index.find(d.parent);
+            if (p == index.end() || p->second == i || parent_[p->second] != parent_[i]) continue;
+            bool cycle = false;
+            for (std::size_t up = p->second; up != kTop && !cycle; up = dockUp_[up]) cycle = up == i;
+            if (cycle) continue;
+            dockUp_[i] = p->second;
+            const PortSide side = d.side == PortSide::Auto ? PortSide::Bottom : d.side;
+            if (!d.row.empty() && (side == PortSide::Left || side == PortSide::Right)) beside_[p->second].push_back(i);
+            else sides_[p->second][SlotOf(side)].push_back(i);
+        }
+        for (auto& [parent, lists] : sides_)
+            for (auto& list : lists) std::ranges::stable_sort(list, {}, [&](std::size_t i) { return g_.nodes[i].dock.order; });
         for (std::size_t i = 0; i < n_; ++i) children_[Slot(parent_[i])].push_back(i);
 
-        // Each edge counts between the two children of the lowest group holding both ends.
+        // Each edge counts between the two items of the lowest group holding both ends (a docked end counts as its cluster).
         for (const Edge& e : graph.edges) {
             const auto a = index.find(e.from), b = index.find(e.to);
             if (a == index.end() || b == index.end() || a->second == b->second) continue;
@@ -252,8 +272,8 @@ public:
             std::size_t ka = chainA.size(), kb = chainB.size();
             while (ka > 0 && kb > 0 && chainA[ka - 1] == chainB[kb - 1]) --ka, --kb;
             if (ka == 0 || kb == 0) continue;   // one end holds the other
-            const std::size_t ca = chainA[ka - 1], cb = chainB[kb - 1];
-            wires_[Slot(parent_[ca])].emplace_back(ca, cb);
+            const std::size_t ca = RootOf(chainA[ka - 1]), cb = RootOf(chainB[kb - 1]);
+            if (ca != cb) wires_[Slot(parent_[ca])].emplace_back(ca, cb);
         }
     }
 
@@ -271,6 +291,16 @@ private:
     static constexpr std::size_t kTop = static_cast<std::size_t>(-1);
 
     [[nodiscard]] std::size_t Slot(std::size_t parent) const { return parent == kTop ? n_ : parent; }
+    [[nodiscard]] static std::size_t SlotOf(PortSide side)
+    {
+        return side == PortSide::Bottom ? 0 : side == PortSide::Top ? 1 : side == PortSide::Right ? 2 : 3;
+    }
+    /// @return the node at the top of the cluster `i` is docked in (itself when docked to nothing)
+    [[nodiscard]] std::size_t RootOf(std::size_t i) const
+    {
+        while (dockUp_[i] != kTop) i = dockUp_[i];
+        return i;
+    }
 
     /// @brief Whether `node` is (an ancestor of) `group` by the parents set so far: a parent cycle is cut there.
     bool Above(std::size_t node, std::size_t group, const std::unordered_map<std::string_view, std::size_t>& index) const
@@ -293,11 +323,95 @@ private:
         return c;
     }
 
-    /// @brief Each item's size and its place relative to its parent's content corner, deepest first.
+    /// @brief The cluster of node `i` (itself and what is docked to it, at any depth) relative to its own corner, by the
+    ///        canvas's dock rules; fills `offset_` for each docked node, from its dock parent's corner.
+    Rect Cluster(std::size_t i)
+    {
+        constexpr std::array kSides{PortSide::Bottom, PortSide::Top, PortSide::Right, PortSide::Left};
+        visiting_[i] = 1;
+        const Rect own{0, 0, size_[i].x, size_[i].y};
+        Rect       span = own;
+        if (const auto it = sides_.find(i); it != sides_.end())
+            for (const PortSide side : kSides) {
+                float along = side == PortSide::Bottom ? own.Bottom() + o_.dockGap : side == PortSide::Top ? -o_.dockGap : 0.f;
+                for (const std::size_t c : it->second[SlotOf(side)]) {
+                    if (visiting_[c]) continue;
+                    const Rect r = Cluster(c);
+                    Vec2       off;
+                    switch (side) {
+                    case PortSide::Bottom:
+                        if (g_.nodes[c].dock.flush) along -= o_.dockGap;
+                        off = {0, along - r.y};
+                        along += r.h + o_.dockGap;
+                        break;
+                    case PortSide::Top:
+                        off = {0, along - r.Bottom()};
+                        along -= r.h + o_.dockGap;
+                        break;
+                    case PortSide::Right:
+                        off = {own.Right() + o_.dockSideGap - r.x, along - r.y};
+                        along += r.h + o_.dockGap;
+                        break;
+                    default:
+                        off = {own.x - o_.dockSideGap - r.Right(), along - r.y};
+                        along += r.h + o_.dockGap;
+                        break;
+                    }
+                    offset_[c] = off;
+                    span       = Rect::Union(span, Rect{r.x + off.x, r.y + off.y, r.w, r.h});
+                }
+            }
+        // Beside a row: level with its line, further out for each one already there.
+        if (const auto it = beside_.find(i); it != beside_.end()) {
+            float right = own.Right() + o_.dockSideGap, left = own.x - o_.dockSideGap;
+            for (const std::size_t c : it->second) {
+                if (visiting_[c]) continue;
+                const Rect  r      = Cluster(c);
+                const Dock& d      = g_.nodes[c].dock;
+                const Node& parent = g_.nodes[i];
+                float       middle = own.h * 0.5f;
+                for (std::size_t k = 0; k < parent.rows.size(); ++k)
+                    if (parent.rows[k].id == d.row) {
+                        const Rect line = RowRect(parent, s_, o_.metrics, k, own);
+                        middle          = line.y + line.h * 0.5f;
+                    }
+                const float y = middle - size_[c].y * 0.5f;
+                Vec2        off;
+                if ((d.side == PortSide::Auto ? PortSide::Bottom : d.side) == PortSide::Right) {
+                    off = {right - r.x, y};
+                    right += r.w + o_.dockSideGap;
+                } else {
+                    off = {left - r.Right(), y};
+                    left -= r.w + o_.dockSideGap;
+                }
+                offset_[c] = off;
+                span       = Rect::Union(span, Rect{r.x + off.x, r.y + off.y, r.w, r.h});
+            }
+        }
+        visiting_[i] = 0;
+        return span;
+    }
+
+    /// @return whether `i`'s cluster holds an open group, which pushes its siblings clear of it
+    [[nodiscard]] bool Opens(std::size_t i) const
+    {
+        if (open_[i]) return true;
+        if (const auto it = sides_.find(i); it != sides_.end())
+            for (const auto& list : it->second)
+                for (const std::size_t c : list)
+                    if (dockUp_[c] == i && Opens(c)) return true;
+        if (const auto it = beside_.find(i); it != beside_.end())
+            for (const std::size_t c : it->second)
+                if (dockUp_[c] == i && Opens(c)) return true;
+        return false;
+    }
+
+    /// @brief Each item's size and its place relative to its parent's content corner, deepest first. An item's size is its
+    ///        cluster's, and its place is the cluster's corner (`span_` says where the node sits in it).
     Vec2 Measure(std::size_t g)
     {
-        const std::vector<std::size_t>& kids = children_[Slot(g)];
-        for (const std::size_t c : kids) {
+        const std::vector<std::size_t>& all = children_[Slot(g)];
+        for (const std::size_t c : all) {
             if (!group_[c]) {
                 size_[c] = {g_.nodes[c].frame.w, g_.nodes[c].frame.h};
                 continue;
@@ -305,14 +419,22 @@ private:
             const Vec2 content = Measure(c);
             size_[c] = {std::max(content.x + 2 * o_.padding, 120.f), open_[c] ? content.y + o_.header + o_.padding : o_.header};
         }
+        std::vector<std::size_t> kids;   // the items: what is docked to nothing here
+        for (const std::size_t c : all)
+            if (dockUp_[c] == kTop) kids.push_back(c);
         if (kids.empty()) return {};
+        std::unordered_map<std::size_t, Vec2> item;   // an item's cluster size
+        for (const std::size_t c : kids) {
+            span_[c] = Cluster(c);
+            item[c]  = {span_[c].w, span_[c].h};
+        }
 
         // Columns for what the layout places; a kept item stays where it is, relative to its parent's content corner.
         std::unordered_map<std::size_t, int> local;
         std::vector<Vec2>                   sizes;
         for (const std::size_t c : kids) {
             local.emplace(c, static_cast<int>(sizes.size()));
-            sizes.push_back(size_[c]);
+            sizes.push_back(item.at(c));
         }
         std::vector<std::pair<int, int>> edges;
         for (const auto& [a, b] : wires_[Slot(g)]) edges.emplace_back(local.at(a), local.at(b));
@@ -321,8 +443,8 @@ private:
         std::vector<Rect> keptRects;
         for (const std::size_t c : kids)
             if (kept_[c]) {
-                rel_[c] = Vec2{g_.nodes[c].frame.x, g_.nodes[c].frame.y} - corner;
-                keptRects.push_back({rel_[c].x, rel_[c].y, size_[c].x, size_[c].y});
+                rel_[c] = Vec2{g_.nodes[c].frame.x + span_[c].x, g_.nodes[c].frame.y + span_[c].y} - corner;
+                keptRects.push_back({rel_[c].x, rel_[c].y, item.at(c).x, item.at(c).y});
             }
         for (const std::size_t c : kids) {
             if (kept_[c]) continue;
@@ -331,19 +453,19 @@ private:
             for (bool moved = true; moved;) {
                 moved = false;
                 for (const Rect& k : keptRects)
-                    if (Rect{rel_[c].x, rel_[c].y, size_[c].x, size_[c].y}.Inflated(o_.gaps.row * 0.5f).Intersects(k)) {
+                    if (Rect{rel_[c].x, rel_[c].y, item.at(c).x, item.at(c).y}.Inflated(o_.gaps.row * 0.5f).Intersects(k)) {
                         rel_[c].y = k.Bottom() + o_.gaps.row;
                         moved     = true;
                     }
             }
         }
-        Push(kids);
+        Push(kids, item);
 
         // The content starts at its own corner (the top level keeps its kept items where they are).
         Vec2 lo{std::numeric_limits<float>::max(), std::numeric_limits<float>::max()}, hi{-lo.x, -lo.y};
         for (const std::size_t c : kids) {
             lo = {std::min(lo.x, rel_[c].x), std::min(lo.y, rel_[c].y)};
-            hi = {std::max(hi.x, rel_[c].x + size_[c].x), std::max(hi.y, rel_[c].y + size_[c].y)};
+            hi = {std::max(hi.x, rel_[c].x + item.at(c).x), std::max(hi.y, rel_[c].y + item.at(c).y)};
         }
         if (g != kTop)
             for (const std::size_t c : kids) rel_[c] = rel_[c] - lo;
@@ -352,16 +474,18 @@ private:
 
     /// @brief An open group pushes the siblings it overlaps: right when they start right of its reach, else down, until
     ///        none overlap (a bounded number of passes, so a crowd can't loop).
-    void Push(const std::vector<std::size_t>& kids)
+    void Push(const std::vector<std::size_t>& kids, const std::unordered_map<std::size_t, Vec2>& item)
     {
+        std::vector<std::size_t> opens;
+        for (const std::size_t g : kids)
+            if (Opens(g)) opens.push_back(g);
         for (std::size_t pass = 0; pass < kids.size() + 1; ++pass) {
             bool moved = false;
-            for (const std::size_t g : kids) {
-                if (!open_[g]) continue;
-                const Rect gr{rel_[g].x, rel_[g].y, size_[g].x, size_[g].y};
+            for (const std::size_t g : opens) {
+                const Rect gr{rel_[g].x, rel_[g].y, item.at(g).x, item.at(g).y};
                 for (const std::size_t c : kids) {
                     if (c == g) continue;
-                    const Rect cr{rel_[c].x, rel_[c].y, size_[c].x, size_[c].y};
+                    const Rect cr{rel_[c].x, rel_[c].y, item.at(c).x, item.at(c).y};
                     if (!cr.Intersects(gr) || cr.x >= gr.Right() || cr.y >= gr.Bottom()) continue;
                     if (cr.x >= gr.x + o_.pushReach) rel_[c].x = gr.Right() + o_.gaps.column;
                     else rel_[c].y = gr.Bottom() + o_.gaps.row;
@@ -372,22 +496,41 @@ private:
         }
     }
 
+    /// @brief Node `i` at `at`, then what it holds (a group) and what is docked to it.
+    void PlaceNode(std::size_t i, Vec2 at, std::vector<std::pair<std::string, Rect>>& out) const
+    {
+        out.emplace_back(g_.nodes[i].id, Rect{at.x, at.y, size_[i].x, size_[i].y});
+        if (group_[i]) Place(i, at + Vec2{o_.padding, o_.header}, out);
+        auto docked = [&](std::size_t c) {
+            if (dockUp_[c] == i) PlaceNode(c, at + offset_[c], out);
+        };
+        if (const auto it = sides_.find(i); it != sides_.end())
+            for (const auto& list : it->second)
+                for (const std::size_t c : list) docked(c);
+        if (const auto it = beside_.find(i); it != beside_.end())
+            for (const std::size_t c : it->second) docked(c);
+    }
+
     void Place(std::size_t g, Vec2 corner, std::vector<std::pair<std::string, Rect>>& out) const
     {
-        for (const std::size_t c : children_[Slot(g)]) {
-            const Vec2 at = corner + rel_[c];
-            out.emplace_back(g_.nodes[c].id, Rect{at.x, at.y, size_[c].x, size_[c].y});
-            if (group_[c]) Place(c, at + Vec2{o_.padding, o_.header}, out);
-        }
+        for (const std::size_t c : children_[Slot(g)])
+            if (dockUp_[c] == kTop) PlaceNode(c, corner + rel_[c] - Vec2{span_[c].x, span_[c].y}, out);
     }
 
     const Graph&                                     g_;
+    const Schema&                                    s_;
     const LayoutOptions&                             o_;
     std::size_t                                      n_;
     std::vector<std::size_t>                         parent_;     ///< kTop at the top level
-    std::vector<std::vector<std::size_t>>            children_;   ///< by Slot(parent)
+    std::vector<std::vector<std::size_t>>            children_;   ///< by Slot(parent), docked nodes included
     std::vector<char>                                kept_, open_, group_;
     std::vector<Vec2>                                size_, rel_;
+    std::vector<std::size_t>                         dockUp_;     ///< the node each is docked to, in its group; kTop = none
+    std::unordered_map<std::size_t, std::array<std::vector<std::size_t>, 4>> sides_;   ///< by parent: bottom, top, right, left
+    std::unordered_map<std::size_t, std::vector<std::size_t>>             beside_;   ///< by parent: what sits beside its rows
+    std::vector<Rect>                                span_;       ///< an item's cluster, relative to the item's own corner
+    std::vector<Vec2>                                offset_;     ///< a docked node's corner, from its dock parent's
+    std::vector<char>                                visiting_;
     Vec2                                             origin_;
     std::unordered_map<std::size_t, std::vector<std::pair<std::size_t, std::size_t>>> wires_;   ///< by Slot(group)
 };

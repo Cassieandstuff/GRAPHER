@@ -7,6 +7,7 @@
 ///        items: O(E log E) per sweep and a fixed number of sweeps.
 
 #include <grapher/Graph.h>
+#include <grapher/Ports.h>
 #include <grapher/Schema.h>
 
 #include <set>
@@ -34,12 +35,17 @@ struct LayoutOptions {
     /// @brief An open group pushes what it would cover: what starts right of this much of its width moves right, the rest
     ///        moves down, until nothing overlaps.
     float      pushReach = 24.f;
+    float      dockGap     = 10.f;   ///< between docked nodes stacked above or below their parent (Style::dockGap)
+    float      dockSideGap = 12.f;   ///< between a parent and a node docked on its left or right (Style::dockSideGap)
+    CardMetrics metrics;             ///< where a card's rows sit, for nodes docked beside a row (MetricsOf the canvas's style)
 };
 
 /// @brief Lay out every node of `graph` that `keep` doesn't name, inside out through its member groups (Node::parent).
 ///        A member group's children (nodes and groups) lay out in columns, wired by the edges between what each holds;
 ///        a collapsed group (in `collapsed`) is one header-high item. Kept nodes stay where they are, and a placed node
 ///        that would overlap one slides down until clear. Then an open group pushes its siblings clear of it.
+///        A node docked to another of its group (Node::dock) is no item of its own: it and its parent lay out as one
+///        cluster, placed by the canvas's dock rules, so the columns leave room for what is docked.
 /// @param origin where the top level starts
 /// @return every node's frame, member groups included (each wraps what it holds, below its header)
 [[nodiscard]] std::vector<std::pair<std::string, Rect>> LayoutGraph(const Graph& graph, const Schema& schema,

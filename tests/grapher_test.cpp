@@ -1462,6 +1462,54 @@ void TestLayoutGraph()
     CHECK(!kept.Inflated(-1.f).Intersects(F1b));
 }
 
+void TestLayoutDocks()
+{
+    // A parent and what is docked to it lay out as one item: the docked nodes by the dock rules, the columns clear of the
+    // whole cluster.
+    const grapher::Schema s = FolderSchema();
+    grapher::Graph        g;
+    grapher::Node         p{"p", "box", {0, 0, 100, 60}};
+    p.rows.push_back({"x", "line"});
+    g.nodes.push_back(p);
+    g.nodes.push_back({"k1", "box", {0, 0, 100, 60}});
+    g.nodes.push_back({"k2", "box", {0, 0, 100, 40}});
+    g.nodes.push_back({"r", "box", {0, 0, 80, 20}});
+    g.nodes.push_back({"q", "box", {0, 0, 100, 60}});
+    g.nodes[1].dock = {"p", grapher::PortSide::Bottom, 0};
+    g.nodes[2].dock = {"p", grapher::PortSide::Bottom, 1};
+    g.nodes[3].dock = {"p", grapher::PortSide::Right, 0, "x"};
+    g.edges.push_back({"e1", "p", "k1", "curve"});
+    g.edges.push_back({"e2", "p", "q", "curve"});
+    g.edges.push_back({"e3", "k2", "q", "curve"});
+    grapher::LayoutOptions o;
+    auto frameOf = [](const std::vector<std::pair<std::string, grapher::Rect>>& f, std::string_view id) {
+        for (const auto& [k, r] : f)
+            if (k == id) return r;
+        return grapher::Rect{};
+    };
+    auto laid = grapher::LayoutGraph(g, s, {}, {}, o);
+    CHECK(laid.size() == 5);
+    const grapher::Rect P = frameOf(laid, "p"), K1 = frameOf(laid, "k1"), K2 = frameOf(laid, "k2"), R = frameOf(laid, "r"),
+                        Q = frameOf(laid, "q");
+    CHECK((K1.x == P.x && K1.y == P.Bottom() + o.dockGap && K2.x == P.x && K2.y == K1.Bottom() + o.dockGap));
+    const grapher::Rect line = grapher::RowRect(g.nodes[0], s, o.metrics, 0, P);
+    CHECK((R.x == P.Right() + o.dockSideGap && std::abs(R.Center().y - line.Center().y) < 0.01f));
+    // q's column starts past the whole cluster, and overlaps none of it.
+    CHECK(Q.x >= R.Right() + o.gaps.column - 0.01f);
+    for (const grapher::Rect& r : {P, K1, K2, R}) CHECK(!Q.Intersects(r));
+
+    // A kept parent stays put and its cluster comes with it; a dock across groups is left out.
+    g.nodes[0].frame = {500, 400, 100, 60};
+    laid             = grapher::LayoutGraph(g, s, {"p"}, {}, o);
+    CHECK(frameOf(laid, "p") == g.nodes[0].frame);
+    CHECK((frameOf(laid, "k1").x == 500.f && frameOf(laid, "k1").y == 400.f + 60.f + o.dockGap));
+    grapher::Graph h = g;
+    h.nodes.push_back({"F", "folder", {0, 0, 200, 200}});
+    h.nodes[2].parent = "F";   // k2 lives in F: its dock to p is left out
+    laid = grapher::LayoutGraph(h, s, {}, {}, o);
+    CHECK((frameOf(laid, "F").Holds(frameOf(laid, "k2")) && frameOf(laid, "k1").y == frameOf(laid, "p").Bottom() + o.dockGap));
+}
+
 void TestFrameGroupsUnchanged()
 {
     // Architect Designer's folders are frame groups: geometric membership, no arrow, no closing, no parents set, and the
@@ -2006,6 +2054,7 @@ int main()
     TestMemberGroups();
     TestAliasesAndHolding();
     TestLayoutGraph();
+    TestLayoutDocks();
     TestFrameGroupsUnchanged();
     TestDocks();
     TestShowWithAndWireStyles();
