@@ -417,7 +417,7 @@ private:
                 continue;
             }
             const Vec2 content = Measure(c);
-            size_[c] = {std::max(content.x + 2 * o_.padding, 120.f), open_[c] ? content.y + o_.header + o_.padding : o_.header};
+            size_[c] = open_[c] ? Vec2{std::max(content.x + 2 * o_.padding, 120.f), content.y + o_.header + o_.padding} : Vec2{o_.closedWidth, o_.header};
         }
         std::vector<std::size_t> kids;   // the items: what is docked to nothing here
         for (const std::size_t c : all)

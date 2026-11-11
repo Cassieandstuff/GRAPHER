@@ -1450,9 +1450,9 @@ void TestLayoutGraph()
     CHECK(a.x < F2.x && cc.x < F1.x);   // c wires into F1's content, a into F2's
     CHECK(std::abs(F2.y + o.header - (b.y - 0.f)) <= o.header + 0.01f && b.x == F2.x + o.padding);
 
-    // A closed group is one header-high item.
+    // A closed group is one header-high item, as wide as its title needs.
     laid = grapher::LayoutGraph(g, s, {}, {"F2"}, o);
-    CHECK(frameOf(laid, "F2").h == o.header);
+    CHECK((frameOf(laid, "F2").h == o.header && frameOf(laid, "F2").w == o.closedWidth));   // its title, not what it holds
 
     // A kept node stays put; one placed by the layout slides clear of it; an open group pushes what it would cover.
     g.nodes[4].frame = {0, 0, 100, 60};
