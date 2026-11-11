@@ -189,6 +189,9 @@ public:
     std::function<void(const Intent&)>          onIntent;
     /// @brief A member group opened or closed (view state, not an edit: a host may keep it, or lay the graph out again).
     std::function<void(std::string_view group, bool collapsed)> onCollapseChanged;
+    /// @brief A press on a full one-wire input lifts its wire: dropped on another input it moves there (a ConnectWire that
+    ///        replaces it), dropped on nothing it comes off (RemoveItems). Off by default: then the press starts a new wire.
+    bool liftWires = false;
     /// @brief A click on an alias (Node::aliasOf) selects the original and shows it, opening the groups around it.
     bool followAliases = true;
     /// @brief Dragging a node docks it to a slot beside a parent it may dock to, or undocks it (Node::dock). Off by
@@ -334,6 +337,10 @@ private:
     /// @brief The port of `to` a wire dragged from `port` of `from` lands on when dropped on `to` as a whole: the first
     ///        that can take it, preferring one with room. Empty when none can.
     [[nodiscard]] std::string LandingPort(const Node& from, std::string_view port, const Node& to) const;
+    /// @brief CanWire, not counting edge `ignoring` (one about to be replaced).
+    [[nodiscard]] bool CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view ignoring) const;
+    /// @brief Connect, with `lifted` (an edge in the hand, or empty) taken out first and named among what it replaces.
+    std::string Wire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view lifted);
     [[nodiscard]] float Snap(float v) const;
     void Changed();
     /// @brief The end of an edit: Direct reports onChanged, Propose hands `intent` to onIntent.
@@ -368,6 +375,7 @@ private:
     std::string connectTo_;
     std::string activePort_;        ///< the port a connect starts from; empty = the node's connect handle
     std::string connectPort_;       ///< the port of connectTo_ it would end on
+    std::string lifted_;            ///< the wire a connect carries off its input (liftWires)
     std::vector<std::pair<std::string, Rect>> origin_;   ///< frames at the start of a move or resize
     NodeSet     carried_;           ///< moving because a selected group holds them, not because they are selected
 

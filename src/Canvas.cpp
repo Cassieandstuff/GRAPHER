@@ -344,6 +344,7 @@ void Canvas::Refresh()
 void Canvas::CancelGesture()
 {
     const Mode mode = std::exchange(mode_, Mode::Idle);
+    lifted_.clear();
     connectTo_.clear();
     connectPort_.clear();
     carried_.clear();
@@ -490,6 +491,11 @@ Ends Ordered(std::string_view a, std::string_view pa, const std::optional<PortDe
 
 bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb) const
 {
+    return CanWire(a, pa, b, pb, {});
+}
+
+bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view ignoring) const
+{
     if (a == b) return false;
     const Node* na = graph_->FindNode(a);
     const Node* nb = graph_->FindNode(b);
@@ -506,13 +512,21 @@ bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b
     }
     const Ends w = Ordered(a, pa, da, b, pb, db);
     for (const Edge& e : graph_->edges)
-        if (e.from == w.from && e.to == w.to && e.fromPort == w.fromPort && e.toPort == w.toPort) return false;
+        if (e.id != ignoring && e.from == w.from && e.to == w.to && e.fromPort == w.fromPort && e.toPort == w.toPort) return false;
     return true;
 }
 
 std::string Canvas::Connect(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb)
 {
-    if (!CanWire(a, pa, b, pb)) return {};
+    return Wire(a, pa, b, pb, {});
+}
+
+std::string Canvas::Wire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view lifted)
+{
+    // The lifted wire doesn't count as the same wire twice: it is about to go.
+    std::optional<Edge> held;
+    if (const Edge* old = lifted.empty() ? nullptr : graph_->FindEdge(lifted)) held = *old;
+    if (!CanWire(a, pa, b, pb, held ? std::string_view(held->id) : std::string_view{})) return {};
     const Node* na = graph_->FindNode(a);
     const Node* nb = graph_->FindNode(b);
     const auto  da = pa.empty() ? std::nullopt : PortOf(*na, *schema_, pa);
@@ -533,9 +547,13 @@ std::string Canvas::Connect(std::string_view a, std::string_view pa, std::string
     const PortType* pt   = outDef ? schema_->FindPortType(PortTypeOf(*graph_, *schema_, *fromNode, e.fromPort)) : nullptr;
     e.type = pt && !pt->edge.empty() && schema_->FindEdge(pt->edge) ? pt->edge : schema_->EdgeFor(fromNode->type, toNode->type);
 
-    Before("Connect");
-    // A port at its limit gives up its oldest wire to the new one.
+    Before(held ? "Move wire" : "Connect");
     std::vector<std::string> replaced;
+    if (held) {
+        std::erase_if(graph_->edges, [&](const Edge& x) { return x.id == held->id; });
+        replaced.push_back(held->id);
+    }
+    // A port at its limit gives up its oldest wire to the new one.
     auto makeRoom = [&](const std::string& node, const std::string& port, const std::optional<PortDef>& def, bool source) {
         if (!def) return;
         const int max = MaxWires(*def);
@@ -556,7 +574,7 @@ std::string Canvas::Connect(std::string_view a, std::string_view pa, std::string
     makeRoom(e.from, e.fromPort, outDef, true);
     makeRoom(e.to, e.toPort, inDef, false);
     graph_->edges.push_back(e);
-    Changed(Intent{"Connect", ConnectWire{e, std::move(replaced)}});
+    Changed(Intent{held ? "Move wire" : "Connect", ConnectWire{e, std::move(replaced)}});
     return e.id;
 }
 
@@ -1497,6 +1515,18 @@ bool Canvas::PointerDown(Vec2 at, Button button, Modifiers mods)
         activePort_ = hit.port;
         connectTo_.clear();
         connectPort_.clear();
+        lifted_.clear();
+        if (liftWires && !hit.port.empty())
+            // A full one-wire input gives its wire up to the hand: the drag carries it from its source.
+            if (const Node* n = graph_->FindNode(hit.id))
+                if (const auto def = PortOf(*n, *schema_, hit.port); def && def->dir == PortDir::In && MaxWires(*def) == 1)
+                    for (const Edge& e : graph_->edges)
+                        if (e.to == hit.id && e.toPort == hit.port) {
+                            lifted_     = e.id;
+                            active_     = e.from;
+                            activePort_ = e.fromPort;
+                            break;
+                        }
         return true;
     case HitKind::Resize:
         if (!selNodes_.contains(hit.id)) SelectNodes({hit.id});
@@ -1619,6 +1649,11 @@ bool Canvas::PointerMove(Vec2 at, Modifiers mods)
         const Hit hit = HitAt(at, true);   // a group's interior is a target too
         connectTo_.clear();
         connectPort_.clear();
+        if (const Edge* held = lifted_.empty() ? nullptr : graph_->FindEdge(lifted_); held && hit.id == held->to && hit.port == held->toPort) {
+            connectTo_   = held->to;   // back where it was lifted from
+            connectPort_ = held->toPort;
+            return true;
+        }
         const Node* from = graph_->FindNode(active_);
         if (!from || hit.kind == HitKind::None || hit.kind == HitKind::Edge || hit.id == active_) return true;
         if (hit.kind == HitKind::Port) {
@@ -1745,7 +1780,18 @@ bool Canvas::PointerUp(Vec2 at, Button)
     case Mode::Connecting: {
         const std::string to     = std::exchange(connectTo_, {});
         const std::string toPort = std::exchange(connectPort_, {});
-        if (!to.empty()) Connect(active_, activePort_, to, toPort);   // one edge per pair of ends (CanWire)
+        const std::string held   = std::exchange(lifted_, {});
+        const Edge*       lifted = held.empty() ? nullptr : graph_->FindEdge(held);
+        if (lifted && to == lifted->to && toPort == lifted->toPort) return true;   // put back where it was
+        if (lifted && to.empty()) {
+            // A lifted wire let go on nothing comes off.
+            Before("Disconnect");
+            std::erase_if(graph_->edges, [&](const Edge& x) { return x.id == held; });
+            if (selEdge_ == held) selEdge_.clear();
+            Changed(Intent{"Disconnect", RemoveItems{{}, {held}}});
+            return true;
+        }
+        if (!to.empty()) Wire(active_, activePort_, to, toPort, held);   // one edge per pair of ends (CanWire)
         else if (started_ && onIntent && HitTest(at).kind == HitKind::None)
             onIntent(Intent{"Connect", ConnectToNothing{active_, activePort_, camera.ToWorld(at)}});
         return true;
@@ -2004,6 +2050,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
     for (std::size_t i = 0; i < Shown().edges.size(); ++i) {
         const Edge& e = Shown().edges[i];
         if (!paths_[i] || !cam.ToScreen(boxes_[i]).Intersects(screenArea)) continue;   // off screen
+        if (mode_ == Mode::Connecting && !lifted_.empty() && Shown().edges[i].id == lifted_) continue;   // in the hand
         if (const Node* a = NodeById(Shown().edges[i].from), *b = NodeById(Shown().edges[i].to); (a && !Visible(*a)) || (b && !Visible(*b)))
             continue;   // an end shows only with what it belongs to
         const std::vector<Vec2>& wire = *paths_[i];

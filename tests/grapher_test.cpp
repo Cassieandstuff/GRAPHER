@@ -1812,6 +1812,51 @@ void TestMinimapAndSearch()
     CHECK(grapher::Search(h, named, "").hits.empty() && grapher::Search(h, named, "zzz").total == 0);
 }
 
+void TestLiftWires()
+{
+    // A full input lifted: the wire moves to the input it is dropped on, comes off when dropped on nothing, and stays
+    // when put back.
+    const grapher::Schema s = PortSchema();
+    grapher::Graph g;
+    g.nodes.push_back({"v", "value", {0, 0, 160, 80}});
+    g.nodes.push_back({"m", "mix", {400, 0, 200, 120}});
+    g.edges.push_back({"e", "v", "m", "data", "", "out", "a"});
+    grapher::Canvas c(g, s);
+    c.SetViewport({800, 600});
+    c.liftWires = true;
+    int snapshots = 0;
+    c.onBeforeChange = [&](std::string_view) { ++snapshots; };
+    const grapher::Vec2 a = *c.PortScreenPos("m", "a"), b = *c.PortScreenPos("m", "b");
+
+    Drag(c, a, a + grapher::Vec2{-40, 10});
+    Drag(c, a + grapher::Vec2{-40, 10}, a);   // a press off the pin does nothing to the wire
+    c.PointerDown(a, grapher::Button::Left, {});
+    c.PointerMove(a + grapher::Vec2{-30, 0});
+    c.PointerMove(a);
+    c.PointerUp(a, grapher::Button::Left);
+    CHECK(g.edges.size() == 1 && g.edges[0].id == "e" && snapshots == 0);   // put back: nothing changed
+
+    Drag(c, a, b);
+    CHECK(g.edges.size() == 1 && g.edges[0].from == "v" && g.edges[0].fromPort == "out" && g.edges[0].toPort == "b" && snapshots == 1);
+    Drag(c, b, {700, 500});
+    CHECK(g.edges.empty() && snapshots == 2);
+
+    // Off, a press on a full input starts a new wire from it instead.
+    g.edges.push_back({"e", "v", "m", "data", "", "out", "a"});
+    c.liftWires = false;
+    Drag(c, a, b);
+    CHECK(g.edges.size() == 1 && g.edges[0].toPort == "a");   // an input can't wire to an input
+
+    // Proposed, the move names the wire it replaces.
+    c.liftWires = true;
+    c.editMode  = grapher::EditMode::Propose;
+    std::vector<grapher::Intent> intents;
+    c.onIntent = [&](const grapher::Intent& i) { intents.push_back(i); };
+    Drag(c, a, b);
+    const auto* moved = intents.size() == 1 ? std::get_if<grapher::ConnectWire>(&intents[0].change) : nullptr;
+    CHECK(moved && moved->edge.toPort == "b" && moved->replaced == std::vector<std::string>{"e"} && intents[0].label == "Move wire");
+}
+
 } // namespace
 
 int main()
@@ -1855,6 +1900,7 @@ int main()
     TestDial();
     TestHighlights();
     TestMinimapAndSearch();
+    TestLiftWires();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;
