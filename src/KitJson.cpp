@@ -15,7 +15,16 @@ constexpr std::pair<std::string_view, PartKind> kParts[] = {
     {"accent", PartKind::Accent}, {"pins", PartKind::Pins},   {"badge", PartKind::Badge}, {"button", PartKind::Button},
     {"chip", PartKind::Chip},   {"bar", PartKind::Bar},       {"glyph", PartKind::Glyph}, {"image", PartKind::Image},
     {"rim", PartKind::Rim},     {"stub", PartKind::Stub}};
-constexpr std::string_view kReserved[] = {"pins", "rows", "groups", "edges", "actions"};
+constexpr std::string_view kReserved[] = {"groups", "edges", "actions"};
+constexpr std::string_view kGlyphNames[] = {"circle", "square", "diamond", "arrow"};
+constexpr std::string_view kFills[]      = {"wired", "always", "never"};
+constexpr std::string_view kEditors[]    = {"none", "text", "number", "slider", "toggle", "choice", "color", "path", "reference"};
+constexpr std::string_view kAligns[]     = {"left", "center", "right"};
+
+template <std::size_t N> bool OneOf(const std::optional<std::string>& v, const std::string_view (&names)[N])
+{
+    return !v || std::find(std::begin(names), std::end(names), *v) != std::end(names);
+}
 
 std::string_view PartName(PartKind k)
 {
@@ -132,6 +141,50 @@ public:
         }
     }
 
+    void On(const json::Value& o, std::map<std::string, std::string, std::less<>>& on, const std::string& where)
+    {
+        if (const json::Object* m = Obj(o, "on", where))
+            for (const auto& [gesture, action] : *m) {
+                if (const std::string* a = action.String()) on[gesture] = *a;
+                else Fail(where, "\"on\"." + gesture + " is not an action id");
+            }
+    }
+
+    void PinFields(const json::Value& o, PinSpec& p, const std::string& where)
+    {
+        Str(o, "glyph", p.glyph, where);
+        Num(o, "size", p.size, where);
+        Str(o, "fill", p.fill, where);
+        Str(o, "color", p.color, where);
+        Str(o, "hollow", p.hollow, where);
+        Num(o, "hit", p.hit, where);
+        Bool(o, "label", p.label, where);
+        On(o, p.on, where);
+        if (!OneOf(p.glyph, kGlyphNames)) Fail(where, "\"glyph\" takes circle, square, diamond or arrow");
+        if (!OneOf(p.fill, kFills)) Fail(where, "\"fill\" takes wired, always or never");
+    }
+
+    void RowFields(const json::Value& o, RowSpec& r, const std::string& where)
+    {
+        Str(o, "color", r.color, where);
+        Str(o, "valueColor", r.valueColor, where);
+        Str(o, "prefix", r.prefix, where);
+        Str(o, "suffix", r.suffix, where);
+        Str(o, "align", r.align, where);
+        Str(o, "valueAlign", r.valueAlign, where);
+        Bool(o, "bold", r.bold, where);
+        Bool(o, "italic", r.italic, where);
+        Bool(o, "chip", r.chip, where);
+        Str(o, "editor", r.editor, where);
+        Num(o, "min", r.min, where);
+        Num(o, "max", r.max, where);
+        Num(o, "step", r.step, where);
+        Str(o, "reorder", r.reorder, where);
+        On(o, r.on, where);
+        if (!OneOf(r.align, kAligns) || !OneOf(r.valueAlign, kAligns)) Fail(where, "an alignment takes left, center or right");
+        if (!OneOf(r.editor, kEditors)) Fail(where, "\"editor\" takes none, text, number, slider, toggle, choice, color, path or reference");
+    }
+
     void Metrics(const json::Value& o, MetricsSpec& m, const std::string& where)
     {
         const json::Object* obj = Obj(o, "metrics", where);
@@ -208,6 +261,45 @@ json::Value PartJson(const PartSpec& p)
     return o;
 }
 
+void PutOn(json::Object& o, const std::map<std::string, std::string, std::less<>>& on)
+{
+    if (on.empty()) return;
+    json::Object m;
+    for (const auto& [g, a] : on) m.emplace_back(g, a);
+    o.emplace_back("on", std::move(m));
+}
+
+void PutPin(json::Object& o, const PinSpec& p)
+{
+    PutStr(o, "glyph", p.glyph);
+    PutNum(o, "size", p.size);
+    PutStr(o, "fill", p.fill);
+    PutStr(o, "color", p.color);
+    PutStr(o, "hollow", p.hollow);
+    PutNum(o, "hit", p.hit);
+    PutBool(o, "label", p.label);
+    PutOn(o, p.on);
+}
+
+void PutRow(json::Object& o, const RowSpec& r)
+{
+    PutStr(o, "color", r.color);
+    PutStr(o, "valueColor", r.valueColor);
+    PutStr(o, "prefix", r.prefix);
+    PutStr(o, "suffix", r.suffix);
+    PutStr(o, "align", r.align);
+    PutStr(o, "valueAlign", r.valueAlign);
+    PutBool(o, "bold", r.bold);
+    PutBool(o, "italic", r.italic);
+    PutBool(o, "chip", r.chip);
+    PutStr(o, "editor", r.editor);
+    PutNum(o, "min", r.min);
+    PutNum(o, "max", r.max);
+    PutNum(o, "step", r.step);
+    PutStr(o, "reorder", r.reorder);
+    PutOn(o, r.on);
+}
+
 void PutMetrics(json::Object& o, const MetricsSpec& m)
 {
     json::Object v;
@@ -226,7 +318,8 @@ std::string SelectorText(const Selector& s)
     for (const std::string& t : s.tags) out += "[" + t + "]";
     static constexpr std::pair<std::uint32_t, std::string_view> kStates[] = {
         {StateSelected, "selected"}, {StateHovered, "hovered"}, {StateDimmed, "dimmed"},
-        {StateAlias, "alias"},       {StateCollapsed, "collapsed"}, {StateInGroup, "inGroup"}};
+        {StateAlias, "alias"},       {StateCollapsed, "collapsed"}, {StateInGroup, "inGroup"},
+        {StateWired, "wired"},       {StateUnwired, "unwired"}};
     for (const auto& [bit, name] : kStates)
         if (s.states & bit) out += ":" + std::string(name);
     if (!s.part.empty()) out += " > " + s.part;
@@ -275,6 +368,20 @@ std::optional<Kit> ParseKit(std::string_view text, std::string& error)
             r.Bool(value, "fitWidth", k.fitWidth, where);
             kit.nodes.push_back(std::move(k));
         }
+    if (const json::Object* pins = r.Obj(*doc, "pins", "pins"))
+        for (const auto& [id, value] : *pins) {
+            PinKind k{id, {}};
+            if (!value.Members()) r.Fail("pins." + id, "is not an object");
+            else r.PinFields(value, k.spec, "pins." + id);
+            kit.pins.push_back(std::move(k));
+        }
+    if (const json::Object* rows = r.Obj(*doc, "rows", "rows"))
+        for (const auto& [id, value] : *rows) {
+            RowKind k{id, {}};
+            if (!value.Members()) r.Fail("rows." + id, "is not an object");
+            else r.RowFields(value, k.spec, "rows." + id);
+            kit.rows.push_back(std::move(k));
+        }
     if (const json::Value* rules = doc->Find("rules")) {
         const json::Array* a = rules->Items();
         if (!a) r.Fail("rules", "is not a list");
@@ -288,7 +395,9 @@ std::optional<Kit> ParseKit(std::string_view text, std::string& error)
                 break;
             }
             Rule rule{*sel, {}};
-            r.Fields((*a)[i], rule.patch, where);
+            if (sel->part.starts_with("pin:")) r.PinFields((*a)[i], rule.pin, where);
+            else if (sel->part.starts_with("row:")) r.RowFields((*a)[i], rule.row, where);
+            else r.Fields((*a)[i], rule.patch, where);
             kit.rules.push_back(std::move(rule));
         }
     }
@@ -305,6 +414,20 @@ std::optional<Kit> ParseKit(std::string_view text, std::string& error)
     };
     for (const NodeKind& k : kit.nodes) collect(collect, k.card);
     for (const Rule& rule : kit.rules) collect(collect, rule.patch);
+    auto pinColours = [&](const PinSpec& p) {
+        for (const auto* e : {&p.color, &p.hollow})
+            if (*e) exprs.push_back(**e);
+    };
+    auto rowColours = [&](const RowSpec& r) {
+        for (const auto* e : {&r.color, &r.valueColor})
+            if (*e) exprs.push_back(**e);
+    };
+    for (const PinKind& k : kit.pins) pinColours(k.spec);
+    for (const RowKind& k : kit.rows) rowColours(k.spec);
+    for (const Rule& rule : kit.rules) {
+        pinColours(rule.pin);
+        rowColours(rule.row);
+    }
     for (const auto& [name, value] : kit.tokens) exprs.push_back(value);
     for (const std::string& e : exprs)
         if (!ResolveColor(e, Color{}, kit)) return error = "\"" + e + "\" is no colour (or names a token the kit lacks)", std::nullopt;
@@ -350,12 +473,32 @@ std::string WriteKit(const Kit& kit)
         }
         doc.emplace_back("nodes", std::move(nodes));
     }
+    if (!kit.pins.empty()) {
+        json::Object pins;
+        for (const PinKind& k : kit.pins) {
+            json::Object o;
+            PutPin(o, k.spec);
+            pins.emplace_back(k.id, std::move(o));
+        }
+        doc.emplace_back("pins", std::move(pins));
+    }
+    if (!kit.rows.empty()) {
+        json::Object rows;
+        for (const RowKind& k : kit.rows) {
+            json::Object o;
+            PutRow(o, k.spec);
+            rows.emplace_back(k.id, std::move(o));
+        }
+        doc.emplace_back("rows", std::move(rows));
+    }
     if (!kit.rules.empty()) {
         json::Array rules;
         for (const Rule& rule : kit.rules) {
             json::Object o;
             o.emplace_back("select", SelectorText(rule.select));
-            PutFields(o, rule.patch);
+            if (rule.select.part.starts_with("pin:")) PutPin(o, rule.pin);
+            else if (rule.select.part.starts_with("row:")) PutRow(o, rule.row);
+            else PutFields(o, rule.patch);
             rules.push_back(std::move(o));
         }
         doc.emplace_back("rules", std::move(rules));

@@ -2510,9 +2510,19 @@ void TestLargeGraphKit()
     grapher::Schema s;
     grapher::Kit    kit;
     kit.tokens = {{"body", "#2e3036"}, {"hi", "#5ca0ff"}};
+    s.portTypes = {{"num", "Number", {90, 200, 200}}};
+    kit.pins    = {{"num", {}}};
+    kit.pins[0].spec.glyph = "square";
+    kit.pins[0].spec.size  = 5.f;
+    kit.pins[0].spec.on    = {{"dragToNothing", "createFrom"}};
+    kit.rows               = {{"fact", {}}};
+    kit.rows[0].spec.align      = "right";
+    kit.rows[0].spec.valueColor = "$hi";
+    kit.rows[0].spec.on         = {{"click", "edit"}};
+    kit.rows[0].spec.editor     = "text";
     for (int k = 0; k < 12; ++k) {
         grapher::NodeType t{"card" + std::to_string(k), "Card", {static_cast<std::uint8_t>(40 + k * 15), 90, 160}};
-        t.ports = {{"in", "In"}, {"out", "Out", "", grapher::PortDir::Out}};
+        t.ports = {{"in", "In", "num"}, {"out", "Out", "num", grapher::PortDir::Out}};
         s.nodeTypes.push_back(t);
         grapher::NodeKind kind;
         kind.id               = t.id;
@@ -2547,6 +2557,7 @@ void TestLargeGraphKit()
             g.nodes.push_back({"n" + std::to_string(k), "card" + std::to_string(k % 12), {x * 240.f, y * 140.f, 160.f, 80.f}});
             g.nodes.back().fields = {{"name", "Card"}};
             g.nodes.back().tags   = {"t" + std::to_string(k % 5), "class:C" + std::to_string(k % 7)};
+            g.nodes.back().rows   = {{"r", "speed", "1.5", "fact"}};
             if (x > 0) g.edges.push_back({"e" + std::to_string(k), "n" + std::to_string(k - 1), "n" + std::to_string(k), "data", "", "out", "in"});
         }
     }
@@ -2577,7 +2588,7 @@ void TestLargeGraphKit()
     (void)c.Draw();
     const double dragMs = ms(t0);
     c.PointerUp(grab + grapher::Vec2{30, 15}, grapher::Button::Left);
-    std::printf("  20k graph with a kit: %zu looks resolved (%zu after the hover moved); draw %.2f ms, hit test %.3f ms, drag step %.2f ms\n",
+    std::printf("  20k graph with a kit (pins and rows): %zu looks resolved (%zu after the hover moved); draw %.2f ms, hit test %.3f ms, drag step %.2f ms\n",
                 looks, c.ResolvedLooks(), drawMs, hitMs, dragMs);
     CHECK((looks > 0 && looks <= 12 * 5 * 7 && hits > 0));
 #ifdef NDEBUG
@@ -2585,6 +2596,203 @@ void TestLargeGraphKit()
     CHECK(hitMs <= 0.2);
     CHECK(dragMs <= 8.0);
 #endif
+}
+
+// ── Kits: pins, rows, editors, actions ───────────────────────────────────────
+constexpr const char* kActionKit = R"KIT({
+    "pins": {
+        "num":  { "glyph": "square", "size": 6, "fill": "always", "color": "#ff0000", "hit": 8,
+                  "on": { "click": "pinClick", "dragToNothing": "createFrom" } },
+        "flow": { "fill": "never", "label": false }
+    },
+    "rows": {
+        "fact": { "color": "#a0a2ad", "valueColor": "#96c8ff", "prefix": "• ", "suffix": " s", "align": "right", "chip": true },
+        "num":  { "editor": "number", "min": 0, "max": 10, "on": { "click": "edit" } },
+        "pick": { "editor": "reference", "on": { "doubleClick": "edit" } },
+        "item": { "reorder": "items", "on": { "contextMenu": "itemMenu" } },
+        "adds": { "on": { "click": "addElement" } }
+    },
+    "nodes": {
+        "box": { "on": { "doubleClick": "drill", "click": "cardClick" },
+                 "parts": [ { "part": "header", "on": { "contextMenu": "headerMenu" },
+                              "content": [ { "part": "text", "id": "title", "from": "field:name" } ] },
+                            { "part": "body" } ] }
+    },
+    "rules": [
+        { "select": "box > pin:num", "size": 5 },
+        { "select": "*:wired > pin:num", "color": "#00ff00" },
+        { "select": "box[hot] > row:fact", "valueColor": "#ffffff" }
+    ]
+})KIT";
+
+struct ActionRig {
+    grapher::Schema              s;
+    grapher::Graph               g;
+    grapher::Kit                 kit;
+    std::unique_ptr<grapher::Canvas> c;
+    std::vector<grapher::Intent> intents;
+    ActionRig(grapher::EditMode mode = grapher::EditMode::Propose)
+    {
+        s.portTypes = {{"num", "Number", {90, 200, 200}}, {"flow", "Flow", {200, 200, 90}, grapher::PortGlyph::Diamond}};
+        grapher::NodeType box{"box", "Box", {100, 100, 200}};
+        box.fields = {{"name", "Name"}, {"count", "Count"}, {"target", "Target"}};
+        box.ports  = {{"in", "In", "num", grapher::PortDir::In, grapher::PortSide::Left},
+                      {"out", "Out", "num", grapher::PortDir::Out, grapher::PortSide::Right},
+                      {"fl", "Flow", "flow", grapher::PortDir::Out, grapher::PortSide::Right}};
+        s.nodeTypes.push_back(box);
+        s.edgeTypes.push_back({"data", "data"});
+        grapher::Node a{"a", "box", {0, 0, 260, 280}};
+        a.fields = {{"name", "Alpha"}, {"count", "3"}, {"target", "Speed"}};
+        a.rows   = {{"f", "facts", "1", "fact"}, {"n", "count", "3", "num", "", grapher::RowAction::None, {}, "count"},
+                    {"p", "target", "Speed", "pick", "", grapher::RowAction::None, {}, "target"},
+                    {"i0", "zero", "", "item"}, {"i1", "one", "", "item"}, {"i2", "two", "", "item"}, {"add", "item", "", "adds"}};
+        a.tags   = {"hot"};
+        g.nodes.push_back(a);
+        g.nodes.push_back({"b", "box", {500, 0, 260, 280}});
+        g.nodes[1].fields = {{"name", "Beta"}};
+        g.edges.push_back({"w", "a", "b", "data", "", "out", "in"});
+        std::string error;
+        kit = *grapher::ParseKit(kActionKit, error);
+        c   = std::make_unique<grapher::Canvas>(g, s);
+        c->editMode = mode;
+        c->SetViewport({1200, 700});
+        c->SetKit(&kit);
+        c->onIntent   = [this](const grapher::Intent& i) { intents.push_back(i); };
+        c->choicesFor = [](const grapher::Node&, const grapher::Row&) { return std::vector<std::string>{"Speed", "Direction"}; };
+        c->Frame();
+    }
+    template <class T> const T* Last() const { return intents.empty() ? nullptr : std::get_if<T>(&intents.back().change); }
+    void Click(grapher::Vec2 at)
+    {
+        c->PointerDown(at, grapher::Button::Left, {});
+        c->PointerUp(at, grapher::Button::Left);
+    }
+    grapher::Vec2 Row(std::string_view id) const { return c->RowScreenRect("a", id)->Center(); }
+};
+
+void TestKitPinsAndRows()
+{
+    ActionRig r;
+    // The JSON reads pin and row kinds and their rules, and writes them back the same.
+    std::string error;
+    const auto  back = grapher::ParseKit(grapher::WriteKit(r.kit), error);
+    CHECK((back && *back == r.kit && r.kit.pins.size() == 2 && r.kit.rows.size() == 5 && r.kit.rules[1].select.states == grapher::StateWired));
+    for (const char* bad : {R"({"pins": {"x": {"glyph": "star"}}})", R"({"pins": {"x": {"fill": "half"}}})",
+                            R"({"rows": {"x": {"editor": "knob"}}})", R"({"rows": {"x": {"valueAlign": "up"}}})"}) {
+        error.clear();
+        CHECK((!grapher::ParseKit(bad, error) && !error.empty()));
+    }
+    // Resolved: the kind, then the rules on `pin:` and `row:` (a wired pin in its own colour, a tagged node's row).
+    const grapher::NodeLook& look = r.c->LookOf(r.g.nodes[0]);
+    const auto& num = look.pins.at("num");
+    CHECK((num[0].glyph == grapher::PortGlyph::Square && num[0].size == 5.f && num[0].fill == 1 && num[0].hit == 8.f));
+    CHECK((num[0].color == grapher::Color{255, 0, 0} && num[1].color == grapher::Color{0, 255, 0}));
+    CHECK((look.pins.at("flow")[0].fill == 2 && !look.pins.at("flow")[0].label));
+    const grapher::RowLook& fact = look.rows.at("fact");
+    CHECK((fact.align == 2 && fact.prefix == "• " && fact.suffix == " s" && fact.chip && fact.valueColor == grapher::Color{255, 255, 255}));
+    CHECK((r.c->LookOf(r.g.nodes[1]).rows.at("fact").valueColor == grapher::Color{0x96, 0xc8, 0xff}));   // not tagged
+    // Drawn: the square pin at its size, the hidden port label, the row's prefix, alignment and suffix.
+    const float z    = r.c->camera.zoom;
+    const auto  pin  = r.c->PortScreenPos("a", "in");
+    const auto  list = r.c->Draw();
+    bool square = false, flowLabel = false, factLine = false, factValue = false;
+    for (const auto& cmd : list.cmds) {
+        if (const auto* f = std::get_if<grapher::FillRect>(&cmd); f && pin && std::abs(f->rect.Center().x - pin->x) < 0.01f &&
+                                                                   std::abs(f->rect.w - 10.f * z) < 0.01f && f->fill == grapher::Color{255, 0, 0})
+            square = true;
+        if (const auto* t = std::get_if<grapher::Text>(&cmd)) {
+            flowLabel = flowLabel || t->text == "Flow";
+            factLine  = factLine || (t->text == "• facts" && t->align == grapher::Align::Right);
+            factValue = factValue || (t->text == "1 s" && t->color == grapher::Color{255, 255, 255});
+        }
+    }
+    CHECK((square && !flowLabel && factLine && factValue));
+    // A pin takes a press out to its size plus its hit reach.
+    CHECK(r.c->HitTest(*pin + grapher::Vec2{5.f * z + 7.f, 0}).kind == grapher::HitKind::Port);
+    CHECK(r.c->HitTest(*pin + grapher::Vec2{-(5.f * z + 9.f), 0}).kind != grapher::HitKind::Port);
+}
+
+void TestKitActions()
+{
+    ActionRig r;
+    // A click on a pin runs its binding; on a row, the row's (over the card's); on the body, the card's.
+    r.Click(*r.c->PortScreenPos("a", "in"));
+    const auto* pinClick = r.Last<grapher::InvokeAction>();
+    CHECK((pinClick && pinClick->action == "pinClick" && pinClick->node == "a" && pinClick->port == "in"));
+    r.Click(r.Row("add"));
+    const auto* add = r.Last<grapher::InvokeAction>();
+    CHECK((add && add->action == "addElement" && add->row == "add" && add->part == "body"));
+    const grapher::Rect ra = r.c->ScreenRectOf("a");
+    r.Click({ra.Center().x, ra.Bottom() - 6.f});
+    CHECK((r.Last<grapher::InvokeAction>() && r.Last<grapher::InvokeAction>()->action == "cardClick"));
+    // Double-click: a row bound to edit opens its editor with the host's choices; elsewhere the card drills.
+    CHECK(r.c->DoubleClick(r.Row("p")));
+    const auto edit = r.c->TakeEditRequest();
+    CHECK((edit && edit->editor == "reference" && edit->field == "target" && edit->value == "Speed" && edit->choices.size() == 2));
+    CHECK(!r.c->TakeEditRequest());   // once
+    CHECK((r.c->DoubleClick({ra.Center().x, ra.Bottom() - 6.f}) && r.Last<grapher::InvokeAction>()->action == "drill"));
+    // Context menus: the header's, a row's; the body binds none, so the backend's own menu takes it.
+    CHECK((r.c->ContextMenu({ra.Center().x, ra.y + 8.f}) && r.Last<grapher::InvokeAction>()->action == "headerMenu"));
+    CHECK((r.c->ContextMenu(r.Row("i1")) && r.Last<grapher::InvokeAction>()->action == "itemMenu" && r.Last<grapher::InvokeAction>()->row == "i1"));
+    CHECK(!r.c->ContextMenu({ra.Center().x, ra.Bottom() - 6.f}));
+    // A click on a row bound to edit: a number between its bounds, at its line.
+    const std::size_t before = r.intents.size();
+    r.Click(r.Row("n"));
+    const auto num = r.c->TakeEditRequest();
+    CHECK((num && num->editor == "number" && num->min == 0.f && num->max == 10.f && num->value == "3"));
+    CHECK((num && std::abs(num->at.y - r.c->RowScreenRect("a", "n")->y) < 0.01f && r.intents.size() == before));
+    // Committed, it is one proposed step; the host's graph is untouched until it applies it.
+    CHECK(r.c->CommitEdit("a", "n", "7"));
+    const auto* set = r.Last<grapher::SetValue>();
+    CHECK((set && set->node == "a" && set->row == "n" && set->field == "count" && set->value == "7" && r.g.nodes[0].Field("count") == "3"));
+    r.c->Refresh();
+    // A wire let go on nothing: the pin's binding runs; a pin without one tells the host, with its type.
+    auto dragOff = [&](std::string_view port) {
+        const grapher::Vec2 from = *r.c->PortScreenPos("a", port);
+        r.c->PointerDown(from, grapher::Button::Left, {});
+        r.c->PointerMove(from + grapher::Vec2{40, 300});
+        r.c->PointerUp(from + grapher::Vec2{40, 300}, grapher::Button::Left);
+    };
+    dragOff("out");
+    CHECK((r.Last<grapher::InvokeAction>() && r.Last<grapher::InvokeAction>()->action == "createFrom" && r.Last<grapher::InvokeAction>()->port == "out"));
+    dragOff("fl");
+    CHECK((r.Last<grapher::ConnectToNothing>() && r.Last<grapher::ConnectToNothing>()->type == "flow"));
+}
+
+void TestKitEditsAndReorder()
+{
+    // Direct mode: a commit sets the field and the row, as one change the host snapshots first.
+    ActionRig d(grapher::EditMode::Direct);
+    int befores = 0;
+    d.c->onBeforeChange = [&](std::string_view) { ++befores; };
+    CHECK((d.c->CommitEdit("a", "n", "9") && d.g.nodes[0].Field("count") == "9" && d.g.nodes[0].FindRow("n")->value == "9" && befores == 1));
+    CHECK(!d.c->CommitEdit("a", "nope", "1"));
+    // A row of a list drags among its list: dropped on the last item it goes there, and never past its list.
+    auto drag = [&](ActionRig& r, std::string_view row, grapher::Vec2 to) {
+        const grapher::Vec2 from = r.Row(row);
+        r.c->PointerDown(from, grapher::Button::Left, {});
+        r.c->PointerMove(from + grapher::Vec2{0, 12});
+        r.c->PointerMove(to);
+        r.c->PointerUp(to, grapher::Button::Left);
+    };
+    drag(d, "i0", d.Row("i2"));
+    std::vector<std::string> order;
+    for (const grapher::Row& row : d.g.nodes[0].rows) order.push_back(row.id);
+    CHECK((order == std::vector<std::string>{"f", "n", "p", "i1", "i2", "i0", "add"}));
+    drag(d, "i1", d.Row("add") + grapher::Vec2{0, 200});   // far below: the end of the list, not past it
+    order.clear();
+    for (const grapher::Row& row : d.g.nodes[0].rows) order.push_back(row.id);
+    CHECK((order == std::vector<std::string>{"f", "n", "p", "i2", "i0", "i1", "add"}));
+    // Proposed: an intent saying where it goes; the node doesn't move.
+    ActionRig p;
+    const grapher::Rect before = p.c->ScreenRectOf("a");
+    drag(p, "i2", p.Row("i0"));
+    const auto* moved = p.Last<grapher::ReorderRow>();
+    CHECK((moved && moved->node == "a" && moved->row == "i2" && moved->to == 3 && p.c->ScreenRectOf("a") == before));
+    // A plain click on a list row is still a click: no reorder.
+    p.intents.clear();
+    p.Click(p.Row("i1"));
+    CHECK(!p.Last<grapher::ReorderRow>());
 }
 
 } // namespace
@@ -2630,6 +2838,9 @@ int main()
     TestKitJson();
     TestKitResolve();
     TestKitCache();
+    TestKitPinsAndRows();
+    TestKitActions();
+    TestKitEditsAndReorder();
     TestLargeGraphKit();
     TestFixedGroupAndHover();
     TestFrameGroupsUnchanged();

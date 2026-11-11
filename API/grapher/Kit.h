@@ -11,6 +11,7 @@
 #include <grapher/Schema.h>
 #include <grapher/Style.h>
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -87,7 +88,48 @@ struct NodeKind {
     friend bool operator==(const NodeKind&, const NodeKind&) = default;
 };
 
+/// @brief How a kind of pin looks and what its gestures do. A pin kind is named by a PortType id: the Schema keeps what
+///        connects to what, the kit how it looks. Every field is optional, so a rule's patch sets only what it names.
+struct PinSpec {
+    std::optional<std::string> glyph;    ///< circle, square, diamond, arrow; unset = the port type's
+    std::optional<float>       size;     ///< the pin's radius, world units; unset = the canvas's (4.5 at zoom 1, kept 2.5–6 px)
+    std::optional<std::string> fill;     ///< wired (filled while a wire uses it), always, never
+    std::optional<std::string> color;    ///< outline, and fill when filled; unset = the port type's colour
+    std::optional<std::string> hollow;   ///< the fill while hollow; unset = the card's fill
+    std::optional<float>       hit;      ///< how far past its radius a press still takes it, pixels; unset = 4
+    std::optional<bool>        label;    ///< its row's label shows (a port row's); unset = yes
+    std::map<std::string, std::string, std::less<>> on;   ///< gesture -> action id: click, doubleClick, contextMenu, dragToNothing
+    friend bool operator==(const PinSpec&, const PinSpec&) = default;
+};
+struct PinKind {
+    std::string id;   ///< a PortType id
+    PinSpec     spec;
+    friend bool operator==(const PinKind&, const PinKind&) = default;
+};
+
+/// @brief How a kind of row looks, how it is edited and what its gestures do. Row::style names one.
+struct RowSpec {
+    std::optional<std::string> color, valueColor;   ///< the label's and the value's
+    std::optional<std::string> prefix, suffix;       ///< before the label, after the value
+    std::optional<std::string> align, valueAlign;    ///< the label's (left, center, right) and the value's
+    std::optional<bool>        bold, italic, chip;
+    /// @brief How it is edited in place: none, text, number, slider, toggle, choice, color, path, reference (a list the
+    ///        host supplies, Canvas::choicesFor). A gesture bound to the action `edit` opens it.
+    std::optional<std::string> editor;
+    std::optional<float>       min, max, step;   ///< a number's or a slider's
+    /// @brief Rows of the same list (this name) may be dragged up and down among themselves (ReorderRow).
+    std::optional<std::string> reorder;
+    std::map<std::string, std::string, std::less<>> on;   ///< gesture -> action id: click, doubleClick, contextMenu
+    friend bool operator==(const RowSpec&, const RowSpec&) = default;
+};
+struct RowKind {
+    std::string id;   ///< what Row::style names
+    RowSpec     spec;
+    friend bool operator==(const RowKind&, const RowKind&) = default;
+};
+
 /// @brief `kind? ([tag])* (:state)* (> part)?`, for example `box[class:Blend]:selected > header`; `*` or nothing = any kind.
+///        A part may be `pin:<pin kind>` or `row:<row kind>`, and then the rule's pin or row fields patch it.
 struct Selector {
     std::string              kind;
     std::vector<std::string> tags;
@@ -104,12 +146,16 @@ enum KitState : std::uint32_t {
     StateAlias     = 1u << 3,
     StateCollapsed = 1u << 4,
     StateInGroup   = 1u << 5,
+    StateWired     = 1u << 6,   ///< a pin a wire uses
+    StateUnwired   = 1u << 7,   ///< a pin none does
 };
 
-/// @brief Patch the selected part with what `patch` sets.
+/// @brief Patch the selected part with what `patch` sets (`pin` and `row` for a `pin:` or `row:` part).
 struct Rule {
     Selector select;
     PartSpec patch;
+    PinSpec  pin;
+    RowSpec  row;
     friend bool operator==(const Rule&, const Rule&) = default;
 };
 
@@ -118,8 +164,10 @@ struct Kit {
     std::map<std::string, FontSpec, std::less<>>    fonts;
     MetricsSpec                                     metrics;
     std::vector<NodeKind>                           nodes;
+    std::vector<PinKind>                            pins;
+    std::vector<RowKind>                            rows;
     std::vector<Rule>                               rules;     ///< in file order; specificity orders them when applied
-    /// @brief Sections later milestones read (pins, rows, groups, edges, actions), kept as the JSON text they came in.
+    /// @brief Sections later milestones read (groups, edges, actions), kept as the JSON text they came in.
     std::map<std::string, std::string, std::less<>> reserved;
     /// @brief Bump after changing the kit in place, so a canvas drops what it resolved. PutNodeKind bumps it.
     std::uint64_t                                   revision = 0;
@@ -152,6 +200,29 @@ struct LookText {
     int         align = 0;   ///< 0 left, 1 center, 2 right (Align)
 };
 
+/// @brief A pin kind as resolved for one node, unwired [0] or wired [1].
+struct PinLook {
+    std::optional<PortGlyph> glyph;
+    float                    size = 0.f;   ///< 0 = the canvas's
+    int                      fill = 0;     ///< 0 wired, 1 always, 2 never
+    std::optional<Color>     color, hollow;
+    float                    hit   = 4.f;
+    bool                     label = true;
+    std::map<std::string, std::string, std::less<>> on;
+};
+
+/// @brief A row kind as resolved for one node.
+struct RowLook {
+    std::optional<Color> color, valueColor;
+    std::string          prefix, suffix;
+    int                  align = 0, valueAlign = 2;   ///< Align
+    bool                 bold = false, italic = false, chip = false;
+    std::string          editor;
+    float                min = 0.f, max = 0.f, step = 0.f;
+    std::string          reorder;
+    std::map<std::string, std::string, std::less<>> on;
+};
+
 /// @brief A part of a resolved look.
 struct LookPart {
     PartKind              kind = PartKind::Body;
@@ -160,6 +231,7 @@ struct LookPart {
     float                 strokeWidth = 0.f, corner = 0.f, width = 0.f, top = 0.8f, height = 0.f;
     bool                  dash = false;
     std::vector<LookText> texts;   ///< a header's lines
+    std::map<std::string, std::string, std::less<>> on;   ///< gesture -> action id
 };
 
 /// @brief What one node looks like: its card's paint, its visible parts in order, and its geometry. Resolved once per
@@ -172,6 +244,10 @@ struct NodeLook {
     std::vector<LookPart>    parts;
     float                    minWidth = 0.f, maxWidth = 0.f;
     bool                     fitWidth = false;
+    std::map<std::string, std::string, std::less<>> on;   ///< the card's own gestures
+    /// @brief The kit's pin kinds as this node shows them, by PortType id: unwired, wired.
+    std::map<std::string, std::array<PinLook, 2>, std::less<>> pins;
+    std::map<std::string, RowLook, std::less<>>                rows;   ///< the kit's row kinds, by id
 };
 
 /// @brief Resolve the look of a node of type `type` with `tags` in `states`, under `kit` (already merged and with its
