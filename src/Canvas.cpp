@@ -501,6 +501,7 @@ bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b
 bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view ignoring) const
 {
     if (a == b) return false;
+    if (!wholeNodeWires && (pa.empty() || pb.empty())) return false;   // every wire runs port to port
     const Node* na = graph_->FindNode(a);
     const Node* nb = graph_->FindNode(b);
     if (!na || !nb) return false;
@@ -517,6 +518,14 @@ bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b
     const Ends w = Ordered(a, pa, da, b, pb, db);
     for (const Edge& e : graph_->edges)
         if (e.id != ignoring && e.from == w.from && e.to == w.to && e.fromPort == w.fromPort && e.toPort == w.toPort) return false;
+    if (checkWire) {
+        Edge proposed;
+        proposed.from     = w.from;
+        proposed.to       = w.to;
+        proposed.fromPort = w.fromPort;
+        proposed.toPort   = w.toPort;
+        return checkWire(proposed).allowed;
+    }
     return true;
 }
 
@@ -550,6 +559,12 @@ std::string Canvas::Wire(std::string_view a, std::string_view pa, std::string_vi
     const Node* toNode   = graph_->FindNode(e.to);
     const PortType* pt   = outDef ? schema_->FindPortType(PortTypeOf(*graph_, *schema_, *fromNode, e.fromPort)) : nullptr;
     e.type = pt && !pt->edge.empty() && schema_->FindEdge(pt->edge) ? pt->edge : schema_->EdgeFor(fromNode->type, toNode->type);
+    if (checkWire) {
+        // The host may mark the wire (a converting one): its own edge type, a label.
+        const WireCheck verdict = checkWire(e);
+        if (!verdict.type.empty() && schema_->FindEdge(verdict.type)) e.type = verdict.type;
+        if (!verdict.label.empty()) e.label = verdict.label;
+    }
 
     Before(held ? "Move wire" : "Connect");
     std::vector<std::string> replaced;
@@ -698,6 +713,7 @@ std::string Canvas::TooltipAt(Vec2 screen) const
         if (const Node* n = ShownNode(hit.id))
             for (const PortDef& p : PortsOf(*n, *schema_))
                 if (p.id == hit.port) {
+                    if (!p.tooltip.empty()) return p.tooltip;
                     const std::string type = PortTypeOf(*graph_, *schema_, *n, p.id);
                     const PortType*   pt   = schema_->FindPortType(type);
                     const std::string name = p.label.empty() ? p.id : p.label;
@@ -738,6 +754,9 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
     for (std::size_t i = Shown().nodes.size(); i-- > 0;) {
         const Node& n = Shown().nodes[i];
         if (!camera.ToScreen(n.frame).Inflated(reach).Contains(screen) || !Visible(n)) continue;
+        if (const Rect r = camera.ToScreen(n.frame); TypeOf(n).shape == NodeShape::Dot &&
+                                                     Distance(screen, r.Center()) <= std::max(std::min(r.w, r.h) * 0.3f, 4.f))
+            return {HitKind::Node, n.id};   // its pins cover its rim; its middle grabs it
         if (grouped_[i]) groups.push_back(&n);
         else order.push_back(&n);
     }
@@ -749,7 +768,7 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
         const auto slots = SlotsOf(n);
         for (const PortSlot& s : slots)
             if (Distance(screen, camera.ToScreen(s.at)) <= pin) return {HitKind::Port, n.id, s.def.id};
-        if (slots.empty() && Distance(screen, ConnectHandle(r)) <= handle) return {HitKind::Connect, n.id};
+        if (wholeNodeWires && slots.empty() && Distance(screen, ConnectHandle(r)) <= handle) return {HitKind::Connect, n.id};
         return {};
     };
     for (const Node* n : order) {
@@ -766,14 +785,14 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
                         return {HitKind::Handle, n->id, {}, row.id};
                 return {HitKind::Node, n->id};
             }
-            if (ResizeGrip(r, style).Contains(screen)) return {HitKind::Resize, n->id};
-            if (!n->rows.empty() && TypeOf(*n).shape == NodeShape::Card) {
+            if (TypeOf(*n).shape != NodeShape::Dot && ResizeGrip(r, style).Contains(screen)) return {HitKind::Resize, n->id};
+            if (const Node* live = LiveOf(*n); !live->rows.empty() && TypeOf(*n).shape == NodeShape::Card) {
                 const CardMetrics m   = MetricsOf(style);
                 const float       top = RowsTop(*n, *schema_, m);
                 const float       wy  = camera.ToWorld(screen).y;
                 if (wy >= top) {
                     const auto k = static_cast<std::size_t>((wy - top) / m.Row());
-                    if (k < n->rows.size()) return {HitKind::Row, n->id, {}, n->rows[k].id};
+                    if (k < live->rows.size()) return {HitKind::Row, n->id, {}, live->rows[k].id};
                 }
             }
             return {HitKind::Node, n->id};
@@ -859,6 +878,16 @@ void Canvas::SyncForHit() const
 void Canvas::BuildView() const
 {
     view_ = *graph_;
+    graphAt_.clear();
+    graphAt_.reserve(graph_->nodes.size());
+    for (std::size_t i = 0; i < graph_->nodes.size(); ++i) graphAt_.emplace(graph_->nodes[i].id, i);
+    {
+        // A card whose type fits its height grows to show its ports, rows and fields.
+        const CardMetrics m = MetricsOf(style);
+        for (Node& node : view_.nodes)
+            if (const NodeType* t = schema_->FindNode(node.type); t && t->fitHeight && t->shape == NodeShape::Card)
+                node.frame.h = std::max(node.frame.h, CardHeight(node, *schema_, m));
+    }
     constexpr std::size_t kNone = static_cast<std::size_t>(-1);
     const std::size_t     n     = view_.nodes.size();
     std::unordered_map<std::string_view, const NodeType*> types;
@@ -993,6 +1022,14 @@ void Canvas::BuildView() const
         PlaceDocks(dragged, {}, nullptr);
         FitView();
     }
+}
+
+const Node* Canvas::LiveOf(const Node& shown) const
+{
+    if (!useView_) return &shown;
+    const auto it = graphAt_.find(shown.id);
+    if (it == graphAt_.end() || it->second >= graph_->nodes.size() || graph_->nodes[it->second].id != shown.id) return &shown;
+    return &graph_->nodes[it->second];
 }
 
 bool Canvas::Visible(const Node& n) const
@@ -1305,6 +1342,10 @@ void Canvas::Sync() const
             for (float f : {n.frame.x, n.frame.y, n.frame.w, n.frame.h}) key = Mix(key, Bits(f));
             for (const PortDef& p : n.ports)
                 key = Mix(Mix(key, hs(p.id)), static_cast<std::size_t>(p.side) * 8 + static_cast<std::size_t>(p.dir) * 2 + (p.onHeader ? 1 : 0));
+            // Rows move pins (a row claims a port; a dial places it by the row's value) and grow a fitted card.
+            key = Mix(key, n.rows.size());
+            for (std::size_t k = 0; k < n.rows.size(); ++k)
+                if (!n.rows[k].port.empty()) key = Mix(Mix(Mix(key, k), hs(n.rows[k].port)), hs(n.rows[k].value));
         }
         for (const Edge& e : graph_->edges) {
             for (const std::string* s : {&e.id, &e.from, &e.to, &e.type, &e.fromPort, &e.toPort}) key = Mix(key, hs(*s));
@@ -1406,7 +1447,8 @@ void Canvas::Sync() const
         useView_ = false;
         for (const Node& n : graph_->nodes)
             if (const auto t = types.find(n.type);
-                !n.dock.parent.empty() || (t != types.end() && t->second->groupMode == GroupMode::Members && t->second->shape == NodeShape::Group)) {
+                !n.dock.parent.empty() ||
+                (t != types.end() && ((t->second->groupMode == GroupMode::Members && t->second->shape == NodeShape::Group) || t->second->fitHeight))) {
                 useView_ = true;
                 break;
             }
@@ -2029,13 +2071,14 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
 
         const float fs = s.fontSize * z;
         if (fs < 4.f) continue;
-        const std::string& named = t.titleField.empty() ? std::string{} : g->Field(t.titleField);
+        const Node*        live  = LiveOf(*g);   // the host's own node: the view's copy keeps only its place
+        const std::string& named = t.titleField.empty() ? std::string{} : live->Field(t.titleField);
         std::string        title = named.empty() ? "Untitled " + t.label : named;
         if (t.groupMode == GroupMode::Members) title = (IsCollapsed(g->id) ? "▸ " : "▾ ") + title;   // its arrow
         if (t.showCount) title += " (" + std::to_string(count_[static_cast<std::size_t>(g - Shown().nodes.data())]) + ")";
         std::string        detail;
         for (const FieldDef& f : t.fields) {
-            const std::string& v = g->Field(f.id);
+            const std::string& v = live->Field(f.id);
             if (!f.onCard || f.id == t.titleField || v.empty()) continue;
             if (!detail.empty()) detail += " · ";
             detail += v;
@@ -2107,14 +2150,23 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
 
     auto drawHandles = [&](const Node& n, const Rect& r, bool sel) {
         const float hr = HandleRadius(s, z);
-        if (PortsOf(n, *schema_).empty()) c.push_back(Circle{ConnectHandle(r), hr, s.background, sel ? s.selection : s.muted, 1.5f});
+        if (wholeNodeWires && PortsOf(n, *schema_).empty()) c.push_back(Circle{ConnectHandle(r), hr, s.background, sel ? s.selection : s.muted, 1.5f});
+        if (TypeOf(n).shape == NodeShape::Dot) return;   // a reroute dot is no size to resize
         const Rect g = ResizeGrip(r, s);
         c.push_back(Polygon{{{g.Right() - 2, g.y + 4}, {g.Right() - 2, g.Bottom() - 2}, {g.x + 4, g.Bottom() - 2}},
                             sel ? s.selection : s.muted});
     };
 
-    // Nodes: unselected, then selected on top.
-    auto drawNode = [&](const Node& n) {
+    // Nodes: unselected, then selected on top. With a view, a node draws with the host's live content at the view's place.
+    std::function<void(const Node&)> drawNode;
+    auto drawLive = [&](const Node& shownNode) {
+        const Node* live = LiveOf(shownNode);
+        if (live == &shownNode) return drawNode(shownNode);
+        Node n  = *live;
+        n.frame = shownNode.frame;
+        drawNode(n);
+    };
+    drawNode = [&](const Node& n) {
         const NodeType& t    = TypeOf(n);
         const bool      sel  = chrome && selNodes_.contains(n.id);
         const bool      hov  = chrome && (n.id == hovered_ || n.id == connectTo_);
@@ -2268,10 +2320,10 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         if (sel || hov) drawHandles(n, r, sel);
     };
     for (std::size_t i = 0; i < Shown().nodes.size(); ++i)
-        if (!grouped_[i] && (!chrome || !selNodes_.contains(Shown().nodes[i].id))) drawNode(Shown().nodes[i]);
+        if (!grouped_[i] && (!chrome || !selNodes_.contains(Shown().nodes[i].id))) drawLive(Shown().nodes[i]);
     if (chrome)
         for (const std::string& id : selNodes_)
-            if (const auto it = index_.find(id); it != index_.end() && !grouped_[it->second]) drawNode(Shown().nodes[it->second]);
+            if (const auto it = index_.find(id); it != index_.end() && !grouped_[it->second]) drawLive(Shown().nodes[it->second]);
     // A group's handles go over what it holds, or its grip could hide under a member.
     if (chrome)
         for (const Node* g : groups) {

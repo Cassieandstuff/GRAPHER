@@ -78,6 +78,7 @@ struct NodeType {
     float                 imageHeight = 0.f;   ///< room for Node::image at the foot of a card, world units; 0 = none
     GroupMode             groupMode = GroupMode::Frame;   ///< a group's: what it holds
     bool                  showCount = false;   ///< a group's header says how many nodes it holds, nested ones included
+    bool                  fitHeight = false;   ///< a card grows to show all its ports, rows and fields (a port count that is data)
     friend bool operator==(const NodeType&, const NodeType&) = default;
 };
 

@@ -1887,6 +1887,88 @@ void TestHostChangesMidDrag()
     CHECK(followed);   // the wire into it ends on its new frame
     c.PointerUp(grab + grapher::Vec2{20, 20}, grapher::Button::Left);
 }
+void TestMaterialGaps()
+{
+    // (c) Content edits draw at once, with a view (a member group) too; a row's port claim moves its pin and wire.
+    grapher::Schema s = PortSchema();
+    for (const grapher::NodeType& t : FolderSchema().nodeTypes)
+        if (t.id == "folder") s.nodeTypes.push_back(t);
+    grapher::Graph g;
+    g.nodes.push_back({"F", "folder", {0, 0, 10, 10}});
+    g.nodes.push_back({"v", "value", {0, 0, 160, 80}});
+    g.nodes.push_back({"m", "mix", {400, 0, 200, 160}});
+    g.nodes[2].parent = "F";
+    g.nodes[2].rows   = {{"r0", "old"}};
+    g.edges.push_back({"e", "v", "m", "data", "", "out", "a"});
+    grapher::Canvas c(g, s);
+    c.SetViewport({1000, 600});
+    CHECK(CountText(c.Draw(), "old") == 1);
+    g.nodes[2].rows[0].label = "new";
+    CHECK(CountText(c.Draw(), "new") == 1 && CountText(c.Draw(), "old") == 0);
+    const grapher::Vec2 before = *c.PortScreenPos("m", "a");
+    g.nodes[2].rows[0].port = "a";   // the row claims port a: the pin moves onto it
+    const grapher::Vec2 after = *c.PortScreenPos("m", "a");
+    CHECK(!Near(before, after));
+    bool onRow = false;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* p = std::get_if<grapher::Polyline>(&cmd); p && p->points.size() > 2 && Near(p->points.back(), after)) onRow = true;
+    CHECK(onRow);
+
+    // (a) The host refuses a wire, or marks one.
+    grapher::Schema marked = PortSchema();
+    marked.edgeTypes.push_back({"converted", "converted"});
+    grapher::Graph h;
+    h.nodes.push_back({"v", "value", {0, 0, 160, 80}});
+    h.nodes.push_back({"m", "mix", {400, 0, 200, 120}});
+    grapher::Canvas d(h, marked);
+    d.checkWire = [](const grapher::Edge& w) {
+        if (w.toPort == "b") return grapher::WireCheck{false};
+        return grapher::WireCheck{true, "converted", "float to colour"};
+    };
+    CHECK(!d.CanWire("v", "out", "m", "b") && d.CanWire("v", "out", "m", "a"));
+    CHECK(!d.Connect("v", "out", "m", "a").empty() && h.edges.back().type == "converted" && h.edges.back().label == "float to colour");
+
+    // (b) Off, nothing wires to a node as a whole.
+    grapher::Schema plain = MakeSchema();
+    grapher::Graph  k;
+    k.nodes.push_back({"p", "repo", {0, 0, 200, 100}});
+    k.nodes.push_back({"q", "repo", {400, 0, 200, 100}});
+    grapher::Canvas e(k, plain);
+    e.SetViewport({800, 600});
+    const grapher::Vec2 handle{200, 50};
+    CHECK(e.HitTest(handle).kind == grapher::HitKind::Connect && e.CanWire("p", "", "q", ""));
+    e.wholeNodeWires = false;
+    CHECK(e.HitTest(handle).kind != grapher::HitKind::Connect && !e.CanWire("p", "", "q", ""));
+
+    // (d) A fitted card grows to show its ports; (f) a port's own tooltip.
+    grapher::Schema fit = PortSchema();
+    fit.nodeTypes[0].fitHeight = true;   // mix
+    fit.nodeTypes[0].ports[2].tooltip = "how much of B";
+    grapher::Graph f;
+    f.nodes.push_back({"m", "mix", {0, 0, 200, 40}});
+    grapher::Canvas fc(f, fit);
+    fc.SetViewport({800, 600});
+    CHECK(fc.FrameOf("m").h >= grapher::CardHeight(f.nodes[0], fit, {}) && f.nodes[0].frame.h == 40.f);
+    CHECK(fc.TooltipAt(*fc.PortScreenPos("m", "t")) == "how much of B");
+
+    // (e) A reroute dot's middle grabs the dot, not its pins; it has no resize grip.
+    grapher::Schema dots = PortSchema();
+    grapher::NodeType dot{"reroute", "Reroute"};
+    dot.shape = grapher::NodeShape::Dot;
+    dot.ports = {{"in", ""}, {"out", "", "", grapher::PortDir::Out}};
+    dots.nodeTypes.push_back(dot);
+    grapher::Graph r;
+    r.nodes.push_back({"d", "reroute", {100, 100, 16, 16}});
+    grapher::Canvas rc(r, dots);
+    rc.SetViewport({800, 600});
+    CHECK(rc.HitTest({108, 108}).kind == grapher::HitKind::Node);
+    rc.SelectNodes({"d"});
+    bool grip = false;
+    for (const auto& cmd : rc.Draw().cmds)
+        if (const auto* p = std::get_if<grapher::Polygon>(&cmd); p && p->fill == rc.style.selection) grip = true;
+    CHECK(!grip);
+}
+
 } // namespace
 
 int main()
@@ -1932,6 +2014,7 @@ int main()
     TestMinimapAndSearch();
     TestLiftWires();
     TestHostChangesMidDrag();
+    TestMaterialGaps();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

@@ -72,6 +72,13 @@ struct Hit {
 
 using NodeSet = std::set<std::string, std::less<>>;
 
+/// @brief What a host says of a wire about to be drawn (Canvas::checkWire).
+struct WireCheck {
+    bool        allowed = true;
+    std::string type;    ///< an EdgeType id the wire takes instead; empty = as the schema says
+    std::string label;   ///< the wire's label; empty = none
+};
+
 enum class EditMode {
     Direct,    ///< gestures edit the graph, between onBeforeChange and onChanged
     Propose,   ///< gestures play out on a copy and arrive as an Intent; the host's graph is never touched
@@ -189,6 +196,12 @@ public:
     std::function<void(const Intent&)>          onIntent;
     /// @brief A member group opened or closed (view state, not an edit: a host may keep it, or lay the graph out again).
     std::function<void(std::string_view group, bool collapsed)> onCollapseChanged;
+    /// @brief Wires may end on a node as a whole (a port-less node's connect handle). False: every wire runs port to
+    ///        port, and port-less nodes (notes, frames) take none.
+    bool wholeNodeWires = true;
+    /// @brief The host's say on a wire, after the schema's: refuse it (a cycle), or mark it (a converting wire's own edge
+    ///        type, a label). Unset: the schema alone decides.
+    std::function<WireCheck(const Edge& wire)> checkWire;
     /// @brief A press on a full one-wire input lifts its wire: dropped on another input it moves there (a ConnectWire that
     ///        replaces it), dropped on nothing it comes off (RemoveItems). Off by default: then the press starts a new wire.
     bool liftWires = false;
@@ -410,6 +423,9 @@ private:
     /// @brief Point edge `i`'s table entries at its wire (or none).
     void SetPath(std::size_t i) const;
     [[nodiscard]] const Node* NodeById(std::string_view id) const;
+    /// @brief The host's own node for a shown one: the view copies only places, so content (fields, rows, images) is
+    ///        read live from the graph.
+    [[nodiscard]] const Node* LiveOf(const Node& shown) const;
     /// @brief The node as drawn (a member group's frame fitted), after a Sync; nullptr when hidden or unknown.
     [[nodiscard]] const Node* ShownNode(std::string_view id) const;
 
@@ -425,6 +441,7 @@ private:
     mutable std::size_t                             dragKey_ = 0;   ///< the cache key a large graph's drag began with
     mutable bool                                    resync_  = false;   ///< the host changed the graph: route it all once
     mutable bool                                  useView_ = false;
+    mutable std::unordered_map<std::string_view, std::size_t> graphAt_;   ///< node id -> index in the graph (with a view)
     mutable Graph                                 view_;
     mutable std::vector<char>                     dashed_;    ///< per shown edge: it stands for wires into a closed group
     mutable std::vector<int>                      count_;     ///< per shown node: a group's nodes, nested ones included

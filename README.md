@@ -99,6 +99,11 @@ it in the bottom right (`setMinimapShown`). `grapher::Search` ranks nodes by the
 (`openSearch`, or a host's own ranking through `setSearchFunction`) walks the hits, opening the groups around each and
 ringing the rest, keeps the hit on Enter and goes back on Esc. `addOverlay` keeps a host's widgets over a corner.
 
+**Host hooks for richer editors.** `Canvas::checkWire` gives the host a say on each wire after the schema's (refuse a
+cycle; mark a converting wire with its own edge type or a label). `wholeNodeWires = false` makes every wire run port to
+port. A node type with `fitHeight` grows its cards to show all their ports and rows (a port count that is data). A port
+can carry its own `tooltip`. A reroute dot is grabbed by its middle, its pins by its rim, and has no resize grip.
+
 **Large graphs.** The canvas keeps its routes, per-node and per-edge tables until a frame, port, edge or option
 changes, culls what is off screen, and hit-tests only what is near the pointer. On a graph of more than 2000 nodes a
 drag reroutes only the dragged nodes' wires, and past 400 obstacles each wire that needs a detour routes on a grid of

@@ -58,6 +58,7 @@ struct PortDef {
     /// @brief Another port of the same node whose wired type this one takes (a reroute's output carries whatever comes
     ///        into its input); `type` applies while that port has no wire. See PortTypeOf.
     std::string typeFrom;
+    std::string tooltip;   ///< shown over the pin; empty = its label and type
     friend bool operator==(const PortDef&, const PortDef&) = default;
 };
 

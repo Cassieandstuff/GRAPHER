@@ -146,6 +146,7 @@ PortDef ReadPort(Reader& r, const json::Value& o, std::size_t index, std::string
     r.Str(o, "field", p.field, where);
     r.Bool(o, "onHeader", p.onHeader, where);
     r.Str(o, "typeFrom", p.typeFrom, where);
+    r.Str(o, "tooltip", p.tooltip, where);
     return p;
 }
 
@@ -165,6 +166,7 @@ NodeType ReadNodeType(Reader& r, const json::Value& o, std::size_t index)
     r.Num(o, "imageHeight", t.imageHeight, where);
     r.Enum(o, "groupMode", kGroupModes, t.groupMode, where);
     r.Bool(o, "showCount", t.showCount, where);
+    r.Bool(o, "fitHeight", t.fitHeight, where);
     const json::Array& fields = r.List(o, "fields", where);
     for (std::size_t k = 0; k < fields.size() && r.Ok(); ++k) {
         FieldDef f;
@@ -222,6 +224,7 @@ json::Value WritePort(const PortDef& p)
     Put(o, "field", p.field, def.field, p.field);
     Put(o, "onHeader", p.onHeader, def.onHeader, p.onHeader);
     Put(o, "typeFrom", p.typeFrom, def.typeFrom, p.typeFrom);
+    Put(o, "tooltip", p.tooltip, def.tooltip, p.tooltip);
     return o;
 }
 
@@ -241,6 +244,7 @@ json::Value WriteNodeType(const NodeType& t)
     Put(o, "imageHeight", t.imageHeight, def.imageHeight, static_cast<double>(t.imageHeight));
     Put(o, "groupMode", t.groupMode, def.groupMode, std::string(NameOf(kGroupModes, t.groupMode)));
     Put(o, "showCount", t.showCount, def.showCount, t.showCount);
+    Put(o, "fitHeight", t.fitHeight, def.fitHeight, t.fitHeight);
     if (!t.fields.empty()) {
         json::Array fields;
         for (const FieldDef& f : t.fields) {
