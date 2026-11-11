@@ -1216,6 +1216,40 @@ void TestLargeGraph()
     CHECK(dragMs <= 8.0);
 #endif
 
+    // The same graph with docks: in each run of four cards, the last three dock right of the one before (a wire runs
+    // between). Dragging a docked card undocks it while it moves, the card docked to it following.
+    grapher::Graph dg = g;
+    for (grapher::Node& n : dg.nodes)
+        if (n.id.starts_with('n'))
+            if (const int k = std::stoi(n.id.substr(1)); k % 4 != 0) n.dock = {"n" + std::to_string(k - 1), grapher::PortSide::Right};
+    grapher::Canvas dc(dg, s);
+    dc.SetViewport({1600, 900});
+    dc.docking = true;
+    t0 = Clock::now();
+    dc.CenterOn("n10101", 0.35f);
+    (void)dc.Draw();
+    const double dockRouteMs = ms(t0);
+    t0 = Clock::now();
+    for (int k = 0; k < 10; ++k) (void)dc.Draw();
+    const double dockDrawMs = ms(t0) / 10.0;
+    const grapher::Vec2 docked = dc.ScreenRectOf("n10102").Center();
+    const float         follower = dc.FrameOf("n10103").x - dc.FrameOf("n10102").x;
+    dc.PointerDown(docked, grapher::Button::Left, {});
+    dc.PointerMove(docked + grapher::Vec2{10, 0});
+    (void)dc.Draw();
+    t0 = Clock::now();
+    dc.PointerMove(docked + grapher::Vec2{30, 60});
+    (void)dc.Draw();
+    const double dockDragMs = ms(t0);
+    CHECK(std::abs(dc.FrameOf("n10103").x - dc.FrameOf("n10102").x - follower) < 0.01f);   // it follows the dragged card
+    dc.PointerUp(docked + grapher::Vec2{30, 60}, grapher::Button::Left);
+    std::printf("  20k graph, docked: first route %.1f ms, draw %.2f ms, drag step %.2f ms
+", dockRouteMs, dockDrawMs, dockDragMs);
+#ifdef NDEBUG
+    CHECK(dockDrawMs <= 4.0);
+    CHECK(dockDragMs <= 8.0);
+#endif
+
     // Panning and zooming never reroute.
     grapher::Canvas counted(g, s);
     auto router    = std::make_shared<CountingRouter>();

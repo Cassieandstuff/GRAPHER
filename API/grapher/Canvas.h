@@ -347,7 +347,8 @@ private:
     /// @brief Fill `view_` from the graph (see Shown).
     void BuildView() const;
     /// @brief Place `view_`'s docked nodes against their parents (and what docked member groups hold with them).
-    void DockView(const std::vector<std::size_t>& up) const;
+    /// @param moved collects the nodes it moved (a drag reroutes their wires)
+    void DockView(const std::vector<std::size_t>& up, std::vector<std::size_t>* moved = nullptr) const;
     void DrawDial(std::vector<DrawCmd>& c, const Node& n, const NodeType& t, const Camera& cam, bool sel, bool hov) const;
     /// @brief Fit every open member group of `view_` around what it shows, deepest first.
     void FitView() const;

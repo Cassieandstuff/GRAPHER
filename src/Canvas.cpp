@@ -961,7 +961,7 @@ bool Canvas::Visible(const Node& n) const
     return false;
 }
 
-void Canvas::DockView(const std::vector<std::size_t>& up) const
+void Canvas::DockView(const std::vector<std::size_t>& up, std::vector<std::size_t>* moved) const
 {
     hasDocks_ = false;
     const std::size_t n = view_.nodes.size();
@@ -1070,8 +1070,10 @@ void Canvas::DockView(const std::vector<std::size_t>& up) const
     for (std::size_t i = 0; i < n; ++i)
         if (up[i] != static_cast<std::size_t>(-1)) held[up[i]].push_back(i);
     std::function<void(std::size_t, Vec2)> shift = [&](std::size_t i, Vec2 d) {
+        if (d.x == 0.f && d.y == 0.f) return;
         view_.nodes[i].frame.x += d.x;
         view_.nodes[i].frame.y += d.y;
+        if (moved) moved->push_back(i);
         for (const std::size_t k : held[i]) shift(k, d);
     };
     std::function<void(std::size_t)> place = [&](std::size_t i) {
@@ -1279,9 +1281,18 @@ void Canvas::Sync() const
                 if (it == index_.end() || !real) rebuilt = true;
                 else view_.nodes[it->second].frame = real->frame;
             }
-            rebuilt = rebuilt || hasDocks_;   // docked nodes close up behind a dragged one: lay the view out again
-            if (rebuilt) BuildView();   // or a closed group moved with what it holds: start over
-            else FitView();
+            if (rebuilt) {
+                BuildView();   // a closed group moved with what it holds: start over
+            } else {
+                if (hasDocks_) {
+                    // Docked nodes close up behind a dragged one, and follow a dragged parent: placed again in place,
+                    // and those that moved reroute too.
+                    std::vector<std::size_t> shifted;
+                    DockView(viewUp_, &shifted);
+                    for (const std::size_t i : shifted) moving.insert(view_.nodes[i].id);
+                }
+                FitView();
+            }
             if (!rebuilt)
                 for (const auto& [id, frame] : origin_)
                     if (const auto it = index_.find(id); it != index_.end())
