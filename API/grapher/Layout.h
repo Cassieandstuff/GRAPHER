@@ -35,6 +35,8 @@ struct LayoutOptions {
     /// @brief An open group pushes what it would cover: what starts right of this much of its width moves right, the rest
     ///        moves down, until nothing overlaps.
     float      pushReach = 24.f;
+    /// @brief A closed member group's width: its header and title, not the width of what it holds.
+    float      closedWidth = 240.f;
     float      dockGap     = 10.f;   ///< between docked nodes stacked above or below their parent (Style::dockGap)
     float      dockSideGap = 12.f;   ///< between a parent and a node docked on its left or right (Style::dockSideGap)
     CardMetrics metrics;             ///< where a card's rows sit, for nodes docked beside a row (MetricsOf the canvas's style)

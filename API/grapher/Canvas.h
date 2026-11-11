@@ -16,6 +16,7 @@
 #include <grapher/Schema.h>
 #include <grapher/Style.h>
 
+#include <algorithm>
 #include <array>
 #include <functional>
 #include <memory>
@@ -184,6 +185,8 @@ public:
     float          snap = 10.f;   ///< world grid that moves and resizes land on; 0 = free
     EditMode       editMode   = EditMode::Direct;
     SelectKeys     selectKeys = SelectKeys::Toggle;
+    /// @brief How far the wheel and a host's zoom go out. A fit (Frame) that needs further goes further, and after it they go
+    ///        out as far as that fit and no further (ZoomFloor), so the fitted view is always one gesture away.
     float          minZoom = 0.1f;
     float          maxZoom = 4.f;
     /// @brief The middle and right buttons pan. False when the host navigates the view itself (PanBy, ZoomAbout).
@@ -304,6 +307,8 @@ public:
     void Frame();
     /// @brief Fit `ids` (every node when empty) with `margin` pixels around them, zoom no closer than `zoomCap`.
     void Frame(const NodeSet& ids, float margin = 40.f, float zoomCap = 1.f);
+    /// @return how far zooming out goes now: minZoom, or the last fit's zoom when that fit needed further
+    [[nodiscard]] float ZoomFloor() const { return fitZoom_ > 0.f ? std::min(minZoom, fitZoom_) : minZoom; }
     /// @brief Put the node's centre in the middle of the view, at `zoom` when given.
     void CenterOn(std::string_view nodeId, std::optional<float> zoom = std::nullopt);
     /// @brief Pan as little as it takes to show the whole node with `margin` pixels around it (as much as fits).
@@ -480,6 +485,7 @@ private:
     mutable WirePaths   routed_;             ///< the backend's last paths
     mutable std::size_t backendKey_ = 0;     ///< the router and options the backend last routed with
     mutable double      backendMs_  = -1.0;  ///< how long the backend's last incremental route took; < 0 = not yet known
+    float               fitZoom_    = 0.f;   ///< the last fit's zoom (Frame); 0 = none yet
 };
 
 } // namespace grapher

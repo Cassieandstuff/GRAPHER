@@ -1450,9 +1450,9 @@ void TestLayoutGraph()
     CHECK(a.x < F2.x && cc.x < F1.x);   // c wires into F1's content, a into F2's
     CHECK(std::abs(F2.y + o.header - (b.y - 0.f)) <= o.header + 0.01f && b.x == F2.x + o.padding);
 
-    // A closed group is one header-high item.
+    // A closed group is one header-high item, as wide as its title needs.
     laid = grapher::LayoutGraph(g, s, {}, {"F2"}, o);
-    CHECK(frameOf(laid, "F2").h == o.header);
+    CHECK((frameOf(laid, "F2").h == o.header && frameOf(laid, "F2").w == o.closedWidth));   // its title, not what it holds
 
     // A kept node stays put; one placed by the layout slides clear of it; an open group pushes what it would cover.
     g.nodes[4].frame = {0, 0, 100, 60};
@@ -1534,6 +1534,34 @@ void TestLayoutDocks()
     const grapher::Rect A = frameOf(laid, "a"), W = frameOf(laid, "W"), B = frameOf(laid, "b");
     CHECK(W == w.nodes[1].frame);
     CHECK((B.x == A.Right() + o.gaps.column && !B.Intersects(W) && !A.Intersects(W)));
+}
+
+void TestFitBelowMinZoom()
+{
+    // A fit wins over the zoom-out limit: a graph too wide for it still fits whole. Zooming out then stops at that fit, and
+    // a fit that needs less leaves the limit as it was.
+    const grapher::Schema s = FolderSchema();
+    grapher::Graph        g;
+    g.nodes.push_back({"a", "box", {0, 0, 100, 60}});
+    g.nodes.push_back({"b", "box", {50000, 0, 100, 60}});
+    grapher::Canvas c(g, s);
+    c.SetViewport({1000, 600});
+    c.minZoom = 0.1f;
+    c.Frame();
+    const float fit = c.camera.zoom;
+    CHECK(fit < c.minZoom);
+    for (const char* id : {"a", "b"}) {
+        const grapher::Rect r = c.ScreenRectOf(id);
+        CHECK((r.x >= 0.f && r.Right() <= 1000.f && r.y >= 0.f && r.Bottom() <= 600.f));
+    }
+    CHECK(c.ZoomFloor() == fit);
+    CHECK(!c.Wheel({500, 300}, -3.f));   // already as far out as it goes
+    CHECK(c.Wheel({500, 300}, 5.f));
+    CHECK(c.camera.zoom > fit);
+    for (int k = 0; k < 40; ++k) c.Wheel({500, 300}, -1.f);
+    CHECK(std::abs(c.camera.zoom - fit) < 1e-6f);   // back to the fit, and no further
+    c.Frame({"a"});
+    CHECK((c.camera.zoom >= c.minZoom && c.ZoomFloor() == c.minZoom));
 }
 
 void TestFixedGroupAndHover()
@@ -2121,6 +2149,7 @@ int main()
     TestAliasesAndHolding();
     TestLayoutGraph();
     TestLayoutDocks();
+    TestFitBelowMinZoom();
     TestFixedGroupAndHover();
     TestFrameGroupsUnchanged();
     TestDocks();
