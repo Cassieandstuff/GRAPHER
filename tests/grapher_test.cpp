@@ -2657,7 +2657,7 @@ void TestLargeGraphKit()
     noRows.rows.clear();
     const double plainMs = timeDraw(nullptr, 0.35f), noPinsMs = timeDraw(&noPins, 0.35f), noRowsMs = timeDraw(&noRows, 0.35f);
     const double nearPlainMs = timeDraw(nullptr, 0.6f), nearKitMs = timeDraw(&kit, 0.6f);
-    std::printf("    like for like: no kit %.2f ms, the kit without pin kinds %.2f, without row kinds %.2f; at zoom 0.6 no kit %.2f, the kit %.2f\n",
+    std::printf("    like for like: no kit %.2f ms, the kit without pin kinds %.2f, without row kinds %.2f; detail view (zoom 0.6: rows, pills) no kit %.2f, the full kit %.2f\n",
                 plainMs, noPinsMs, noRowsMs, nearPlainMs, nearKitMs);
 #ifdef NDEBUG
     CHECK(drawMs <= 4.0);
