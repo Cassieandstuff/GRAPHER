@@ -248,6 +248,7 @@ const NodeType& Canvas::TypeOf(const Node& n) const
 float Canvas::Snap(float v) const { return snap > 0.f ? std::round(v / snap) * snap : v; }
 
 std::vector<PortSlot> Canvas::SlotsOf(const Node& n) const { return LayoutPorts(n, *schema_, MetricsOf(style)); }
+std::vector<PortSlot> Canvas::SlotsOf(const Node& n, const Rect& frame) const { return LayoutPorts(n, *schema_, MetricsOf(style), frame); }
 
 void Canvas::Before(std::string_view label)
 {
@@ -1240,19 +1241,19 @@ std::optional<DockSlot> Canvas::FindDockSlot(std::string_view nodeId, const Rect
     return best;
 }
 
-void Canvas::DrawDial(std::vector<DrawCmd>& c, const Node& n, const NodeType& t, const Camera& cam, bool sel, bool hov) const
+void Canvas::DrawDial(std::vector<DrawCmd>& c, const Node& n, const Rect& frame, const NodeType& t, const Camera& cam, bool sel, bool hov) const
 {
     constexpr double kPi = std::numbers::pi;
     const Style&     s   = style;
     const float      z   = cam.zoom;
-    const Ring       ring = RingOf(n.frame);
+    const Ring       ring = RingOf(frame);
     const DialAxis   axis = AxisOf(n);
     const Vec2       o    = cam.ToScreen(ring.center);
     const float      R    = ring.radius * z;
     const float      fs   = s.fontSize * z;
     auto dir = [](double a) { return Vec2{static_cast<float>(std::sin(a)), static_cast<float>(-std::cos(a))}; };
 
-    const Rect r = cam.ToScreen(n.frame);
+    const Rect r = cam.ToScreen(frame);
     c.push_back(FillRect{r, s.nodeFill, sel ? s.selection : (hov ? s.muted : s.nodeStroke), sel ? 2.f : 1.f, s.corner * z});
     // The ring: whole when cyclic, else a 270° arc open at the bottom.
     const double      a0 = axis.cyclic ? 0.0 : -0.75 * kPi, a1 = axis.cyclic ? 2 * kPi : 0.75 * kPi;
@@ -2032,8 +2033,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
     auto wired = [&](std::string_view node, std::string_view port) { return wiredPorts_.contains(PortKey(node, port)); };
     const bool  offering = chrome && mode_ == Mode::Connecting && started_;   // a wire is being dragged: ring where it may land
     const float pinR     = PinRadius(z);
-    auto drawPins = [&](const Node& n, const Camera& cm) {
-        for (const PortSlot& slot : SlotsOf(n)) {
+    auto drawPins = [&](const Node& n, const Rect& frame, const Camera& cm) {
+        for (const PortSlot& slot : SlotsOf(n, frame)) {
             const PortType* pt    = schema_->FindPortType(slot.def.typeFrom.empty() ? slot.def.type
                                                                                     : PortTypeOf(*graph_, *schema_, n, slot.def.id));
             const Color     color = pt ? pt->color : s.muted;
@@ -2067,7 +2068,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
             c.push_back(FillRect{r.Inflated(3.f), Color{0, 0, 0, 0}, ring->second, 2.f, s.corner * z + 3.f});
         const float hh = std::min(s.groupHeader * z, r.h);
         c.push_back(FillRect{{r.x + 1.f, r.y + 1.f, std::max(0.f, r.w - 2.f), std::max(0.f, hh - 1.f)}, head, {}, 0.f, s.corner * z});
-        drawPins(*g, cam);
+        drawPins(*g, g->frame, cam);
 
         const float fs = s.fontSize * z;
         if (fs < 4.f) continue;
@@ -2158,26 +2159,24 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
     };
 
     // Nodes: unselected, then selected on top. With a view, a node draws with the host's live content at the view's place.
-    std::function<void(const Node&)> drawNode;
+    std::function<void(const Node&, const Rect&)> drawNode;
+    const Rect screenView{0, 0, viewport.x, viewport.y};
     auto drawLive = [&](const Node& shownNode) {
-        const Node* live = LiveOf(shownNode);
-        if (live == &shownNode) return drawNode(shownNode);
-        Node n  = *live;
-        n.frame = shownNode.frame;
-        drawNode(n);
+        if (!cam.ToScreen(shownNode.frame).Intersects(screenView)) return;   // off screen: no lookup either
+        drawNode(*LiveOf(shownNode), shownNode.frame);                        // no copy: content and place apart
     };
-    drawNode = [&](const Node& n) {
+    drawNode = [&](const Node& n, const Rect& frame) {
         const NodeType& t    = TypeOf(n);
         const bool      sel  = chrome && selNodes_.contains(n.id);
         const bool      hov  = chrome && (n.id == hovered_ || n.id == connectTo_);
         const bool      note = t.shape == NodeShape::Note;
-        const Rect      r    = cam.ToScreen(n.frame);
+        const Rect      r    = cam.ToScreen(frame);
         if (!r.Intersects(Rect{0, 0, viewport.x, viewport.y})) return;
 
         if (!Visible(n)) return;
         drawGlow(r, glowOf(nodeGlow, n.id));
         if (t.shape == NodeShape::Dial) {
-            DrawDial(c, n, t, cam, sel, hov);
+            DrawDial(c, n, frame, t, cam, sel, hov);
         } else if (t.shape == NodeShape::Dot) {
             c.push_back(Circle{r.Center(), std::min(r.w, r.h) * 0.5f, t.band, sel ? s.selection : (hov ? s.text : t.band), sel ? 2.f : 1.f});
         } else if (t.shape == NodeShape::Pill) {
@@ -2220,7 +2219,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                 y += fs * 1.5f;
 
                 // Port rows: a left port's label after its pin, a right port's before it; a row holding both splits.
-                const auto slots = SlotsOf(n);
+                const auto slots = SlotsOf(n, frame);
                 std::vector<std::string_view> shown;   // fields a port's row already shows
                 std::map<float, int> rowSides;          // row top -> 1 left, 2 right
                 for (const PortSlot& sl : slots)
@@ -2316,7 +2315,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         // An alias draws dimmed, with a dashed outline.
         if (!n.aliasOf.empty())
             c.push_back(FillRect{r, Color{s.background.r, s.background.g, s.background.b, 120}, s.muted, 1.f, s.corner * z, true});
-        drawPins(n, cam);
+        drawPins(n, frame, cam);
         if (sel || hov) drawHandles(n, r, sel);
     };
     for (std::size_t i = 0; i < Shown().nodes.size(); ++i)

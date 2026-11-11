@@ -354,6 +354,7 @@ private:
     [[nodiscard]] const WirePaths& Wires() const;
     [[nodiscard]] const NodeType& TypeOf(const Node& n) const;
     [[nodiscard]] std::vector<PortSlot> SlotsOf(const Node& n) const;
+    [[nodiscard]] std::vector<PortSlot> SlotsOf(const Node& n, const Rect& frame) const;
     /// @brief The port of `to` a wire dragged from `port` of `from` lands on when dropped on `to` as a whole: the first
     ///        that can take it, preferring one with room. Empty when none can.
     [[nodiscard]] std::string LandingPort(const Node& from, std::string_view port, const Node& to) const;
@@ -411,7 +412,7 @@ private:
     ///        or every one. Nodes marked `dragged` are out of every list.
     /// @param moved collects the nodes it moved (a drag reroutes their wires)
     void PlaceDocks(const std::vector<char>& dragged, const std::vector<std::size_t>& roots, std::vector<std::size_t>* moved) const;
-    void DrawDial(std::vector<DrawCmd>& c, const Node& n, const NodeType& t, const Camera& cam, bool sel, bool hov) const;
+    void DrawDial(std::vector<DrawCmd>& c, const Node& n, const Rect& frame, const NodeType& t, const Camera& cam, bool sel, bool hov) const;
     /// @brief Fit every open member group of `view_` around what it shows, deepest first.
     void FitView() const;
     /// @brief Bring the per-graph caches up to date (rerouting when a frame, a port, an edge or the options changed):

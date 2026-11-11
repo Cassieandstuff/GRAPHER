@@ -44,6 +44,8 @@ struct PortSlot {
 
 /// @return every port of the node, placed
 [[nodiscard]] std::vector<PortSlot> LayoutPorts(const Node& node, const Schema& schema, const CardMetrics& metrics);
+/// @brief The same, the node at `frame` (where it is drawn) instead of its own.
+[[nodiscard]] std::vector<PortSlot> LayoutPorts(const Node& node, const Schema& schema, const CardMetrics& metrics, const Rect& frame);
 
 /// @return the slot of port `id`, or nullptr
 [[nodiscard]] const PortSlot* FindSlot(const std::vector<PortSlot>& slots, std::string_view id);
@@ -57,9 +59,11 @@ struct PortSlot {
 
 /// @return where a card's own rows (Node::rows) start, world units
 [[nodiscard]] float RowsTop(const Node& node, const Schema& schema, const CardMetrics& metrics);
+[[nodiscard]] float RowsTop(const Node& node, const Schema& schema, const CardMetrics& metrics, const Rect& frame);
 
 /// @return the line of row `index` of Node::rows, world units
 [[nodiscard]] Rect RowRect(const Node& node, const Schema& schema, const CardMetrics& metrics, std::size_t index);
+[[nodiscard]] Rect RowRect(const Node& node, const Schema& schema, const CardMetrics& metrics, std::size_t index, const Rect& frame);
 
 /// @return the height a card needs to show its header, its port rows, its own rows, its on-card fields and its image
 [[nodiscard]] float CardHeight(const Node& node, const Schema& schema, const CardMetrics& metrics);

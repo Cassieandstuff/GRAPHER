@@ -53,10 +53,15 @@ std::vector<PortDef> PortsOf(const Node& node, const Schema& schema)
 
 std::vector<PortSlot> LayoutPorts(const Node& node, const Schema& schema, const CardMetrics& m)
 {
+    return LayoutPorts(node, schema, m, node.frame);
+}
+
+std::vector<PortSlot> LayoutPorts(const Node& node, const Schema& schema, const CardMetrics& m, const Rect& frame)
+{
     std::vector<PortSlot> out;
     const std::vector<PortDef> ports = PortsOf(node, schema);
     if (ports.empty()) return out;
-    const Rect& f    = node.frame;
+    const Rect& f    = frame;
     const bool  card = IsCard(node, schema);
     const bool  group = !card && IsGroup(node, schema);
     const NodeType* type = schema.FindNode(node.type);
@@ -95,7 +100,7 @@ std::vector<PortSlot> LayoutPorts(const Node& node, const Schema& schema, const 
             slot.at = {x, std::min(y, f.Bottom())};
         } else if (const int bound = card && horizontal ? RowOfPort(node, p.id) : -1; bound >= 0) {
             // On the line of the Row that claims it.
-            slot.row = RowRect(node, schema, m, static_cast<std::size_t>(bound));
+            slot.row = RowRect(node, schema, m, static_cast<std::size_t>(bound), frame);
             slot.at  = {x, slot.row.y + m.Row() * 0.5f};
         } else if (card && horizontal) {
             int&        k = rowAt[slot.side == PortSide::Left ? 0 : 1];
@@ -130,12 +135,22 @@ int RowOfPort(const Node& node, std::string_view port)
 
 float RowsTop(const Node& node, const Schema& schema, const CardMetrics& m)
 {
-    return node.frame.y + m.Header() + m.Row() * static_cast<float>(PortRows(node, schema));
+    return RowsTop(node, schema, m, node.frame);
+}
+
+float RowsTop(const Node& node, const Schema& schema, const CardMetrics& m, const Rect& frame)
+{
+    return frame.y + m.Header() + m.Row() * static_cast<float>(PortRows(node, schema));
 }
 
 Rect RowRect(const Node& node, const Schema& schema, const CardMetrics& m, std::size_t index)
 {
-    return {node.frame.x, RowsTop(node, schema, m) + m.Row() * static_cast<float>(index), node.frame.w, m.Row()};
+    return RowRect(node, schema, m, index, node.frame);
+}
+
+Rect RowRect(const Node& node, const Schema& schema, const CardMetrics& m, std::size_t index, const Rect& frame)
+{
+    return {frame.x, RowsTop(node, schema, m, frame) + m.Row() * static_cast<float>(index), frame.w, m.Row()};
 }
 
 int PortRows(const Node& node, const Schema& schema)
