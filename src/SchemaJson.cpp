@@ -167,6 +167,7 @@ NodeType ReadNodeType(Reader& r, const json::Value& o, std::size_t index)
     r.Enum(o, "groupMode", kGroupModes, t.groupMode, where);
     r.Bool(o, "showCount", t.showCount, where);
     r.Bool(o, "fitHeight", t.fitHeight, where);
+    r.Bool(o, "fixed", t.fixed, where);
     const json::Array& fields = r.List(o, "fields", where);
     for (std::size_t k = 0; k < fields.size() && r.Ok(); ++k) {
         FieldDef f;
@@ -245,6 +246,7 @@ json::Value WriteNodeType(const NodeType& t)
     Put(o, "groupMode", t.groupMode, def.groupMode, std::string(NameOf(kGroupModes, t.groupMode)));
     Put(o, "showCount", t.showCount, def.showCount, t.showCount);
     Put(o, "fitHeight", t.fitHeight, def.fitHeight, t.fitHeight);
+    Put(o, "fixed", t.fixed, def.fixed, t.fixed);
     if (!t.fields.empty()) {
         json::Array fields;
         for (const FieldDef& f : t.fields) {

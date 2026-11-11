@@ -290,7 +290,7 @@ void Canvas::SetCollapsed(std::string_view group, bool collapsed)
 void Canvas::SetAllCollapsed(bool collapsed, const std::function<bool(const Node&)>& which)
 {
     for (const Node& n : graph_->nodes)
-        if (IsMemberGroup(n, *schema_) && (!which || which(n))) SetCollapsed(n.id, collapsed);
+        if (IsMemberGroup(n, *schema_) && !TypeOf(n).fixed && (!which || which(n))) SetCollapsed(n.id, collapsed);
 }
 
 void Canvas::Reveal(std::string_view nodeId)
@@ -758,8 +758,11 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
         if (const Rect r = camera.ToScreen(n.frame); TypeOf(n).shape == NodeShape::Dot &&
                                                      Distance(screen, r.Center()) <= std::max(std::min(r.w, r.h) * 0.3f, 4.f))
             return {HitKind::Node, n.id};   // its pins cover its rim; its middle grabs it
-        if (grouped_[i]) groups.push_back(&n);
-        else order.push_back(&n);
+        if (grouped_[i]) {
+            if (!TypeOf(n).fixed) groups.push_back(&n);   // a fixed group is canvas: a press on it is a press on nothing
+        } else {
+            order.push_back(&n);
+        }
     }
     std::stable_partition(order.begin(), order.end(), [&](const Node* n) { return selNodes_.contains(n->id); });
     std::stable_sort(groups.begin(), groups.end(), [](const Node* a, const Node* b) { return a->frame.Area() < b->frame.Area(); });
@@ -1678,6 +1681,7 @@ bool Canvas::PointerMove(Vec2 at, Modifiers mods)
         std::string over = hit.kind == HitKind::Edge ? std::string{} : hit.id;
         if (over == hovered_) return false;
         hovered_ = std::move(over);
+        if (onHoverChanged) onHoverChanged(hovered_);
         return true;
     }
     case Mode::Moving:
@@ -2075,7 +2079,7 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
         const Node*        live  = LiveOf(*g);   // the host's own node: the view's copy keeps only its place
         const std::string& named = t.titleField.empty() ? std::string{} : live->Field(t.titleField);
         std::string        title = named.empty() ? "Untitled " + t.label : named;
-        if (t.groupMode == GroupMode::Members) title = (IsCollapsed(g->id) ? "▸ " : "▾ ") + title;   // its arrow
+        if (t.groupMode == GroupMode::Members && !t.fixed) title = (IsCollapsed(g->id) ? "▸ " : "▾ ") + title;   // its arrow
         if (t.showCount) title += " (" + std::to_string(count_[static_cast<std::size_t>(g - Shown().nodes.data())]) + ")";
         std::string        detail;
         for (const FieldDef& f : t.fields) {

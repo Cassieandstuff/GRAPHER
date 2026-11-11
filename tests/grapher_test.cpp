@@ -1522,6 +1522,46 @@ void TestLayoutDocks()
     CHECK((G.Holds(M) && G.Holds(N) && G.x == M.x - o.padding && !N.Intersects(M)));
 }
 
+void TestFixedGroupAndHover()
+{
+    // A fixed member group is the canvas: a press on its header neither picks, moves nor closes it, and "close all" passes
+    // it by; what it holds is picked as ever. The host hears what the pointer is over.
+    grapher::Schema s = FolderSchema();
+    grapher::NodeType frame{"frame", "Frame"};
+    frame.shape     = grapher::NodeShape::Group;
+    frame.groupMode = grapher::GroupMode::Members;
+    frame.fixed     = true;
+    s.nodeTypes.push_back(frame);
+    grapher::Graph g;
+    g.nodes.push_back({"U", "frame", {0, 0, 400, 300}});
+    g.nodes.push_back({"a", "box", {50, 60, 100, 60}});
+    g.nodes.push_back({"F", "folder", {200, 60, 150, 150}});
+    g.nodes.push_back({"b", "box", {220, 100, 100, 60}});
+    g.nodes[1].parent = g.nodes[2].parent = "U";
+    g.nodes[3].parent = "F";
+    grapher::Canvas c(g, s);
+    c.SetViewport({1000, 600});
+    std::vector<std::string> hovers;
+    c.onHoverChanged = [&](std::string_view id) { hovers.emplace_back(id); };
+
+    const grapher::Rect U = c.ScreenRectOf("U");
+    const grapher::Vec2 header{U.x + 8, U.y + 6};
+    CHECK(c.HitTest(header).kind == grapher::HitKind::None);
+    c.PointerDown(header, grapher::Button::Left, {});
+    c.PointerUp(header, grapher::Button::Left);
+    CHECK((!c.IsCollapsed("U") && c.SelectedNodes().empty() && g.nodes[0].frame == (grapher::Rect{0, 0, 400, 300})));
+    c.SetAllCollapsed(true);
+    CHECK((!c.IsCollapsed("U") && c.IsCollapsed("F")));
+    c.SetAllCollapsed(false);
+
+    const grapher::Vec2 onA = c.ScreenRectOf("a").Center();
+    CHECK(c.HitTest(onA).id == "a");
+    c.PointerMove(onA);
+    c.PointerMove(onA + grapher::Vec2{1, 0});   // still over it: no news
+    c.PointerMove({U.Right() + 300, U.Bottom() + 200});
+    CHECK((hovers == std::vector<std::string>{"a", ""}));
+}
+
 void TestFrameGroupsUnchanged()
 {
     // Architect Designer's folders are frame groups: geometric membership, no arrow, no closing, no parents set, and the
@@ -2067,6 +2107,7 @@ int main()
     TestAliasesAndHolding();
     TestLayoutGraph();
     TestLayoutDocks();
+    TestFixedGroupAndHover();
     TestFrameGroupsUnchanged();
     TestDocks();
     TestShowWithAndWireStyles();

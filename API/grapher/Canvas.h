@@ -196,6 +196,8 @@ public:
     std::function<void(const Intent&)>          onIntent;
     /// @brief A member group opened or closed (view state, not an edit: a host may keep it, or lay the graph out again).
     std::function<void(std::string_view group, bool collapsed)> onCollapseChanged;
+    /// @brief The node under the pointer changed (empty: none), while no gesture runs: a host can trace what it stands for.
+    std::function<void(std::string_view node)>                  onHoverChanged;
     /// @brief Wires may end on a node as a whole (a port-less node's connect handle). False: every wire runs port to
     ///        port, and port-less nodes (notes, frames) take none.
     bool wholeNodeWires = true;
@@ -218,7 +220,7 @@ public:
     void SetCollapsed(std::string_view group, bool collapsed);
     [[nodiscard]] bool IsCollapsed(std::string_view group) const { return collapsed_.contains(group); }
     [[nodiscard]] const NodeSet& CollapsedGroups() const { return collapsed_; }
-    /// @brief Open or close every member group, or those `which` picks.
+    /// @brief Open or close every member group but the fixed ones, or those of them `which` picks.
     void SetAllCollapsed(bool collapsed, const std::function<bool(const Node&)>& which = {});
     /// @brief Open every member group around the node, so it shows.
     void Reveal(std::string_view nodeId);

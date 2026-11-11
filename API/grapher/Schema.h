@@ -79,6 +79,9 @@ struct NodeType {
     GroupMode             groupMode = GroupMode::Frame;   ///< a group's: what it holds
     bool                  showCount = false;   ///< a group's header says how many nodes it holds, nested ones included
     bool                  fitHeight = false;   ///< a card grows to show all its ports, rows and fields (a port count that is data)
+    /// @brief A member group that stays as the host puts it (a whole document's frame): a press on it is a press on the
+    ///        canvas, so it is never picked, moved or closed by hand, and its header shows no arrow.
+    bool                  fixed = false;
     friend bool operator==(const NodeType&, const NodeType&) = default;
 };
 
