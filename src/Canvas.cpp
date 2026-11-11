@@ -228,6 +228,7 @@ Canvas::Canvas(Graph& graph, const Schema& schema) : graph_(&graph), host_(&grap
 void Canvas::SetGraph(Graph& graph)
 {
     dragKey_    = 0;
+    resync_     = true;
     graph_      = &graph;
     host_       = &graph;
     scratch_    = {};
@@ -317,7 +318,8 @@ void Canvas::HoldInPlace(std::string_view nodeId)
 
 void Canvas::Refresh()
 {
-    dragKey_ = 0;   // the host changed its graph: a drag under way keys it in full again
+    dragKey_ = 0;   // the host changed its graph: a drag under way keys and routes it in full again
+    resync_  = true;
     // The node held in place keeps its header where it was on screen.
     if (!hold_.empty()) {
         const std::string held = std::exchange(hold_, {});
@@ -1271,7 +1273,9 @@ void Canvas::Sync() const
     // With a backend, a slow live reroute leaves the settled wires alone and patches only the dragged nodes' wires.
     const bool     patch = router && dragging && backendMs_ > kLiveRouteMs;
     // A large graph without one does the same with the built-in router: only the dragged nodes' wires move.
-    const bool     local = !router && dragging && graph_->nodes.size() > kLargeGraph && wiresValid_ && synced_ == graph_;
+    // A host change since the last frame rebuilds everything once, even mid-drag.
+    const bool     local = !router && dragging && graph_->nodes.size() > kLargeGraph && wiresValid_ && synced_ == graph_ && !resync_;
+    resync_              = false;
     const bool     plain = (!router || patch) && dragging && routeMs_ > kLiveRouteMs && !local;
     RoutingOptions o     = routing;
     if (plain) o.avoidNodes = false;

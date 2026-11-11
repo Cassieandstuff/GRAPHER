@@ -226,7 +226,11 @@ public:
     void Refresh();
     /// @brief The host changed the graph itself (an undo, a live update, another panel's edit), perhaps mid-gesture: the
     ///        next frame checks every node and edge again instead of trusting that only the drag moved anything.
-    void GraphChanged() { dragKey_ = 0; }
+    void GraphChanged()
+    {
+        dragKey_ = 0;
+        resync_  = true;
+    }
     /// @return whether a proposal is showing (Propose mode, before Refresh)
     [[nodiscard]] bool Proposing() const { return graph_ != host_; }
     /// @brief Stop the gesture under way (Esc): a move or resize goes back where it started, a wire or box is dropped.
@@ -419,6 +423,7 @@ private:
     mutable std::unordered_map<std::string_view, std::size_t> index_;   ///< node id -> index
     mutable std::vector<std::vector<std::uint32_t>> incident_;   ///< per shown node: the shown edges touching it
     mutable std::size_t                             dragKey_ = 0;   ///< the cache key a large graph's drag began with
+    mutable bool                                    resync_  = false;   ///< the host changed the graph: route it all once
     mutable bool                                  useView_ = false;
     mutable Graph                                 view_;
     mutable std::vector<char>                     dashed_;    ///< per shown edge: it stands for wires into a closed group
