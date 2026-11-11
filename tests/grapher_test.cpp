@@ -2361,7 +2361,8 @@ constexpr const char* kSampleKit = R"KIT({
         { "select": "box[hot]:hovered", "stroke": "#00ff00" },
         { "select": "*:alias", "opacity": 0.5, "dash": true }
     ],
-    "pins": { "num": { "glyph": "circle" } }
+    "pins": { "num": { "glyph": "circle" } },
+    "groups": { "folder": { "fill": "#202020" } }
 })KIT";
 
 grapher::Schema KitSchema()
@@ -2381,7 +2382,7 @@ void TestKitJson()
     const auto  kit = grapher::ParseKit(kSampleKit, error);
     CHECK(kit.has_value());
     if (!kit) return std::fprintf(stderr, "  kit: %s\n", error.c_str()), void();
-    CHECK((kit->nodes.size() == 1 && kit->rules.size() == 4 && kit->reserved.contains("pins")));
+    CHECK((kit->nodes.size() == 1 && kit->rules.size() == 4 && kit->pins.size() == 1 && kit->reserved.contains("groups")));
     CHECK((kit->nodes[0].card.on.at("doubleClick") == "drill" && kit->nodes[0].card.content[0].content[2].condition == "[flagged]"));
     // What it writes reads back the same, and writes the same again.
     const std::string text = grapher::WriteKit(*kit);

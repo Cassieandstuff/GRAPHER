@@ -344,7 +344,10 @@ std::optional<Selector> ParseSelector(std::string_view text)
         } else if (text[i] == '>') {
             ++i;
             skip();
-            out.part = word();
+            // A part is a name, or a kind of pin or row (`pin:<kind>`, `row:<kind>`): the rest of the selector.
+            const std::size_t b = i;
+            while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+            out.part = std::string(text.substr(b, i - b));
             skip();
             if (out.part.empty() || i != text.size()) return std::nullopt;
             break;
