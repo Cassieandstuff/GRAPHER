@@ -812,9 +812,11 @@ void Canvas::Sync() const
         // Only the wires of the dragged nodes reroute, among the nodes they join; the rest keep their settled paths.
         std::unordered_set<std::string_view> moving, joined;
         for (const auto& [id, frame] : origin_) moving.insert(id);
-        Graph sub;
-        for (const Edge& e : graph_->edges)
-            if (moving.contains(e.from) || moving.contains(e.to)) {
+        Graph                    sub;
+        std::vector<std::size_t> touched;
+        for (std::size_t i = 0; i < graph_->edges.size(); ++i)
+            if (const Edge& e = graph_->edges[i]; moving.contains(e.from) || moving.contains(e.to)) {
+                touched.push_back(i);
                 sub.edges.push_back(e);
                 joined.insert(e.from);
                 joined.insert(e.to);
@@ -822,6 +824,15 @@ void Canvas::Sync() const
         for (const Node& n : graph_->nodes)
             if (joined.contains(n.id)) sub.nodes.push_back(n);
         for (auto& [id, path] : RouteWires(sub, *schema_, o)) wires_[id] = std::move(path);
+        if (paths_.size() == graph_->edges.size()) {
+            // A drag changes no node or edge, only frames: the tables keep their shape, and only the touched wires'
+            // paths and bounds change.
+            for (const std::size_t i : touched) SetPath(i);
+            wiresKey_    = key;
+            synced_      = graph_;
+            syncedEdits_ = edits_;
+            return;
+        }
     } else {
         wires_ = RouteWires(*graph_, *schema_, o);
         if (!plain) routeMs_ = elapsed();
@@ -852,16 +863,22 @@ void Canvas::Sync() const
         const Edge& e = graph_->edges[i];
         if (!e.fromPort.empty()) wiredPorts_.insert(PortKey(e.from, e.fromPort));
         if (!e.toPort.empty()) wiredPorts_.insert(PortKey(e.to, e.toPort));
-        const auto w = wires_.find(e.id);
-        if (w == wires_.end() || w->second.size() < 2) continue;
-        paths_[i] = &w->second;
-        Vec2 lo = w->second.front(), hi = lo;
-        for (const Vec2& p : w->second) {
-            lo = {std::min(lo.x, p.x), std::min(lo.y, p.y)};
-            hi = {std::max(hi.x, p.x), std::max(hi.y, p.y)};
-        }
-        boxes_[i] = Rect::FromPoints(lo, hi);
+        SetPath(i);
     }
+}
+
+void Canvas::SetPath(std::size_t i) const
+{
+    paths_[i] = nullptr;
+    const auto w = wires_.find(graph_->edges[i].id);
+    if (w == wires_.end() || w->second.size() < 2) return;
+    paths_[i] = &w->second;
+    Vec2 lo = w->second.front(), hi = lo;
+    for (const Vec2& p : w->second) {
+        lo = {std::min(lo.x, p.x), std::min(lo.y, p.y)};
+        hi = {std::max(hi.x, p.x), std::max(hi.y, p.y)};
+    }
+    boxes_[i] = Rect::FromPoints(lo, hi);
 }
 
 // ── Gestures ─────────────────────────────────────────────────────────────────

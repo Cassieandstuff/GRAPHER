@@ -124,10 +124,10 @@ void Schema::PutNodeType(NodeType type)
 
 // ── Graph ────────────────────────────────────────────────────────────────────
 
-const Row* Node::FindRow(std::string_view id) const
+const Row* Node::FindRow(std::string_view rowId) const
 {
     for (const Row& r : rows)
-        if (r.id == id) return &r;
+        if (r.id == rowId) return &r;
     return nullptr;
 }
 

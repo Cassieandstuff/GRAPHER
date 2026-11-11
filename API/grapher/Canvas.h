@@ -301,6 +301,8 @@ private:
     /// @brief Sync unless nothing could have changed since the last one (the same graph, counts and canvas edits): a
     ///        hit test runs on the picture last drawn.
     void SyncForHit() const;
+    /// @brief Point edge `i`'s table entries at its wire (or none).
+    void SetPath(std::size_t i) const;
     [[nodiscard]] const Node* NodeById(std::string_view id) const;
 
     mutable WirePaths   wires_;

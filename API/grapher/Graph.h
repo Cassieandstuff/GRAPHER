@@ -53,7 +53,7 @@ struct Node {
     std::string          image;     ///< a picture the backend resolves by this key (a thumbnail); see NodeType::imageHeight
 
     /// @return the row `id`, or nullptr
-    [[nodiscard]] const Row* FindRow(std::string_view id) const;
+    [[nodiscard]] const Row* FindRow(std::string_view rowId) const;
     /// @return the field's value, or an empty string
     [[nodiscard]] const std::string& Field(std::string_view key) const;
     friend bool operator==(const Node&, const Node&) = default;

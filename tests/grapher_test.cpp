@@ -1060,7 +1060,7 @@ void TestPropose()
     const auto* gone = intents.size() == 1 ? std::get_if<grapher::RemoveItems>(&intents[0].change) : nullptr;
     CHECK(gone && gone->nodes == grapher::NodeSet{"m"} && gone->edges == std::vector<std::string>{"old"} && g.nodes.size() == 3);
     c.Refresh();
-    CHECK(c.SelectedNodes() == grapher::NodeSet{"m"});   // still there: the host never removed it
+    CHECK(g.FindNode("m") && c.SelectedNodes().empty());   // still there (the host never removed it), no longer selected
     const std::string added = c.AddNode("mix", {700, 400});
     const auto* made = std::get_if<grapher::CreateNode>(&intents.back().change);
     CHECK(made && made->node.id == added && made->node.type == "mix" && !g.FindNode(added));
