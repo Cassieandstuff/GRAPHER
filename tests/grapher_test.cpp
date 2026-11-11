@@ -2336,7 +2336,7 @@ void TestGoldenPicture()
 }
 
 // ── Kits ─────────────────────────────────────────────────────────────────────
-constexpr const char* kSampleKit = R"({
+constexpr const char* kSampleKit = R"KIT({
     "tokens": { "body": "#2e3036", "hi": "#5ca0ff", "dim": "#ebebf0be" },
     "fonts": { "title": { "size": 13, "bold": true } },
     "metrics": { "padding": 8, "fontSize": 11, "row": 18 },
@@ -2362,7 +2362,7 @@ constexpr const char* kSampleKit = R"({
         { "select": "*:alias", "opacity": 0.5, "dash": true }
     ],
     "pins": { "num": { "glyph": "circle" } }
-})";
+})KIT";
 
 grapher::Schema KitSchema()
 {
