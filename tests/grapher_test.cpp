@@ -2033,6 +2033,8 @@ grapher::PartSpec FullPart(grapher::PartKind kind, std::string id)
     return p;
 }
 
+const char* SampleKit();   // the sample kit, defined with the kit tests below
+
 void TestKitSchema()
 {
     // A kit stating every field there is writes JSON the schema takes, member by member.
@@ -2079,7 +2081,7 @@ void TestKitSchema()
     CHECK(!AgainstKitSchema(R"({"nodes": {"x": {"parts": [{"part": "rim", "chamfer": 2}]}}})").empty());
     CHECK(AgainstKitSchema(R"({"rules": [{"select": "* > pin:x", "fill": "always"}, {"select": "box:selected", "fill": "#fff"}]})").empty());
     // The sample kit and the example material kit are kits the schema takes; a kit may name its schema.
-    CHECK(AgainstKitSchema(kSampleKit).empty());
+    CHECK(AgainstKitSchema(SampleKit()).empty());
     const std::string material = ReadSource("examples/material/material.kit.json");
     CHECK(AgainstKitSchema(material).empty());
     std::string error;
@@ -2692,6 +2694,7 @@ constexpr const char* kSampleKit = R"KIT({
     "pins": { "num": { "glyph": "circle" } },
     "actions": { "drill": { "label": "Open" } }
 })KIT";
+const char* SampleKit() { return kSampleKit; }
 
 grapher::Schema KitSchema()
 {
