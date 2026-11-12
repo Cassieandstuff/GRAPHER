@@ -1852,7 +1852,7 @@ void TestOctagonDial()
     CHECK((oct.Holds({0, 0}) && oct.Holds({79, -79}) && !oct.Holds({95, 95}) && !oct.Holds({0, 101})));
     // Open, it reaches round to the flat bottom edge's ends; its outline keeps the corners between.
     const double reach = oct.OpenReach();
-    CHECK(std::abs(reach - (1.0 - std::atan2(60.0, 100.0) / kPi)) < 1e-9);
+    CHECK(std::abs(reach - (1.0 - std::atan2(60.0, 100.0) / kPi)) < 1e-6);   // the ring's sizes are floats
     CHECK((Near(oct.At(reach * kPi), {60, 100}) && Near(oct.At(-reach * kPi), {-60, 100})));
     const auto edge = oct.Outline(-reach * kPi, reach * kPi);
     CHECK((edge.size() == 2 + 6 && Near(edge.front(), {-60, 100}) && Near(edge.back(), {60, 100}) && Near(edge[1], {-100, 60})));
