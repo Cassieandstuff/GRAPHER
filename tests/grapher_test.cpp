@@ -1,6 +1,7 @@
 // GRAPHER core tests: plain asserts, no framework (the TARGETER convention).
 #include <grapher/Grapher.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -1837,6 +1838,105 @@ void TestDial()
     CHECK(back && *back == styled);
 }
 
+// K4b: an octagon dial. The rim is an octagon (a kit's rim part), a row stands where the ray at its value's angle meets it,
+// its handle drags along the edges; the node is the octagon, a header band on its top edge, its other rows listed under
+// it with their pins on its edges, and an open dial's gap is the flat bottom edge, where the needle's reading goes.
+void TestOctagonDial()
+{
+    constexpr double kPi = 3.14159265358979323846;
+    // The rim: rays meet the flat sides and the cut corners; outward is square to the edge met.
+    const grapher::Ring oct{{0, 0}, 100.f, 0.4f};
+    CHECK((Near(oct.At(0.0), {0, -100}) && Near(oct.At(kPi / 2), {100, 0}) && Near(oct.At(kPi / 4), {80, -80})));
+    CHECK((Near(oct.At(kPi / 4, 0.5f), {40, -40}) && Near(oct.Normal(0.0), {0, -1}) && Near(oct.Normal(kPi / 2), {1, 0})));
+    CHECK((std::abs(oct.Normal(kPi / 4).x - 0.7071f) < 1e-3f && std::abs(oct.Normal(kPi / 4).y + 0.7071f) < 1e-3f));
+    CHECK((oct.Holds({0, 0}) && oct.Holds({79, -79}) && !oct.Holds({95, 95}) && !oct.Holds({0, 101})));
+    // Open, it reaches round to the flat bottom edge's ends; its outline keeps the corners between.
+    const double reach = oct.OpenReach();
+    CHECK(std::abs(reach - (1.0 - std::atan2(60.0, 100.0) / kPi)) < 1e-9);
+    CHECK((Near(oct.At(reach * kPi), {60, 100}) && Near(oct.At(-reach * kPi), {-60, 100})));
+    const auto edge = oct.Outline(-reach * kPi, reach * kPi);
+    CHECK((edge.size() == 2 + 6 && Near(edge.front(), {-60, 100}) && Near(edge.back(), {60, 100}) && Near(edge[1], {-100, 60})));
+    // A circle is as it was: 270 degrees.
+    CHECK((grapher::Ring{{0, 0}, 10.f}.OpenReach() == 0.75 && Near(grapher::Ring{{0, 0}, 10.f}.At(kPi / 2), {10, 0})));
+    // The axis spreads over that reach.
+    const grapher::DialAxis wide = grapher::DialAxis::Make(false, 0.f, 0.f, std::vector<float>{0.f, 1.f}, reach);
+    CHECK((std::abs(wide.Angle(0.f) + reach * kPi) < 1e-9 && std::abs(wide.Value(wide.Angle(0.25f)) - 0.25f) < 1e-4f));
+    // A header strip clipped to an octagon keeps its top and the cut corners' upper parts.
+    const auto band = grapher::ClipAbove({{-60, -100}, {60, -100}, {100, -60}, {100, 60}, {60, 100}, {-60, 100}, {-100, 60}, {-100, -60}}, -80.f);
+    CHECK((band.size() == 4 && Near(band[2], {80, -80}) && Near(band[3], {-80, -80})));
+
+    // A dial node drawn as an octagon by its kit.
+    grapher::Schema s;
+    grapher::NodeType blend{"blend", "Blend"};
+    blend.shape      = grapher::NodeShape::Dial;
+    blend.titleField = "title";
+    s.nodeTypes      = {blend};
+    std::string error;
+    const auto  kit = grapher::ParseKit(R"K({"nodes": {"blend": {"fill": "#202020", "stroke": "#000000", "metrics": {"header": 40, "row": 18},
+        "parts": [{"part": "header", "fill": "#ff0000", "height": 40, "content": [{"part": "text", "id": "title", "from": "field:title"}]},
+                  {"part": "rim", "shape": "octagon", "chamfer": 0.4, "stroke": "#ffffff",
+                   "content": [{"part": "text", "id": "reading", "color": "#00ff00"}]}]}}})K", error);
+    CHECK((kit && error.empty()));
+    if (!kit) return;
+    CHECK((grapher::ParseKit(grapher::WriteKit(*kit), error) == *kit));
+    for (const char* bad : {R"({"nodes": {"x": {"parts": [{"part": "rim", "shape": "hexagon"}]}}})",
+                            R"({"nodes": {"x": {"parts": [{"part": "rim", "chamfer": 1.5}]}}})"}) {
+        error.clear();
+        CHECK((!grapher::ParseKit(bad, error) && !error.empty()));
+    }
+    grapher::Graph g;
+    g.nodes.push_back({"d", "blend", {0, 0, 400, 500}});
+    grapher::Node& d = g.nodes[0];
+    d.fields      = {{"title", "Locomotion"}};
+    d.ports       = {{"in", "", "", grapher::PortDir::In}, {"p0", "", "", grapher::PortDir::Out}, {"p1", "", "", grapher::PortDir::Out},
+                     {"p2", "", "", grapher::PortDir::Out}, {"pb", "", "", grapher::PortDir::In}};
+    d.ports[0].onHeader = true;
+    d.rows = {{"r0", "walk", "0"}, {"r1", "jog", "1"}, {"r2", "run", "2"}, {"b", "blendParameter"}, {"add", "+ children"}};
+    for (int k = 0; k < 3; ++k) d.rows[static_cast<std::size_t>(k)].port = "p" + std::to_string(k), d.rows[static_cast<std::size_t>(k)].field = "pos" + std::to_string(k);
+    d.rows[3].port = "pb";
+    d.dial         = {false, 0.f, 1.f, 1.f, "speed", {"r0", "r1", "r2"}};
+    grapher::Canvas c(g, s);
+    c.SetKit(&*kit);
+    c.SetViewport({800, 600});
+    grapher::CardMetrics m;
+    m.header      = 40.f;
+    m.row         = 18.f;
+    m.dialChamfer = 0.4f;
+    const grapher::DialShape shape = grapher::DialOf(d, m, d.frame);
+    const grapher::Ring&     ring  = shape.rim;
+    const grapher::DialAxis  axis  = grapher::AxisOf(d, ring.OpenReach());
+    CHECK((shape.Octagon() && shape.rowsTop == 40.f && shape.rowsBottom == 76.f && ring.chamfer == 0.4f));
+    // Pins: the rim's rows on the rim at their values (the lowest at the gap's end), the listed binding on the left edge at
+    // its line, the input on the left edge at the header's middle.
+    CHECK((Near(*c.PortScreenPos("d", "p1"), ring.At(axis.Angle(1.f))) && Near(*c.PortScreenPos("d", "p0"), ring.At(-ring.OpenReach() * kPi))));
+    CHECK(Near(*c.PortScreenPos("d", "pb"), {shape.EdgeX(49.f, false), 49.f}));
+    CHECK(Near(*c.PortScreenPos("d", "in"), {shape.EdgeX(20.f, false), 20.f}));
+    CHECK(shape.EdgeX(20.f, false) > 0.f);   // the cut corner narrows the top
+    // Hits follow the octagon: a cut corner is not the node; the listed rows hit as rows; the handles sit inside the rim.
+    CHECK(c.HitTest({3, 3}).kind == grapher::HitKind::None);
+    CHECK((c.HitTest({200, 45}).row == "b" && c.HitTest({200, 60}).row == "add" && c.HitTest({200, 60}).kind == grapher::HitKind::Row));
+    const grapher::Vec2 handle = ring.At(axis.Angle(1.f), 0.8f);
+    const grapher::Hit  hit    = c.HitTest(handle);
+    CHECK((hit.kind == grapher::HitKind::Handle && hit.row == "r1"));
+    // A handle drags along the edges: the value is the pointer's angle about the rim's centre.
+    const grapher::Vec2 to = ring.At(0.2 * kPi, 0.8f);
+    c.PointerDown(handle, grapher::Button::Left, {});
+    c.PointerMove(handle + (to - handle) * 0.5f);
+    c.PointerMove(to);
+    c.PointerUp(to, grapher::Button::Left);
+    CHECK(std::abs(std::stof(g.nodes[0].Field("pos1")) - axis.Value(0.2 * kPi)) < 1e-3f);
+    // Drawn: the header band inside the octagon's top, the reading centred on the flat bottom edge.
+    bool headerBand = false, readingOnGap = false;
+    for (const auto& cmd : c.Draw().cmds) {
+        if (const auto* p = std::get_if<grapher::Polygon>(&cmd); p && p->fill == grapher::Color{255, 0, 0})
+            headerBand = std::ranges::all_of(p->points, [](grapher::Vec2 v) { return v.y <= 40.01f; }) && p->points.size() >= 4;
+        if (const auto* t = std::get_if<grapher::Text>(&cmd); t && t->text.starts_with("speed"))
+            readingOnGap = std::abs(t->rect.Center().y - (ring.center.y + ring.radius)) < 1.f && std::abs(t->rect.Center().x - ring.center.x) < 1.f &&
+                           t->color == grapher::Color{0, 255, 0};
+    }
+    CHECK((headerBand && readingOnGap));
+}
+
 // ── Highlights, minimap, search ─────────────────────────────────────────────
 
 bool HasFill(const grapher::DrawList& l, auto&& pred)
@@ -3277,6 +3377,7 @@ int main()
     TestDocks();
     TestShowWithAndWireStyles();
     TestDial();
+    TestOctagonDial();
     TestHighlights();
     TestMinimapAndSearch();
     TestLiftWires();

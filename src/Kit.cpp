@@ -224,6 +224,7 @@ void Apply(const PartSpec& patch, PartSpec& to)
     set(patch.length, to.length);
     set(patch.direction, to.direction);
     set(patch.band, to.band);
+    set(patch.chamfer, to.chamfer);
 }
 
 void ApplyPin(const PinSpec& patch, PinSpec& to)
@@ -813,6 +814,9 @@ NodeLook ResolveLook(const Kit& kit, const NodeType& type, const std::vector<std
         }
     }
     look.shape = root.shape.value_or("box") == "pill" ? 1 : 0;
+    // An octagon rim makes the dial that shape: its geometry, which pins, hits and the layout read, says so.
+    for (const PartSpec& p : root.content)
+        if (p.kind == PartKind::Rim && shows(p) && p.shape.value_or("circle") == "octagon") m.dialChamfer = std::max(0.f, p.chamfer.value_or(0.3f));
     // A header of a stated height is where the rows start: pins, hits and docks read it from the metrics.
     for (const LookPart& p : look.parts)
         if (p.kind == PartKind::Header && p.height > 0.f && m.header <= 0.f) m.header = p.height;

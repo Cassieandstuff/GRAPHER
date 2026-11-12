@@ -1222,12 +1222,22 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
         if (Hit h = onOutline(*n, r); h.kind != HitKind::None) return h;
         if (r.Contains(screen)) {
             if (TypeOf(*n).shape == NodeShape::Dial) {
-                // A dial's handles sit inside its ring, one per row on it.
-                const Ring     ring = RingOf(n->frame);
-                const DialAxis axis = AxisOf(*n);
+                // A dial's handles sit inside its rim, one per row on it; an octagon is its outline, its listed rows
+                // under its header.
+                const DialShape shape = DialOf(*n, MetricsFor(*n), n->frame);
+                const Ring&     ring  = shape.rim;
+                const DialAxis  axis  = AxisOf(*n, ring.OpenReach());
+                const Vec2      world = camera.ToWorld(screen);
                 for (const Row& row : n->rows)
-                    if (!row.port.empty() && Distance(screen, camera.ToScreen(ring.At(axis.Angle(RowNumber(row)), kHandleAt))) <= pin)
+                    if (OnRim(*n, row) && Distance(screen, camera.ToScreen(ring.At(axis.Angle(RowNumber(row)), kHandleAt))) <= pin)
                         return {HitKind::Handle, n->id, {}, row.id};
+                if (!shape.Holds(world)) continue;
+                if (shape.Octagon() && world.y >= shape.rowsTop && world.y < shape.rowsBottom) {
+                    const Node* live = LiveOf(*n);
+                    auto        k    = static_cast<std::size_t>((world.y - shape.rowsTop) / MetricsFor(*n).Row());
+                    for (const Row& row : live->rows)
+                        if (!OnRim(*live, row) && k-- == 0) return {HitKind::Row, n->id, {}, row.id, kit_ ? PartAt(*n, world) : std::string()};
+                }
                 return {HitKind::Node, n->id};
             }
             if (TypeOf(*n).shape != NodeShape::Dot && ResizeGrip(r, style).Contains(screen)) return {HitKind::Resize, n->id};
@@ -1725,6 +1735,8 @@ std::optional<DockSlot> Canvas::FindDockSlot(std::string_view nodeId, const Rect
 void Canvas::DrawDial(std::vector<DrawCmd>& c, const Node& n, const Rect& frame, const NodeType& t, const Camera& cam, bool sel, bool hov) const
 {
     constexpr double kPi = std::numbers::pi;
+    if (const DialShape shape = DialOf(n, MetricsFor(n), frame); shape.Octagon())
+        return DrawOctagonDial(c, n, shape, t, cam, sel, hov);
     const Style&     s   = style;
     const float      z   = cam.zoom;
     const Ring       ring = RingOf(frame);
@@ -1778,7 +1790,7 @@ void Canvas::DrawDial(std::vector<DrawCmd>& c, const Node& n, const Rect& frame,
     // Each row on the ring: a handle inside it (following a drag), its label outside.
     const float handleSize = handle && handle->size > 0.f ? handle->size : 5.f;
     for (const Row& row : n.rows) {
-        if (row.port.empty()) continue;
+        if (!OnRim(n, row)) continue;
         const bool  dragging = mode_ == Mode::DialDrag && active_ == n.id && pressRow_ == row.id;
         const float v        = dragging ? dialValue_ : RowNumber(row);
         const auto  a        = axis.Angle(v);
@@ -1799,6 +1811,153 @@ void Canvas::DrawDial(std::vector<DrawCmd>& c, const Node& n, const Rect& frame,
         }
         c.push_back(Text{{l.x - w * 0.5f, l.y - fs * 0.65f, w, fs * 1.3f}, text, label ? label->size * z * label->scale : fs * 0.9f,
                          labelColor, label && label->bold, false, false, Align::Center, label && label->italic});
+    }
+}
+
+void Canvas::DrawOctagonDial(std::vector<DrawCmd>& c, const Node& n, const DialShape& shape, const NodeType& t, const Camera& cam, bool sel,
+                             bool hov) const
+{
+    constexpr double   kPi   = std::numbers::pi;
+    const Style&       s     = style;
+    const float        z     = cam.zoom;
+    const NodeLook&    look  = LookOf(n, (sel ? StateSelected : 0u) | (hov ? StateHovered : 0u) | StatesOf(n));
+    const CardMetrics& km    = look.metrics;
+    const Ring&        ring  = shape.rim;
+    const DialAxis     axis  = AxisOf(n, ring.OpenReach());
+    const Rect&        frame = shape.frame;
+    const float        fs    = km.fontSize * z;
+    const float        pad   = km.padding * z;
+    const LookPart*    head  = nullptr;
+    const LookPart*    rim   = nullptr;
+    for (const LookPart& part : look.parts) {
+        if (part.kind == PartKind::Header) head = &part;
+        if (part.kind == PartKind::Rim) rim = &part;
+    }
+    const LookPart* needle  = nullptr;
+    const LookPart* handle  = nullptr;
+    const LookText* label   = nullptr;
+    const LookText* reading = nullptr;
+    if (rim) {
+        for (const LookPart& part : rim->content) {
+            if (part.id == "needle") needle = &part;
+            if (part.id == "handle") handle = &part;
+        }
+        for (const LookText& line : rim->texts) {
+            if (line.id == "label") label = &line;
+            if (line.id == "reading") reading = &line;
+        }
+    }
+    const Color needleColor  = needle ? needle->color : s.text;
+    const Color handleColor  = handle ? handle->color : Color{220, 180, 60};
+    const Color labelColor   = label ? label->color : s.text;
+    const Color readingColor = reading ? reading->color : s.muted;
+
+    // The body: the octagon, its header band clipped to it, its outline over both.
+    const std::vector<Vec2> body = ToScreen(cam, shape.body);
+    c.push_back(Polygon{body, look.fill});
+    if (head && head->fill.a > 0) c.push_back(Polygon{ToScreen(cam, ClipAbove(shape.body, frame.y + shape.header)), head->fill});
+    std::vector<Vec2> outline = body;
+    outline.push_back(body.front());
+    c.push_back(Polyline{std::move(outline), look.stroke, look.strokeWidth, look.dash});
+    const bool text = fs >= 4.f;
+
+    // The header's lines, between its edges at each line (the cut corners narrow the top).
+    auto across = [&](float worldY) {
+        const float l = cam.ToScreen(Vec2{shape.EdgeX(worldY, false), worldY}).x + pad;
+        const float r = cam.ToScreen(Vec2{shape.EdgeX(worldY, true), worldY}).x - pad;
+        return std::pair{l, std::max(l, r)};
+    };
+    const Rect r = cam.ToScreen(frame);
+    if (text && head) {
+        float y = r.y + pad * head->top;
+        for (const LookText& line : head->texts) {
+            const float ts       = line.size * z;
+            const auto [l, rr]   = across(frame.y + (y - r.y + ts * line.box * 0.5f) / z);
+            const auto [str, em] = LineText(line, n, t);
+            c.push_back(Text{{l, y, rr - l, ts * line.box}, str, ts * line.scale, em ? line.placeholderColor : line.color, line.bold, false, false,
+                             static_cast<Align>(line.align), line.italic});
+            y += ts * line.advance;
+        }
+    } else if (text) {
+        const std::string& named = t.titleField.empty() ? std::string{} : n.Field(t.titleField);
+        const auto [l, rr]       = across(frame.y + shape.header * 0.5f);
+        c.push_back(Text{{l, r.y + pad * 0.3f, rr - l, s.titleSize * z * 1.3f}, named.empty() ? t.label : named, s.titleSize * z, s.text, true,
+                         false, false, Align::Center});
+    }
+
+    // Its listed rows, as a card's: a label on the left, a value on the right.
+    float y = cam.ToScreen(Vec2{0.f, shape.rowsTop}).y;
+    const float rowH = km.Row() * z;
+    for (const Row& row : n.rows) {
+        if (OnRim(n, row)) continue;
+        if (text) {
+            static const RowLook kPlainRow{};
+            const auto           kind = look.rows.find(row.style);
+            const RowLook&       rl   = kind == look.rows.end() ? kPlainRow : kind->second;
+            const auto [l, rr]        = across(frame.y + (y - r.y + rowH * 0.5f) / z);
+            std::string right         = row.value + rl.suffix;
+            const float rw            = right.empty() ? 0.f : std::min((rr - l) * 0.5f, fs * 0.6f * static_cast<float>(right.size()) + pad);
+            c.push_back(Text{{l, y, rr - l - rw, rowH}, rl.prefix + row.label, fs, rl.color.value_or(s.text), rl.bold, false, false,
+                             static_cast<Align>(rl.align), rl.italic});
+            if (!right.empty())
+                c.push_back(Text{{rr - rw, y, rw, rowH}, right, fs, rl.valueColor.value_or(s.muted), false, false, false,
+                                 static_cast<Align>(rl.valueAlign), rl.italic});
+        }
+        y += rowH;
+    }
+
+    // The rim: whole when cyclic, else open along its flat bottom edge.
+    const double reach = axis.reach * kPi;
+    const double a0 = axis.cyclic ? 0.0 : -reach, a1 = axis.cyclic ? 2 * kPi : reach;
+    std::vector<Vec2> edge = ToScreen(cam, ring.Outline(a0, a1));
+    if (axis.cyclic) edge.push_back(edge.front());
+    c.push_back(Polyline{std::move(edge), rim ? rim->stroke : t.band, std::max(1.f, (rim ? rim->width : 3.f) * z)});
+    // The needle, and what it reads: an open dial says it on the gap, its flat bottom edge; a cyclic one under the hub.
+    const Vec2 o   = cam.ToScreen(ring.center);
+    const Vec2 tip = cam.ToScreen(ring.At(axis.Angle(n.dial.value), 0.7f));
+    c.push_back(Polyline{{o, tip}, needleColor, needle && needle->width > 0.f ? needle->width : 2.f});
+    c.push_back(Circle{o, std::max(2.f, 3.f * z), needleColor, needleColor, 0.f});
+    char       buf[32];
+    const auto end   = std::to_chars(buf, buf + sizeof buf, n.dial.value).ptr;
+    const float rs   = reading ? reading->size * z * reading->scale : fs;
+    const Vec2  gap  = cam.ToScreen(Vec2{ring.center.x, ring.center.y + ring.radius});
+    const float gapW = 2.f * ring.radius * (1.f - std::min(ring.chamfer, 1.f)) * z + 2.f * pad;
+    if (text)
+        c.push_back(Text{axis.cyclic ? Rect{o.x - ring.radius * z, o.y + ring.radius * z * 0.35f, 2 * ring.radius * z, rs * 1.3f}
+                                     : Rect{gap.x - gapW * 0.5f, gap.y - rs * 0.65f, gapW, rs * 1.3f},
+                         n.dial.label + "  " + std::string(buf, end), rs, readingColor, false, false, false, Align::Center});
+    // Each row on the rim: a handle inside it, following a drag along the edges; its label outside, square to its edge.
+    const float handleSize = handle && handle->size > 0.f ? handle->size : 5.f;
+    for (const Row& row : n.rows) {
+        if (!OnRim(n, row)) continue;
+        const bool   dragging = mode_ == Mode::DialDrag && active_ == n.id && pressRow_ == row.id;
+        const float  v        = dragging ? dialValue_ : RowNumber(row);
+        const double a        = axis.Angle(v);
+        const Vec2   h        = cam.ToScreen(ring.At(a, kHandleAt));
+        const Vec2   normal   = ring.Normal(a);
+        const float  d        = std::clamp(handleSize * z, handleSize * 3.f / 5.f, handleSize * 7.f / 5.f);
+        if (!handle || (handle->glyph.value_or(PortGlyph::Diamond) == PortGlyph::Diamond && !handle->hollow))
+            c.push_back(Polygon{{{h.x, h.y - d}, {h.x + d, h.y}, {h.x, h.y + d}, {h.x - d, h.y}}, handleColor});
+        else
+            DrawPin(c, h, normal, *handle->glyph, d, handleColor, look.fill, !handle->hollow);
+        if (!text) continue;
+        std::string what = row.label;
+        if (dragging) {
+            const auto e = std::to_chars(buf, buf + sizeof buf, v).ptr;
+            what += " " + std::string(buf, e);
+        } else if (!row.value.empty()) {
+            what += " " + row.value;
+        }
+        const float ls = label ? label->size * z * label->scale : fs * 0.9f;
+        const float w  = 110.f * z, lh = ls * 1.3f;
+        const Vec2  at = cam.ToScreen(ring.At(a)) + normal * (10.f * z);
+        Rect        box{at.x - w * 0.5f, at.y - lh * 0.5f, w, lh};
+        Align       align = Align::Center;
+        if (normal.x > 0.5f) box.x = at.x, align = Align::Left;
+        if (normal.x < -0.5f) box.x = at.x - w, align = Align::Right;
+        if (normal.y < -0.5f) box.y = at.y - lh;
+        if (normal.y > 0.5f) box.y = at.y;
+        c.push_back(Text{box, what, ls, labelColor, label && label->bold, false, false, align, label && label->italic});
     }
 }
 
@@ -2248,10 +2407,11 @@ bool Canvas::PointerMove(Vec2 at, Modifiers mods)
     }
     case Mode::DialDrag:
         if (const Node* n = ShownNode(active_)) {
-            const Ring  ring = RingOf(n->frame);
-            const Vec2  d    = camera.ToWorld(at) - ring.center;
-            const float v    = AxisOf(*n).Value(std::atan2(d.x, -d.y));
-            dialValue_       = snapDial_ ? AxisOf(*n).Snap(v) : v;
+            const Ring     ring = DialOf(*n, MetricsFor(*n), n->frame).rim;
+            const DialAxis axis = AxisOf(*n, ring.OpenReach());
+            const Vec2     d    = camera.ToWorld(at) - ring.center;
+            const float    v    = axis.Value(std::atan2(d.x, -d.y));
+            dialValue_          = snapDial_ ? axis.Snap(v) : v;
         }
         return true;
     case Mode::Panning:

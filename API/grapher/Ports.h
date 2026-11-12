@@ -23,6 +23,10 @@ struct CardMetrics {
     float groupHeader = 30.f;   ///< a group's header strip
     float header = 0.f;   ///< where the rows start, stated outright (a kit's header height); 0 = from the sizes
     float row    = 0.f;   ///< a row's height, stated outright; 0 = from the font size
+    /// @brief A dial's rim: below 0 a circle filling the frame (the default); else an octagon whose corners are cut by
+    ///        this fraction of its half-width, and the node is that shape (a header on its top edge, its other rows
+    ///        listed under it, the rim below). A kit's rim part sets it (`"shape": "octagon"`, `"chamfer"`).
+    float dialChamfer = -1.f;
     friend bool operator==(const CardMetrics&, const CardMetrics&) = default;
 
     [[nodiscard]] float Top() const { return padding * 0.8f; }                         ///< the title line's top, from the frame's

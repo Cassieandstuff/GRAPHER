@@ -66,15 +66,28 @@ std::vector<PortSlot> LayoutPorts(const Node& node, const Schema& schema, const 
     const bool  group = !card && IsGroup(node, schema);
     const NodeType* type = schema.FindNode(node.type);
     const bool      dial = type && type->shape == NodeShape::Dial;
-    const DialAxis  axis = dial ? AxisOf(node) : DialAxis{};
-    const Ring      ring = dial ? RingOf(f) : Ring{};
+    const DialShape shape = dial ? DialOf(node, m, f) : DialShape{};
+    const Ring&     ring  = shape.rim;
+    const DialAxis  axis  = dial ? AxisOf(node, ring.OpenReach()) : DialAxis{};
+    // An octagon dial's own rows: those on its rim, and those listed under its header (their pins on its edges).
+    auto rimRow = [&](const PortDef& p) {
+        const int k = dial ? RowOfPort(node, p.id) : -1;
+        return k >= 0 && OnRim(node, node.rows[static_cast<std::size_t>(k)]) ? k : -1;
+    };
+    auto listedRow = [&](const PortDef& p) {
+        const int k = dial && shape.Octagon() ? RowOfPort(node, p.id) : -1;
+        if (k < 0 || OnRim(node, node.rows[static_cast<std::size_t>(k)])) return -1;
+        int at = 0;
+        for (int i = 0; i < k; ++i) at += OnRim(node, node.rows[static_cast<std::size_t>(i)]) ? 0 : 1;
+        return at;
+    };
 
     // Ports that spread along their side: every port of a non-card shape, and a card's top and bottom ports.
     std::size_t spreadCount[5] = {};
     for (const PortDef& p : ports) {
         const PortSide s = SideOf(p);
         const bool     rowed = card && (s == PortSide::Left || s == PortSide::Right);
-        if (!rowed && !(p.onHeader && (card || group)) && !(dial && RowOfPort(node, p.id) >= 0)) ++spreadCount[static_cast<int>(s)];
+        if (!rowed && !(p.onHeader && (card || group || shape.Octagon())) && rimRow(p) < 0 && listedRow(p) < 0) ++spreadCount[static_cast<int>(s)];
     }
     std::size_t spreadAt[5] = {};
     int         rowAt[2]    = {0, 0};   // left, right
@@ -87,13 +100,22 @@ std::vector<PortSlot> LayoutPorts(const Node& node, const Schema& schema, const 
         slot.normal = NormalOf(slot.side);
         const bool horizontal = slot.side == PortSide::Left || slot.side == PortSide::Right;
         const float x = slot.side == PortSide::Left ? f.x : f.Right();
-        if (const int onRim = dial ? RowOfPort(node, p.id) : -1; onRim >= 0) {
-            // On a dial's ring, at its row's value, leaving outward.
+        if (const int onRim = rimRow(p); onRim >= 0) {
+            // On a dial's rim, at its row's value, leaving outward (square to an octagon's edge).
             const double a = axis.Angle(RowNumber(node.rows[static_cast<std::size_t>(onRim)]));
             slot.at        = ring.At(a);
-            slot.normal    = Vec2{static_cast<float>(std::sin(a)), static_cast<float>(-std::cos(a))};
+            slot.normal    = ring.chamfer < 0.f ? Vec2{static_cast<float>(std::sin(a)), static_cast<float>(-std::cos(a))} : ring.Normal(a);
             const float ax = std::abs(slot.normal.x), ay = std::abs(slot.normal.y);
             slot.side      = ax >= ay ? (slot.normal.x < 0 ? PortSide::Left : PortSide::Right) : (slot.normal.y < 0 ? PortSide::Top : PortSide::Bottom);
+        } else if (const int listed = horizontal ? listedRow(p) : -1; listed >= 0) {
+            // On an octagon dial's edge, at the line of its listed row.
+            const float y = shape.rowsTop + m.Row() * (static_cast<float>(listed) + 0.5f);
+            slot.row      = {f.x, y - m.Row() * 0.5f, f.w, m.Row()};
+            slot.at       = {shape.EdgeX(y, slot.side == PortSide::Right), y};
+        } else if (p.onHeader && horizontal && shape.Octagon()) {
+            // On an octagon dial's edge at its header's middle, as a card's input sits on its title line.
+            const float y = f.y + shape.header * 0.5f;
+            slot.at       = {shape.EdgeX(y, slot.side == PortSide::Right), y};
         } else if (p.onHeader && horizontal && (card || group)) {
             // On the title line (a group's header strip).
             const float y = card ? f.y + m.Top() + m.titleSize * 0.65f : f.y + std::min(f.h, m.groupHeader) * 0.5f;
