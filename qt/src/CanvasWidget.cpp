@@ -94,6 +94,12 @@ private:
 
 void Paint(QPainter& p, const DrawList& list, const ImageSource& images)
 {
+    Paint(p, list, images ? SizedImageSource([&images](const std::string& key, QSize) { return images(key); }) : SizedImageSource{});
+}
+
+void Paint(QPainter& p, const DrawList& list, const SizedImageSource& images)
+{
+    const qreal dpr = p.device() ? p.device()->devicePixelRatioF() : 1.0;
     p.setRenderHint(QPainter::SmoothPixmapTransform);
     static const QFont kMono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     p.setRenderHint(QPainter::Antialiasing);
@@ -157,7 +163,8 @@ void Paint(QPainter& p, const DrawList& list, const ImageSource& images)
             },
             [&](const Image& img) {
                 if (!images || img.box.w < 1.f || img.box.h < 1.f) return;
-                const QImage picture = images(img.key);
+                const QSize  pixels(std::max(1, static_cast<int>(std::ceil(img.box.w * dpr))), std::max(1, static_cast<int>(std::ceil(img.box.h * dpr))));
+                const QImage picture = images(img.key, pixels);
                 if (picture.isNull()) return;
                 p.save();
                 if (img.radius > 0.f) {

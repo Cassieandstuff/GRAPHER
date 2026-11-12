@@ -27,9 +27,13 @@ namespace grapher::qt {
 
 /// @brief Resolves an Image draw command's key to a picture; a null QImage draws nothing.
 using ImageSource = std::function<QImage(const std::string& key)>;
+/// @brief The same, told the size the picture is drawn at in device pixels: a host rendering a live view into a slot
+///        (Canvas::ImageSlots) renders at that size, and again when a zoom changes it. What is rendered is the host's.
+using SizedImageSource = std::function<QImage(const std::string& key, QSize pixels)>;
 
 /// @brief Paint a draw list with QPainter (the widget's paint, and image export).
 void Paint(QPainter& painter, const DrawList& list, const ImageSource& images = {});
+void Paint(QPainter& painter, const DrawList& list, const SizedImageSource& images);
 
 class CanvasWidget : public QWidget {
     Q_OBJECT
@@ -39,7 +43,12 @@ public:
     [[nodiscard]] Canvas& canvas() { return canvas_; }
 
     /// @brief Where node pictures come from (Node::image keys).
-    void setImageSource(ImageSource images) { images_ = std::move(images); }
+    void setImageSource(ImageSource images)
+    {
+        images_ = images ? SizedImageSource([f = std::move(images)](const std::string& key, QSize) { return f(key); }) : SizedImageSource{};
+    }
+    /// @brief The same, from a source told each picture's drawn size in device pixels.
+    void setImageSource(SizedImageSource images) { images_ = std::move(images); }
     /// @brief The host navigates the view (its own middle-button and wheel handling, through Canvas::PanBy and
     ///        ZoomAbout): the widget then leaves the middle button and the wheel alone, and the right button only
     ///        asks for a context menu.
@@ -126,7 +135,7 @@ private:
     Canvas&     canvas_;
     QPointF     rightDown_;
     std::string refusedTip_;   ///< the refusal shown at the pointer while a wire is dragged (Canvas::Refused)
-    ImageSource images_;
+    SizedImageSource images_;
     bool        hostNavigation_ = false;
     bool        ownKeys_        = true;
 };

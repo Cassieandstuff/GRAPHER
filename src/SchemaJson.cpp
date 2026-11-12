@@ -20,6 +20,7 @@ constexpr Names<PortDir>   kDirs{{"in", PortDir::In}, {"out", PortDir::Out}};
 constexpr Names<PortSide>  kSides{{"auto", PortSide::Auto}, {"left", PortSide::Left}, {"right", PortSide::Right}, {"top", PortSide::Top}, {"bottom", PortSide::Bottom}};
 constexpr Names<SubtypeFlow> kFlows{{"out-is-a", SubtypeFlow::OutIsA}, {"in-is-a", SubtypeFlow::InIsA}};
 constexpr Names<GroupMode>   kGroupModes{{"frame", GroupMode::Frame}, {"members", GroupMode::Members}};
+constexpr Names<ImagePlacement> kPlacements{{"foot", ImagePlacement::Foot}, {"below", ImagePlacement::Below}};
 
 template <class E> std::string_view NameOf(Names<E> names, E e)
 {
@@ -169,6 +170,8 @@ NodeType ReadNodeType(Reader& r, const json::Value& o, std::size_t index)
     r.Bool(o, "fitHeight", t.fitHeight, where);
     r.Bool(o, "fixed", t.fixed, where);
     r.Bool(o, "wholeNodeWires", t.wholeNodeWires, where);
+    r.Enum(o, "imagePlacement", kPlacements, t.imagePlacement, where);
+    r.Num(o, "imageMinZoom", t.imageMinZoom, where);
     const json::Array& fields = r.List(o, "fields", where);
     for (std::size_t k = 0; k < fields.size() && r.Ok(); ++k) {
         FieldDef f;
@@ -249,6 +252,8 @@ json::Value WriteNodeType(const NodeType& t)
     Put(o, "fitHeight", t.fitHeight, def.fitHeight, t.fitHeight);
     Put(o, "fixed", t.fixed, def.fixed, t.fixed);
     Put(o, "wholeNodeWires", t.wholeNodeWires, def.wholeNodeWires, t.wholeNodeWires);
+    Put(o, "imagePlacement", t.imagePlacement, def.imagePlacement, std::string(NameOf(kPlacements, t.imagePlacement)));
+    Put(o, "imageMinZoom", t.imageMinZoom, def.imageMinZoom, static_cast<double>(t.imageMinZoom));
     if (!t.fields.empty()) {
         json::Array fields;
         for (const FieldDef& f : t.fields) {

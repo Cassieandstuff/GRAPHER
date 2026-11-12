@@ -70,6 +70,21 @@ enum class HitKind {
 inline constexpr std::string_view kGroupIn  = "grapher:in";
 inline constexpr std::string_view kGroupOut = "grapher:out";
 
+/// @brief Hit::part of a press in a node's picture slot hanging below its card (ImagePlacement::Below). For now such a
+///        press is a press on its node (it selects and moves it); routing presses, drags and the wheel inside a slot to
+///        the host (a live viewport) would start from this part and Canvas::ImageSlotAt.
+inline constexpr std::string_view kImagePart = "grapher:image";
+
+/// @brief A node's picture slot as drawn at the current camera (Canvas::ImageSlots): where it sits on screen, so a host
+///        renders what goes in it at that many pixels, and again when the zoom changes them.
+struct ImageSlot {
+    std::string    node;     ///< the node it belongs to
+    std::string    key;      ///< Node::image: what the backend resolves
+    Rect           screen;   ///< where it is drawn, screen pixels
+    ImagePlacement placement = ImagePlacement::Foot;
+    friend bool operator==(const ImageSlot&, const ImageSlot&) = default;
+};
+
 struct Hit {
     HitKind     kind = HitKind::None;
     std::string id;     ///< the node or edge
@@ -381,6 +396,17 @@ public:
     /// @brief While a wire is dragged: the end under the pointer it may not take, and why; RefusedEnd::node empty
     ///        otherwise.
     [[nodiscard]] const RefusedEnd& Refused() const { return refused_; }
+    /// @brief Every picture slot drawn at the current camera and viewport (on screen, at or past its type's imageMinZoom),
+    ///        in draw order: the ones hanging below cards first. A host renders each slot's content at its size.
+    [[nodiscard]] std::vector<ImageSlot> ImageSlots() const;
+    /// @return where node `nodeId`'s picture slot is drawn, screen pixels (on screen or not); nullopt when it has none,
+    ///         or none drawn at this zoom
+    [[nodiscard]] std::optional<Rect> ImageScreenRect(std::string_view nodeId) const;
+    /// @return the node whose drawn picture slot is under the point and not covered (by another card, or a wire); empty
+    ///         for none. The seam for handing a slot's own presses to the host; nothing routes them yet.
+    [[nodiscard]] std::string ImageSlotAt(Vec2 screen) const;
+    /// @return where `n`'s picture slot sits: its own override, else its type's
+    [[nodiscard]] ImagePlacement PlacementOf(const Node& n) const;
     /// @return the pin of `port` on `nodeId` in screen pixels, or nullopt when there is none
     [[nodiscard]] std::optional<Vec2> PortScreenPos(std::string_view nodeId, std::string_view port) const;
 
@@ -446,6 +472,12 @@ private:
     /// @brief The port of `to` a wire dragged from `port` of `from` lands on when dropped on `to` as a whole: the first
     ///        that can take it, preferring one with room. Empty when none can.
     [[nodiscard]] std::string LandingPort(const Node& from, std::string_view port, const Node& to) const;
+    /// @brief A shown node's picture slot through `cam`, screen pixels, when it is drawn: hanging below its card, or at
+    ///        its card's foot (where the card draws it). nullopt when it has none of that placement, or none at this zoom.
+    [[nodiscard]] std::optional<Rect> BelowImageRect(const Node& shown, const Camera& cam) const;
+    [[nodiscard]] std::optional<Rect> FootImageRect(const Node& shown, const Camera& cam) const;
+    /// @brief How far below a card's frame a hanging slot can reach, world units (the tallest slot and its gap); 0 = none.
+    [[nodiscard]] float HangReach() const;
     /// @brief CanWire, not counting edge `ignoring` (one about to be replaced); refused by checkWire, `why` gets its reason.
     [[nodiscard]] bool CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view ignoring,
                                std::string* why = nullptr) const;

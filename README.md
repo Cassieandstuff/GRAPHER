@@ -44,8 +44,16 @@ runtime: parse one with `ParseNodeType` and add it with `Schema::PutNodeType`.
 (`Row::port`), so a list of pointers reads as a list of rows each wired from its own line. A row can act: `Click` and
 `Button` rows are handed to the host (`Canvas::TakeRowClick`, the Qt widget's `rowClicked`), and a `Choice` row offers
 its `choices` and sets a node field (`PickChoice`; the Qt widget pops the menu itself). Rows and nodes carry tooltips
-(`TooltipAt`). A node type with an `imageHeight` shows `Node::image` at the foot of the card: the draw list's `Image`
-command names it by key and the backend resolves it (`CanvasWidget::setImageSource`).
+(`TooltipAt`). A node type with an `imageHeight` shows `Node::image` in a picture slot: the draw list's `Image`
+command names it by key and the backend resolves it (`CanvasWidget::setImageSource`). What is in the slot is the
+host's (a thumbnail, or a live view it renders); GRAPHER only places it. `imagePlacement` puts the slot at the card's
+foot (the card has room for it) or `Below` it: hanging under the frame, not counted in the card's height, no routing
+obstacle, drawn under every wire and card so a neighbour that overlaps it covers it, and taking a press only where
+nothing else does (`Hit::part` `kImagePart`; a press there grabs its node for now, and `ImageSlotAt` is the seam for
+handing a slot's own presses to the host later). `Node::imagePlacement` overrides it per node. Below a type's
+`imageMinZoom` no picture draws, and the card keeps its size. `ImageSlots` and `ImageScreenRect` say where each slot
+is drawn in screen pixels, and the Qt widget's `SizedImageSource` is told each picture's drawn size in device pixels,
+so a host renders at that size and again when the zoom changes it.
 
 **Two edit modes.** In `EditMode::Direct` (the default) the canvas edits the host's graph between `onBeforeChange`
 and `onChanged`. In `EditMode::Propose` it never touches it: a gesture plays out on a copy and arrives at `onIntent` as

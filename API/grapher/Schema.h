@@ -75,7 +75,7 @@ struct NodeType {
     std::string           bodyLabel  = "Summary";
     std::string           defaultEdge;   ///< an EdgeType id a new edge to or from this type gets; empty = the schema's first
     std::vector<PortDef>  ports;         ///< every node of the type has these; a node's own ports follow (Node::ports)
-    float                 imageHeight = 0.f;   ///< room for Node::image at the foot of a card, world units; 0 = none
+    float                 imageHeight = 0.f;   ///< Node::image's slot height, world units; 0 = none (see imagePlacement)
     GroupMode             groupMode = GroupMode::Frame;   ///< a group's: what it holds
     bool                  showCount = false;   ///< a group's header says how many nodes it holds, nested ones included
     bool                  fitHeight = false;   ///< a card grows to show all its ports, rows and fields (a port count that is data)
@@ -86,6 +86,12 @@ struct NodeType {
     ///        it takes wires only on its ports, and a port-less one (a note, a frame) takes none. Node::wholeNodeWires
     ///        overrides it per node.
     bool                  wholeNodeWires = true;
+    /// @brief Where Node::image's slot sits: at the card's foot (room inside it) or hanging below it. Node::imagePlacement
+    ///        overrides it per node. The slot is a picture the backend resolves by key: what is in it is the host's.
+    ImagePlacement        imagePlacement = ImagePlacement::Foot;
+    /// @brief Below this zoom the picture isn't drawn: a Foot slot leaves its room empty (the card keeps its size), a
+    ///        Below slot is simply not there. 0 = always drawn.
+    float                 imageMinZoom = 0.f;
     friend bool operator==(const NodeType&, const NodeType&) = default;
 };
 

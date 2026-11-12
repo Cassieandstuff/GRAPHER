@@ -97,6 +97,8 @@ struct Node {
     /// @brief Whether a wire may end on this node as a whole (its connect handle, a drop on it); unset = its type's
     ///        NodeType::wholeNodeWires. Canvas::wholeNodeWires off turns it off for every node.
     std::optional<bool>      wholeNodeWires;
+    /// @brief Where this node's picture slot sits; unset = its type's NodeType::imagePlacement.
+    std::optional<ImagePlacement> imagePlacement;
 
     /// @return the row `id`, or nullptr
     [[nodiscard]] const Row* FindRow(std::string_view rowId) const;

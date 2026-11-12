@@ -12,6 +12,14 @@
 
 namespace grapher {
 
+/// @brief Where a node's picture slot (Node::image) sits. Here because both the Schema (a type's) and the Graph (a
+///        node's own) name it.
+enum class ImagePlacement {
+    Foot,    ///< inside the card, at its foot: the card has room for it (CardHeight counts it)
+    Below,   ///< hanging under the card's frame: not part of the card (not counted, not an obstacle), drawn under
+             ///< every card and wire, so a neighbour overlapping it covers it
+};
+
 enum class PortDir {
     In,    ///< a wire ends here
     Out,   ///< a wire starts here

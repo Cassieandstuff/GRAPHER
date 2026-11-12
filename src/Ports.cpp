@@ -226,7 +226,9 @@ float CardHeight(const Node& node, const Schema& schema, const CardMetrics& m)
     if (t)
         for (const FieldDef& f : t->fields)
             if (f.onCard && f.id != t->titleField && std::find(bound.begin(), bound.end(), f.id) == bound.end()) ++fields;
-    const float image = t && t->imageHeight > 0.f ? t->imageHeight + m.padding * 0.5f : 0.f;
+    // A picture at the foot takes room in the card; one hanging below it doesn't.
+    const bool  foot  = t && node.imagePlacement.value_or(t->imagePlacement) == ImagePlacement::Foot;
+    const float image = foot && t->imageHeight > 0.f ? t->imageHeight + m.padding * 0.5f : 0.f;
     return m.Header() + m.Row() * static_cast<float>(PortRows(node, schema) + static_cast<int>(node.rows.size()) + fields) + image +
            m.padding;
 }

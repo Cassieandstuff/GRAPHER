@@ -3380,6 +3380,114 @@ void TestTitlesOfLookalikeCards()
     CHECK(CountText(third, "Mix") == 1 && CountText(third, "Overlay") == 1 && CountText(third, "Blend") == 0);
 }
 
+void TestImageSlots()
+{
+    // A picture slot hanging below its card (a live viewport the host renders), and one at a card's foot.
+    grapher::Schema s;
+    grapher::NodeType view{"view", "View"};
+    view.width          = 200.f;
+    view.height         = 80.f;
+    view.imageHeight    = 120.f;
+    view.imagePlacement = grapher::ImagePlacement::Below;
+    view.imageMinZoom   = 0.5f;
+    grapher::NodeType plain{"plain", "Plain"};
+    plain.width  = 200.f;
+    plain.height = 80.f;
+    grapher::NodeType foot{"foot", "Foot"};
+    foot.width        = 200.f;
+    foot.height       = 160.f;
+    foot.imageHeight  = 40.f;
+    foot.imageMinZoom = 0.5f;
+    s.nodeTypes = {view, plain, foot};
+    s.edgeTypes.push_back({"link", "link"});
+    const grapher::Color wireColor = s.edgeTypes[0].color;
+
+    // It isn't part of the card: CardHeight leaves it out (a node may put it back at its foot).
+    grapher::Node probe{"p", "view"};
+    grapher::Node bare{"q", "plain"};
+    CHECK(grapher::CardHeight(probe, s, {}) == grapher::CardHeight(bare, s, {}));
+    probe.imagePlacement = grapher::ImagePlacement::Foot;
+    CHECK(grapher::CardHeight(probe, s, {}) > grapher::CardHeight(bare, s, {}) + 100.f);
+
+    grapher::Graph g;
+    g.nodes.push_back({"a", "view", {0, 0, 200, 80}});
+    g.nodes[0].image = "pose";
+    g.nodes.push_back({"b", "plain", {100, 150, 200, 80}});   // over a's slot (0..200 x 85..205)
+    g.nodes.push_back({"c", "plain", {500, 0, 200, 80}});
+    g.nodes.push_back({"f", "foot", {800, 300, 200, 160}});
+    g.nodes[3].image = "thumb";
+    g.edges.push_back({"e", "a", "c", "link"});
+    grapher::Canvas c(g, s);
+    c.SetViewport({1200, 800});
+
+    // Hits: the slot is its node's (a press there grabs it), but a card over it, or a wire, wins.
+    const grapher::Hit inSlot = c.HitTest({50, 120});
+    CHECK((inSlot.kind == grapher::HitKind::Node && inSlot.id == "a" && inSlot.part == grapher::kImagePart));
+    CHECK((c.HitTest({150, 170}).kind == grapher::HitKind::Node && c.HitTest({150, 170}).id == "b"));
+    CHECK(c.ImageSlotAt({50, 120}) == "a" && c.ImageSlotAt({150, 170}).empty() && c.ImageSlotAt({50, 300}).empty());
+    c.PointerDown({50, 120}, grapher::Button::Left, {});
+    c.PointerUp({50, 120}, grapher::Button::Left);
+    CHECK(c.SelectedNodes().contains("a"));
+
+    // Draw order: the hanging picture before every wire and card, so b's card covers its corner; the foot picture in
+    // its card, after the card's fill.
+    const grapher::DrawList list = c.Draw();
+    std::size_t pose = 0, thumb = 0, firstWire = 0, bCard = 0, aCard = 0, fCard = 0;
+    grapher::Rect poseBox, thumbBox;
+    for (std::size_t i = 0; i < list.cmds.size(); ++i) {
+        if (const auto* im = std::get_if<grapher::Image>(&list.cmds[i])) {
+            if (im->key == "pose") pose = i, poseBox = im->box;
+            if (im->key == "thumb") thumb = i, thumbBox = im->box;
+        }
+        if (const auto* l = std::get_if<grapher::Polyline>(&list.cmds[i]); l && l->color == wireColor && !firstWire) firstWire = i;
+        if (const auto* f = std::get_if<grapher::FillRect>(&list.cmds[i])) {
+            if (f->rect == c.ScreenRectOf("a") && !aCard) aCard = i;
+            if (f->rect == c.ScreenRectOf("b") && !bCard) bCard = i;
+            if (f->rect == c.ScreenRectOf("f") && !fCard) fCard = i;
+        }
+    }
+    CHECK(pose && thumb && firstWire && aCard && bCard && fCard);
+    CHECK(pose < firstWire && pose < aCard && pose < bCard && fCard < thumb);
+    CHECK((poseBox == grapher::Rect{0, 85, 200, 120}));
+
+    // The host is told each slot's size on screen, the drawn one exactly, and anew when the zoom changes it.
+    const auto slots = c.ImageSlots();
+    CHECK(slots.size() == 2 && slots[0].node == "a" && slots[0].placement == grapher::ImagePlacement::Below && slots[0].screen == poseBox);
+    CHECK(slots.size() == 2 && slots[1].node == "f" && slots[1].key == "thumb" && slots[1].screen == thumbBox);
+    c.camera.zoom = 2.f;
+    CHECK((c.ImageScreenRect("a") == grapher::Rect{0, 170, 400, 240}));
+
+    // The zoom gate: below imageMinZoom no picture draws, the cards keep their size, and the slot takes no press.
+    c.camera.zoom = 0.4f;
+    const grapher::Rect fBefore = c.FrameOf("f");
+    const grapher::DrawList far = c.Draw();
+    int images = 0;
+    for (const auto& cmd : far.cmds) images += std::holds_alternative<grapher::Image>(cmd) ? 1 : 0;
+    CHECK(images == 0 && c.ImageSlots().empty() && !c.ImageScreenRect("a") && !c.ImageScreenRect("f"));
+    CHECK(c.FrameOf("f") == fBefore && c.HitTest({50 * 0.4f, 120 * 0.4f}).part != grapher::kImagePart);
+
+    // It is no obstacle: a wire runs straight through it, around the card it hangs from.
+    grapher::Graph r;
+    r.nodes.push_back({"L", "plain", {0, 300, 120, 80}});
+    r.nodes.push_back({"R", "plain", {600, 300, 120, 80}});
+    r.nodes.push_back({"M", "view", {260, 200, 200, 60}});   // its slot: 260..460 x 265..385
+    r.nodes[2].image = "pose";
+    r.edges.push_back({"w", "L", "R", "link"});
+    grapher::Canvas rc(r, s);
+    rc.SetViewport({1200, 800});
+    std::vector<grapher::Vec2> wire;
+    for (const auto& cmd : rc.Draw().cmds)
+        if (const auto* l = std::get_if<grapher::Polyline>(&cmd); l && l->color == wireColor && l->points.size() > wire.size()) wire = l->points;
+    const auto slotM = rc.ImageScreenRect("M");
+    CHECK(slotM && !wire.empty() && Crosses(wire, *slotM) && !Crosses(wire, r.nodes[2].frame));
+
+    // The type's placement and gate round-trip through the schema's JSON, written only when set.
+    const auto back = grapher::ParseSchema(grapher::WriteSchema(s));
+    CHECK((back && back->nodeTypes[0].imagePlacement == grapher::ImagePlacement::Below && back->nodeTypes[0].imageMinZoom == 0.5f &&
+           back->nodeTypes[1].imagePlacement == grapher::ImagePlacement::Foot));
+    CHECK(grapher::WriteSchema(MakeSchema()).find("imagePlacement") == std::string::npos);
+}
+
 void TestRowRangeVetoAndWholeWires()
 {
     // A row's own range wins over its kind's, bound by bound: min and step from the row, max from the kit.
@@ -3780,6 +3888,7 @@ int main()
     TestMaterialGaps();
     TestRowRangeVetoAndWholeWires();
     TestTitlesOfLookalikeCards();
+    TestImageSlots();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

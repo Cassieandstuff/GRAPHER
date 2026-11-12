@@ -12,7 +12,7 @@
 ///   "rowStyles": [ { "id": "key", "color": "#dcb43c", "valueColor": "#8c919b", "prefix": "+ ", "bold": true, "italic": false } ],
 ///   "nodes": [ { "id": "mix", "label": "Mix", "band": "#4f8cff", "width": 240, "height": 120,
 ///                "shape": "card", "drillable": false, "titleField": "name", "bodyLabel": "Summary",
-///                "defaultEdge": "data", "imageHeight": 0, "groupMode": "frame", "showCount": false,
+///                "defaultEdge": "data", "imageHeight": 0, "imagePlacement": "foot", "imageMinZoom": 0, "groupMode": "frame", "showCount": false,
 ///                "fields": [ { "id": "amount", "label": "Amount", "kind": "text", "choices": [], "onCard": true } ],
 ///                "ports":  [ { "id": "a", "label": "A", "type": "rgba", "dir": "in", "side": "auto",
 ///                              "maxWires": 1, "field": "", "onHeader": false, "typeFrom": "" } ] } ],

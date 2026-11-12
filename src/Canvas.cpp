@@ -938,6 +938,93 @@ bool Canvas::TakesWholeWires(const Node& n) const
     return wholeNodeWires && n.wholeNodeWires.value_or(TypeOf(n).wholeNodeWires);
 }
 
+// ── Picture slots ──
+
+ImagePlacement Canvas::PlacementOf(const Node& n) const
+{
+    return n.imagePlacement.value_or(TypeOf(n).imagePlacement);
+}
+
+float Canvas::HangReach() const
+{
+    // Any type's slot may hang (a node can override its type's placement): the tallest, with its gap, bounds them all.
+    float tallest = 0.f;
+    for (const NodeType& t : schema_->nodeTypes) tallest = std::max(tallest, t.imageHeight);
+    return tallest > 0.f ? tallest + style.padding * 0.5f : 0.f;
+}
+
+std::optional<Rect> Canvas::BelowImageRect(const Node& shown, const Camera& cam) const
+{
+    const Node&     n = *LiveOf(shown);
+    const NodeType& t = TypeOf(n);
+    if (t.imageHeight <= 0.f || n.image.empty() || PlacementOf(n) != ImagePlacement::Below || cam.zoom < t.imageMinZoom) return std::nullopt;
+    // It hangs from the card's frame, a little below it, as wide as the card.
+    const float gap = style.padding * 0.5f;
+    return cam.ToScreen(Rect{shown.frame.x, shown.frame.Bottom() + gap, shown.frame.w, t.imageHeight});
+}
+
+std::optional<Rect> Canvas::FootImageRect(const Node& shown, const Camera& cam) const
+{
+    const Node&     n = *LiveOf(shown);
+    const NodeType& t = TypeOf(n);
+    if (t.shape != NodeShape::Card || t.imageHeight <= 0.f || n.image.empty() || PlacementOf(n) != ImagePlacement::Foot ||
+        cam.zoom < t.imageMinZoom)
+        return std::nullopt;
+    // Where the card draws it (Render): the same sums, so the size a host renders at is the size drawn.
+    const NodeLook&    look = LookOf(n, StatesOf(n));
+    const CardMetrics& km   = look.metrics;
+    const float        z    = cam.zoom;
+    const Rect         r    = cam.ToScreen(shown.frame);
+    float              inset = 0.f;
+    for (const LookPart& part : look.parts)
+        if (part.kind == PartKind::Accent) inset += part.width;
+    const float pad = km.padding * z;
+    const float x   = r.x + pad + inset * z;
+    const float w   = r.Right() - pad - x;
+    if (km.fontSize * z < 4.f || w <= 4.f) return std::nullopt;   // a card too small for its text draws no picture either
+    const float foot = r.Bottom() - pad * 0.5f - (t.imageHeight + style.padding * 0.5f) * z;
+    return Rect{x, foot + style.padding * 0.25f * z, w, t.imageHeight * z};
+}
+
+std::vector<ImageSlot> Canvas::ImageSlots() const
+{
+    Sync();
+    std::vector<ImageSlot> below, foot;
+    const Rect             view{0, 0, viewport_.x, viewport_.y};
+    const Graph&           shown = Shown();
+    const float            hang  = HangReach() * camera.zoom;
+    for (std::size_t i = 0; i < shown.nodes.size(); ++i) {
+        const Node& n  = shown.nodes[i];
+        const Rect  fr = camera.ToScreen(n.frame);   // its card and anything hanging from it, off screen: nothing to show
+        if (fr.x > view.w || fr.Right() < 0.f || fr.y > view.h || fr.Bottom() + hang < 0.f) continue;
+        if (grouped_[i] || !Visible(n)) continue;
+        if (const auto r = BelowImageRect(n, camera); r && r->Intersects(view))
+            below.push_back({n.id, LiveOf(n)->image, *r, ImagePlacement::Below});
+        else if (const auto f = FootImageRect(n, camera); f && f->Intersects(view))
+            foot.push_back({n.id, LiveOf(n)->image, *f, ImagePlacement::Foot});
+    }
+    below.insert(below.end(), foot.begin(), foot.end());
+    return below;
+}
+
+std::optional<Rect> Canvas::ImageScreenRect(std::string_view nodeId) const
+{
+    const Node* n = ShownNode(nodeId);
+    if (!n) return std::nullopt;
+    if (auto r = BelowImageRect(*n, camera)) return r;
+    return FootImageRect(*n, camera);
+}
+
+std::string Canvas::ImageSlotAt(Vec2 screen) const
+{
+    const Hit hit = HitTest(screen);
+    if (hit.kind != HitKind::Node && hit.kind != HitKind::Row) return {};
+    if (hit.part == kImagePart) return hit.id;   // below its card, and nothing over it there
+    const Node* n = ShownNode(hit.id);
+    const auto  r = n ? FootImageRect(*n, camera) : std::nullopt;
+    return r && r->Contains(screen) ? hit.id : std::string();
+}
+
 bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view ignoring,
                      std::string* why) const
 {
@@ -1202,9 +1289,16 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
     // Only the nodes near the point are candidates. Topmost first: selected nodes draw last, so they are tested first.
     // Groups draw under everything, inner over outer.
     std::vector<const Node*> order, groups;
+    // A picture hanging below a card draws under every card and wire: it takes a press only when none of them does.
+    Hit         slot;
+    const float hang = HangReach() * camera.zoom;
     for (std::size_t i = Shown().nodes.size(); i-- > 0;) {
         const Node& n = Shown().nodes[i];
-        if (!camera.ToScreen(n.frame).Inflated(reach).Contains(screen) || !Visible(n)) continue;
+        const Rect fr = camera.ToScreen(n.frame);
+        if (slot.kind == HitKind::None && screen.y > fr.Bottom() && screen.y <= fr.Bottom() + hang && screen.x >= fr.x &&
+            screen.x <= fr.Right() && !grouped_[i] && Visible(n))
+            if (const auto r = BelowImageRect(n, camera); r && r->Contains(screen)) slot = {HitKind::Node, n.id, {}, {}, std::string(kImagePart)};
+        if (!fr.Inflated(reach).Contains(screen) || !Visible(n)) continue;
         if (const Rect r = camera.ToScreen(n.frame); TypeOf(n).shape == NodeShape::Dot &&
                                                      Distance(screen, r.Center()) <= std::max(std::min(r.w, r.h) * 0.3f, 4.f))
             return {HitKind::Node, n.id};   // its pins cover its rim; its middle grabs it
@@ -1272,6 +1366,7 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
         if (!paths_[i] || !camera.ToScreen(boxes_[i]).Inflated(kEdgeHitPx).Contains(screen)) continue;
         if (PolylineDistance(screen, ToScreen(camera, *paths_[i])) <= kEdgeHitPx) return {HitKind::Edge, Shown().edges[i].id};
     }
+    if (slot.kind != HitKind::None) return slot;   // over the groups, which draw under it
     for (const Node* n : groups) {
         const Rect r = camera.ToScreen(n->frame);
         if (!r.Inflated(reach).Contains(screen)) continue;
@@ -2863,6 +2958,18 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                              detailLine->color, detailLine->bold, false, false, static_cast<Align>(detailLine->align), detailLine->italic});
     }
 
+    // Pictures hanging below cards, over the groups and under every wire and card: a card overlapping a neighbour's
+    // picture covers it.
+    const float hang = HangReach() * z;
+    for (std::size_t i = 0; i < Shown().nodes.size(); ++i) {
+        const Node& n  = Shown().nodes[i];
+        const Rect  fr = cam.ToScreen(n.frame);   // first, cheaply: could anything hanging from it be on screen?
+        if (hang <= 0.f || fr.Bottom() > viewport.y || fr.Bottom() + hang < 0.f || fr.Right() < 0.f || fr.x > viewport.x) continue;
+        if (grouped_[i] || !Visible(n)) continue;
+        if (const auto r = BelowImageRect(n, cam); r && r->Intersects(Rect{0, 0, viewport.x, viewport.y}))
+            c.push_back(Image{*r, LiveOf(n)->image, s.corner * z * 0.5f});
+    }
+
     // Edges, under the nodes; their labels go on top of everything, so a short edge between two cards still reads.
     std::vector<DrawCmd> labels, topWires;
     const Rect screenArea{-20.f, -20.f, viewport.x + 40.f, viewport.y + 40.f};
@@ -3054,10 +3161,11 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
                 }
                 y += static_cast<float>(PortRows(n, *schema_)) * km.Row() * z;
 
-                // The picture sits at the foot of the card; text above stops short of it.
-                const bool  pictured = t.imageHeight > 0.f && !n.image.empty();
+                // The picture sits at the foot of the card; text above stops short of it. Zoomed out past its type's
+                // imageMinZoom its room stays, empty: the card keeps its size. (FootImageRect does the same sums.)
+                const bool  pictured = t.imageHeight > 0.f && !n.image.empty() && PlacementOf(n) == ImagePlacement::Foot;
                 const float foot     = r.Bottom() - pad * 0.5f - (pictured ? (t.imageHeight + s.padding * 0.5f) * z : 0.f);
-                if (pictured)
+                if (pictured && z >= t.imageMinZoom)
                     c.push_back(Image{{x, foot + s.padding * 0.25f * z, w, t.imageHeight * z}, n.image, s.corner * z * 0.5f});
 
                 // The node's own rows: a label on the left, a value (or a button, or a choice) on the right.
