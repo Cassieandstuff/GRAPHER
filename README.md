@@ -51,7 +51,8 @@ foot (the card has room for it) or `Below` it: hanging under the frame, not coun
 obstacle, drawn under every wire and card so a neighbour that overlaps it covers it, and taking a press only where
 nothing else does (`Hit::part` `kImagePart`; a press there grabs its node for now, and `ImageSlotAt` is the seam for
 handing a slot's own presses to the host later). `Node::imagePlacement` overrides it per node. Below a type's
-`imageMinZoom` no picture draws, and the card keeps its size. `ImageSlots` and `ImageScreenRect` say where each slot
+`imageMinZoom` no picture draws, and the card keeps its size. Framing (`Frame`, `DrawAll`) takes in the hanging
+pictures that draw at the zoom it comes to, and the minimap shows them faintly under the cards. `ImageSlots` and `ImageScreenRect` say where each slot
 is drawn in screen pixels, and the Qt widget's `SizedImageSource` is told each picture's drawn size in device pixels,
 so a host renders at that size and again when the zoom changes it.
 

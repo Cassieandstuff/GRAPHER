@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <tuple>
@@ -953,14 +954,30 @@ float Canvas::HangReach() const
     return tallest > 0.f ? tallest + style.padding * 0.5f : 0.f;
 }
 
-std::optional<Rect> Canvas::BelowImageRect(const Node& shown, const Camera& cam) const
+std::optional<std::pair<Rect, float>> Canvas::BelowSlot(const Node& shown) const
 {
     const Node&     n = *LiveOf(shown);
     const NodeType& t = TypeOf(n);
-    if (t.imageHeight <= 0.f || n.image.empty() || PlacementOf(n) != ImagePlacement::Below || cam.zoom < t.imageMinZoom) return std::nullopt;
+    if (t.imageHeight <= 0.f || n.image.empty() || PlacementOf(n) != ImagePlacement::Below) return std::nullopt;
     // It hangs from the card's frame, a little below it, as wide as the card.
     const float gap = style.padding * 0.5f;
-    return cam.ToScreen(Rect{shown.frame.x, shown.frame.Bottom() + gap, shown.frame.w, t.imageHeight});
+    return std::pair{Rect{shown.frame.x, shown.frame.Bottom() + gap, shown.frame.w, t.imageHeight}, t.imageMinZoom};
+}
+
+std::optional<Rect> Canvas::BelowImageRect(const Node& shown, const Camera& cam) const
+{
+    const auto slot = BelowSlot(shown);
+    if (!slot || cam.zoom < slot->second) return std::nullopt;
+    return cam.ToScreen(slot->first);
+}
+
+Rect Canvas::WithSlots(Rect bounds, const NodeSet& ids, float zoom) const
+{
+    if (HangReach() <= 0.f) return bounds;
+    for (const Node& n : Shown().nodes)
+        if (ids.empty() || ids.contains(n.id))
+            if (const auto slot = BelowSlot(n); slot && zoom >= slot->second && Visible(n)) bounds = Rect::Union(bounds, slot->first);
+    return bounds;
 }
 
 std::optional<Rect> Canvas::FootImageRect(const Node& shown, const Camera& cam) const
@@ -1170,10 +1187,28 @@ void Canvas::Frame(const NodeSet& ids, float margin, float zoomCap)
         if (ids.empty()) camera = {{viewport_.x * 0.5f, viewport_.y * 0.5f}, 1.f};
         return;
     }
-    const float zx = (viewport_.x - 2 * margin) / std::max(b->w, 1.f);
-    const float zy = (viewport_.y - 2 * margin) / std::max(b->h, 1.f);
     // A fit wins over the zoom-out limit: it shows the whole of what it frames however small that makes it.
-    camera.zoom    = std::max(std::min({zx, zy, zoomCap, maxZoom}), 1e-4f);
+    auto fit = [&](const Rect& r) {
+        const float zx = (viewport_.x - 2 * margin) / std::max(r.w, 1.f);
+        const float zy = (viewport_.y - 2 * margin) / std::max(r.h, 1.f);
+        return std::max(std::min({zx, zy, zoomCap, maxZoom}), 1e-4f);
+    };
+    // The pictures hanging below the cards are framed too, those that draw at the zoom it comes to: fitted with every
+    // one, then with only those that draw at that zoom. Ones too small to draw there stay hidden even if dropping them
+    // lets it zoom in: it stops short of the smallest zoom that would show one, so none is cut off.
+    float zoom = fit(*b);
+    if (HangReach() > 0.f) {
+        const float all    = fit(WithSlots(*b, ids, std::numeric_limits<float>::max()));
+        const Rect  drawn  = WithSlots(*b, ids, all);
+        zoom               = fit(drawn);
+        float hiddenFrom   = std::numeric_limits<float>::max();   // the smallest zoom a slot left out would draw at
+        for (const Node& n : Shown().nodes)
+            if (ids.empty() || ids.contains(n.id))
+                if (const auto slot = BelowSlot(n); slot && slot->second > all && Visible(n)) hiddenFrom = std::min(hiddenFrom, slot->second);
+        if (zoom >= hiddenFrom) zoom = std::nextafter(hiddenFrom, 0.f);
+        b = drawn;
+    }
+    camera.zoom    = zoom;
     fitZoom_       = camera.zoom;
     const Vec2 c   = b->Center();
     camera.pan     = {viewport_.x * 0.5f - c.x * camera.zoom, viewport_.y * 0.5f - c.y * camera.zoom};
@@ -2716,7 +2751,7 @@ std::pair<Vec2, float> Canvas::MinimapFrame(Vec2 size) const
     Sync();
     const Graph& shown = Shown();
     if (shown.nodes.empty() || size.x <= 0.f || size.y <= 0.f) return {{}, 1.f};
-    const Rect  b     = shown.Bounds().Inflated(40.f);
+    const Rect  b     = WithSlots(shown.Bounds(), {}, std::numeric_limits<float>::max()).Inflated(40.f);   // pictures below cards too
     const float fit   = std::min(size.x / std::max(b.w, 1.f), size.y / std::max(b.h, 1.f));
     if (fit >= kReadable) return {Vec2{b.x - (size.x / fit - b.w) * 0.5f, b.y - (size.y / fit - b.h) * 0.5f}, fit};
     // Too big to read whole: a readable scale, centred on the view, kept inside the graph.
@@ -2743,6 +2778,11 @@ DrawList Canvas::DrawMinimap(Vec2 size) const
             const Color c = kit_ ? LookOf(*LiveOf(shown.nodes[i]), StatesOf(shown.nodes[i])).band : t ? t->band : s.muted;
             out.cmds.push_back(FillRect{toMap(shown.nodes[i].frame), Color{c.r, c.g, c.b, 40}, Color{c.r, c.g, c.b, 160}, 1.f});
         }
+    // The pictures hanging below cards, faintly, under the cards as on the canvas.
+    if (HangReach() > 0.f)
+        for (std::size_t i = 0; i < shown.nodes.size(); ++i)
+            if (const auto slot = grouped_[i] || !Visible(shown.nodes[i]) ? std::nullopt : BelowSlot(shown.nodes[i]))
+                out.cmds.push_back(FillRect{toMap(slot->first), Color{s.muted.r, s.muted.g, s.muted.b, 70}});
     for (std::size_t i = 0; i < shown.nodes.size(); ++i) {
         const Node& n = shown.nodes[i];
         if (grouped_[i] || !Visible(n)) continue;
@@ -2814,7 +2854,7 @@ void Canvas::DrawArrow(std::vector<DrawCmd>& c, const Arrow& a, const Camera& ca
 
 DrawList Canvas::DrawAll(float zoom, float margin) const
 {
-    const Rect b = (Sync(), Shown().Bounds());
+    const Rect b = (Sync(), WithSlots(Shown().Bounds(), {}, zoom));   // with the pictures that draw at this zoom
     Camera     cam;
     cam.zoom = zoom;
     cam.pan  = {margin - b.x * zoom, margin - b.y * zoom};

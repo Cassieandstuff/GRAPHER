@@ -478,6 +478,10 @@ private:
     [[nodiscard]] std::optional<Rect> FootImageRect(const Node& shown, const Camera& cam) const;
     /// @brief How far below a card's frame a hanging slot can reach, world units (the tallest slot and its gap); 0 = none.
     [[nodiscard]] float HangReach() const;
+    /// @return a shown node's slot hanging below its card, world units, with the zoom it draws from; nullopt for none
+    [[nodiscard]] std::optional<std::pair<Rect, float>> BelowSlot(const Node& shown) const;
+    /// @return `bounds` grown by the hanging slots of the shown nodes in `ids` (empty: all) that draw at `zoom`
+    [[nodiscard]] Rect WithSlots(Rect bounds, const NodeSet& ids, float zoom) const;
     /// @brief CanWire, not counting edge `ignoring` (one about to be replaced); refused by checkWire, `why` gets its reason.
     [[nodiscard]] bool CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view ignoring,
                                std::string* why = nullptr) const;

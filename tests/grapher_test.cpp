@@ -3486,6 +3486,31 @@ void TestImageSlots()
     CHECK((back && back->nodeTypes[0].imagePlacement == grapher::ImagePlacement::Below && back->nodeTypes[0].imageMinZoom == 0.5f &&
            back->nodeTypes[1].imagePlacement == grapher::ImagePlacement::Foot));
     CHECK(grapher::WriteSchema(MakeSchema()).find("imagePlacement") == std::string::npos);
+
+    // Framing takes in the pictures hanging below the cards, so the bottom card's isn't cut off.
+    grapher::Graph fr;
+    fr.nodes.push_back({"a", "view", {0, 0, 200, 80}});   // its slot: 0..200 x 85..205
+    fr.nodes[0].image = "pose";
+    fr.nodes.push_back({"b", "plain", {300, 0, 200, 80}});
+    grapher::Canvas fc(fr, s);
+    auto inside = [&](const grapher::Rect& r) { return grapher::Rect{0, 0, fc.Viewport().x, fc.Viewport().y}.Holds(r); };
+    fc.SetViewport({800, 240});   // the cards alone would fit at 1:1, their pictures running off the bottom
+    fc.Frame();
+    const auto framed = fc.ImageScreenRect("a");
+    CHECK(fc.camera.zoom < 1.f && fc.camera.zoom >= 0.5f && framed && inside(*framed) && inside(fc.ScreenRectOf("b")));
+    fc.Frame({"a"});   // framing a selection takes in its pictures too
+    CHECK(fc.ImageScreenRect("a") && inside(*fc.ImageScreenRect("a")));
+    // Too short to show a picture at its imageMinZoom: framed without it, short of the zoom that would show it cut off.
+    fc.SetViewport({800, 120});
+    fc.Frame();
+    CHECK(fc.camera.zoom < 0.5f && !fc.ImageScreenRect("a") && inside(fc.ScreenRectOf("a")) && inside(fc.ScreenRectOf("b")));
+    // An exported picture has room for the slots that draw at its zoom; the minimap shows them, under the cards.
+    CHECK(std::abs(fc.DrawAll(1.f).size.y - (205.f + 80.f)) < 0.01f && std::abs(fc.DrawAll(0.4f).size.y - (80.f * 0.4f + 80.f)) < 0.01f);
+    bool slotOnMap = false;
+    for (const auto& cmd : fc.DrawMinimap({200, 150}).cmds)
+        if (const auto* f = std::get_if<grapher::FillRect>(&cmd); f && f->fill == grapher::Color{fc.style.muted.r, fc.style.muted.g, fc.style.muted.b, 70})
+            slotOnMap = true;
+    CHECK(slotOnMap);
 }
 
 void TestRowRangeVetoAndWholeWires()
