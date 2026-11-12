@@ -127,6 +127,17 @@ Include only `<grapher/Grapher.h>` (plus a backend header).
 2. Own a `grapher::Graph` and a `grapher::Canvas` over it.
 3. Wire `onBeforeChange` (snapshot for undo), `onChanged` (save, repaint), `onSelectionChanged`.
 4. Feed pointer events to the canvas and paint `canvas.Draw()` — or use `grapher::qt::CanvasWidget`, which does both.
+5. Say how it looks with a kit (`Canvas::SetKit`): a JSON file the host ships. `schema/kit.schema.json` is the kit
+   format as a JSON Schema (a kit may name it as its `"$schema"`, for an editor's completion and checks).
+
+### An example: a material graph
+
+`examples/material/` is the pattern for a host with typed values: `material.schema.json` (SchemaJson) declares the value
+types (float, vec2, vec3, colour, texture) and the conversions between them, and node types by family (`input:float`,
+`math:add`, `texture:sample`, `output:surface`); `material.kit.json` gives each value type a pin kind (its colour and
+glyph), each family one prefix kind (`input:*`, `math:*`) with its header band, a frame its colour from a palette by its
+`frame:` tag, parameter rows their editors (slider, colour, path) and wires the colour of the type they carry
+(`pinColor`). The host fills only content: a node's title and rows, and its tags.
 
 ## Consuming (FetchContent)
 

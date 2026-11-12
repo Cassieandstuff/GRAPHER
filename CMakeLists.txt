@@ -105,6 +105,8 @@ if(GRAPHER_BUILD_TESTS)
     enable_testing()
     add_executable(grapher-test tests/grapher_test.cpp)
     target_link_libraries(grapher-test PRIVATE grapher::grapher)
+    # The kit schema and the examples it reads, in this checkout.
+    target_compile_definitions(grapher-test PRIVATE GRAPHER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     if(MSVC)
         target_compile_options(grapher-test PRIVATE /utf-8)
     endif()

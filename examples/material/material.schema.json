@@ -1,0 +1,41 @@
+{
+    "subtypeFlow": "out-is-a",
+    "portTypes": [
+        {"id": "float", "label": "Float"},
+        {"id": "vec2", "label": "Vector 2"},
+        {"id": "vec3", "label": "Vector 3"},
+        {"id": "color", "label": "Colour"},
+        {"id": "texture", "label": "Texture"}
+    ],
+    "conversions": [
+        {"from": "float", "to": "vec2"},
+        {"from": "float", "to": "vec3"},
+        {"from": "float", "to": "color"},
+        {"from": "vec3", "to": "color"},
+        {"from": "color", "to": "vec3"}
+    ],
+    "edges": [
+        {"id": "wire", "label": "Wire", "portColor": true, "arrow": false}
+    ],
+    "nodes": [
+        {"id": "frame", "label": "Frame", "shape": "group", "groupMode": "members", "titleField": "title"},
+        {"id": "input:float", "label": "Value", "titleField": "title",
+         "ports": [{"id": "out", "type": "float", "dir": "out", "onHeader": true}]},
+        {"id": "input:color", "label": "Colour", "titleField": "title",
+         "ports": [{"id": "out", "type": "color", "dir": "out", "onHeader": true}]},
+        {"id": "input:texture", "label": "Texture", "titleField": "title",
+         "ports": [{"id": "out", "type": "texture", "dir": "out", "onHeader": true}]},
+        {"id": "math:add", "label": "Add", "titleField": "title",
+         "ports": [{"id": "a", "label": "A", "type": "float"}, {"id": "b", "label": "B", "type": "float"},
+                   {"id": "out", "type": "float", "dir": "out", "onHeader": true}]},
+        {"id": "math:lerp", "label": "Mix", "titleField": "title",
+         "ports": [{"id": "a", "label": "A", "type": "vec3"}, {"id": "b", "label": "B", "type": "vec3"},
+                   {"id": "t", "label": "Factor", "type": "float"}, {"id": "out", "type": "vec3", "dir": "out", "onHeader": true}]},
+        {"id": "texture:sample", "label": "Sample", "titleField": "title",
+         "ports": [{"id": "texture", "label": "Texture", "type": "texture"}, {"id": "uv", "label": "UV", "type": "vec2"},
+                   {"id": "color", "label": "Colour", "type": "color", "dir": "out"}, {"id": "alpha", "label": "Alpha", "type": "float", "dir": "out"}]},
+        {"id": "output:surface", "label": "Surface", "titleField": "title",
+         "ports": [{"id": "baseColor", "label": "Base colour", "type": "color"}, {"id": "roughness", "label": "Roughness", "type": "float"},
+                   {"id": "metallic", "label": "Metallic", "type": "float"}, {"id": "normal", "label": "Normal", "type": "vec3"}]}
+    ]
+}
