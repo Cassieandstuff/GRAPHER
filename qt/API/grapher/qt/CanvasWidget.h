@@ -125,6 +125,7 @@ private:
 
     Canvas&     canvas_;
     QPointF     rightDown_;
+    std::string refusedTip_;   ///< the refusal shown at the pointer while a wire is dragged (Canvas::Refused)
     ImageSource images_;
     bool        hostNavigation_ = false;
     bool        ownKeys_        = true;

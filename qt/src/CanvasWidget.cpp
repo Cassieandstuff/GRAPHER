@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace grapher::qt {
 
@@ -392,6 +393,12 @@ void CanvasWidget::mousePressEvent(QMouseEvent* e)
 void CanvasWidget::mouseMoveEvent(QMouseEvent* e)
 {
     if (canvas_.PointerMove(V(e->position()), ModsOf(e->modifiers()))) update();
+    // A dragged wire over an end the host refused: why, at the pointer.
+    if (const std::string& why = canvas_.Refused().reason; why != refusedTip_) {
+        refusedTip_ = why;
+        if (why.empty()) QToolTip::hideText();
+        else QToolTip::showText(e->globalPosition().toPoint(), QString::fromStdString(why), this);
+    }
     if (canvas_.Busy()) return;
     switch (canvas_.HitTest(V(e->position())).kind) {
     case HitKind::Resize: setCursor(Qt::SizeFDiagCursor); break;
@@ -486,6 +493,7 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent* e)
 {
     if (hostNavigation_ && e->button() == Qt::MiddleButton) return;
     canvas_.PointerUp(V(e->position()), ButtonOf(e->button()));
+    if (!std::exchange(refusedTip_, {}).empty()) QToolTip::hideText();
     update();
     takeEdit();
     if (const auto click = canvas_.TakeRowClick()) {
@@ -576,6 +584,7 @@ void CanvasWidget::keyPressEvent(QKeyEvent* e)
     }
     if (e->key() == Qt::Key_Escape && canvas_.Busy()) {
         canvas_.CancelGesture();
+        if (!std::exchange(refusedTip_, {}).empty()) QToolTip::hideText();
         update();
         return;
     }

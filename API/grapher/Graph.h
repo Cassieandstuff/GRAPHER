@@ -7,6 +7,7 @@
 #include <grapher/Port.h>
 
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -35,6 +36,9 @@ struct Row {
     std::string              field;     ///< Choice: the node field a pick sets
     std::string              tooltip;
     bool                     separator = false;   ///< a faint rule above it
+    /// @brief A number's or a slider's range on this row alone (the property's own limits, from the host's data); each
+    ///        one unset falls back to the row's kit kind (RowSpec::min, max, step).
+    std::optional<float>     min, max, step;
     friend bool operator==(const Row&, const Row&) = default;
 };
 
@@ -90,6 +94,9 @@ struct Node {
     Dial                 dial;      ///< a NodeShape::Dial node's axis and needle
     /// @brief What a kit's rules may select the node by (its class, its role…). Opaque to GRAPHER.
     std::vector<std::string> tags;
+    /// @brief Whether a wire may end on this node as a whole (its connect handle, a drop on it); unset = its type's
+    ///        NodeType::wholeNodeWires. Canvas::wholeNodeWires off turns it off for every node.
+    std::optional<bool>      wholeNodeWires;
 
     /// @return the row `id`, or nullptr
     [[nodiscard]] const Row* FindRow(std::string_view rowId) const;

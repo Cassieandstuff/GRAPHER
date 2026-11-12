@@ -3316,6 +3316,104 @@ void TestKitEditsAndReorder()
     CHECK(!p.Last<grapher::ReorderRow>());
 }
 
+void TestRowRangeVetoAndWholeWires()
+{
+    // A row's own range wins over its kind's, bound by bound: min and step from the row, max from the kit.
+    ActionRig r;
+    r.g.nodes[0].rows[1].min  = 2.f;   // "n": the kit's num row is 0..10
+    r.g.nodes[0].rows[1].step = 0.5f;
+    r.Click(r.Row("n"));
+    const auto num = r.c->TakeEditRequest();
+    CHECK((num && num->min == 2.f && num->max == 10.f && num->step == 0.5f));
+
+    // The host refuses an end live while the wire is dragged: ringed in the refused colour, the wire too, its reason
+    // at the pointer; let go there, nothing is wired.
+    const grapher::Schema s = PortSchema();
+    grapher::Graph g;
+    g.nodes.push_back({"v", "value", {0, 0, 160, 80}});
+    g.nodes.push_back({"m", "mix", {400, 0, 200, 120}});
+    grapher::Canvas c(g, s);
+    c.SetViewport({800, 600});
+    std::string seenType;
+    c.checkWire = [&](const grapher::Edge& w) {
+        seenType = w.type;
+        if (w.toPort == "b") return grapher::WireCheck{false, {}, {}, "would make a loop"};
+        return grapher::WireCheck{};
+    };
+    const grapher::Vec2 vo = *c.PortScreenPos("v", "out"), ma = *c.PortScreenPos("m", "a"), mb = *c.PortScreenPos("m", "b");
+    c.PointerDown(vo, grapher::Button::Left, {});
+    c.PointerMove(vo + grapher::Vec2{30, 30});
+    c.PointerMove(mb);
+    CHECK((c.Refused() == grapher::RefusedEnd{"m", "b", "would make a loop"} && seenType == "data"));
+    CHECK(c.TooltipAt(mb) == "would make a loop");
+    bool ring = false, redWire = false;
+    for (const auto& cmd : c.Draw().cmds) {
+        if (const auto* k = std::get_if<grapher::Circle>(&cmd); k && k->stroke == c.style.refused && Near(k->center, mb)) ring = true;
+        if (const auto* p = std::get_if<grapher::Polyline>(&cmd); p && p->color == c.style.refused) redWire = true;
+    }
+    CHECK(ring && redWire);
+    c.PointerMove(ma);   // an end it may take: nothing refused
+    CHECK(c.Refused().node.empty());
+    c.PointerMove(*c.PortScreenPos("m", "out"));   // the schema refuses Out to Out: shown, with no reason of the host's
+    CHECK((c.Refused() == grapher::RefusedEnd{"m", "out", ""}));
+    c.PointerMove(mb);
+    c.PointerUp(mb, grapher::Button::Left);
+    CHECK(g.edges.empty() && c.Refused().node.empty());
+
+    // Dropped on the card as a whole, where no port takes it: the node is refused, with the host's reason.
+    c.checkWire = [](const grapher::Edge& w) { return w.to == "m" ? grapher::WireCheck{false, {}, {}, "not into a mix"} : grapher::WireCheck{}; };
+    const grapher::Vec2 body = c.ScreenRectOf("m").Center();
+    c.PointerDown(vo, grapher::Button::Left, {});
+    c.PointerMove(vo + grapher::Vec2{30, 30});
+    c.PointerMove(body);
+    CHECK((c.Refused() == grapher::RefusedEnd{"m", "", "not into a mix"}));
+    bool nodeRing = false;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* f = std::get_if<grapher::FillRect>(&cmd); f && f->stroke == c.style.refused && f->fill.a == 0) nodeRing = true;
+    CHECK(nodeRing);
+    c.PointerUp(body, grapher::Button::Left);
+    CHECK(g.edges.empty());
+
+    // Whole-node wires off for one node: no connect handle on it, nothing wires to it, and a drop on it isn't shown
+    // refused (it is simply no target).
+    grapher::Graph k;
+    k.nodes.push_back({"p", "repo", {0, 0, 200, 100}});
+    k.nodes.push_back({"q", "repo", {400, 0, 200, 100}});
+    k.nodes[1].wholeNodeWires = false;
+    const grapher::Schema plain = MakeSchema();
+    grapher::Canvas       e(k, plain);
+    e.SetViewport({800, 600});
+    CHECK(e.HitTest({200, 50}).kind == grapher::HitKind::Connect && e.HitTest({600, 50}).kind != grapher::HitKind::Connect);
+    CHECK(!e.CanWire("p", "", "q", "") && e.TakesWholeWires(k.nodes[0]) && !e.TakesWholeWires(k.nodes[1]));
+    e.PointerDown({200, 50}, grapher::Button::Left, {});
+    e.PointerMove({300, 50});
+    e.PointerMove({500, 50});
+    CHECK(e.Refused().node.empty());
+    e.PointerUp({500, 50}, grapher::Button::Left);
+    CHECK(k.edges.empty());
+
+    // Off for a whole type; a node turns it back on for itself, and both ends need it.
+    grapher::Schema off = MakeSchema();
+    off.nodeTypes[0].wholeNodeWires = false;   // repo
+    grapher::Graph h;
+    h.nodes.push_back({"p", "repo", {0, 0, 200, 100}});
+    h.nodes.push_back({"q", "repo", {400, 0, 200, 100}});
+    grapher::Canvas f(h, off);
+    f.SetViewport({800, 600});
+    CHECK(f.HitTest({200, 50}).kind != grapher::HitKind::Connect && !f.CanWire("p", "", "q", ""));
+    h.nodes[1].wholeNodeWires = true;
+    CHECK(!f.CanWire("p", "", "q", ""));
+    h.nodes[0].wholeNodeWires = true;
+    CHECK(f.CanWire("p", "", "q", "") && f.HitTest({200, 50}).kind == grapher::HitKind::Connect);
+    f.wholeNodeWires = false;   // the canvas's switch still turns it off for every node
+    CHECK(!f.CanWire("p", "", "q", ""));
+
+    // The type's switch round-trips through the schema's JSON, written only when off.
+    const auto back = grapher::ParseSchema(grapher::WriteSchema(off));
+    CHECK((back && back->nodeTypes[0].wholeNodeWires == false && back->nodeTypes[1].wholeNodeWires == true));
+    CHECK(grapher::WriteSchema(MakeSchema()).find("wholeNodeWires") == std::string::npos);
+}
+
 
 // ── Kits: groups, pills, the dial, edges ─────────────────────────────────────
 constexpr const char* kPartKit = R"KIT({
@@ -3616,6 +3714,7 @@ int main()
     TestLiftWires();
     TestHostChangesMidDrag();
     TestMaterialGaps();
+    TestRowRangeVetoAndWholeWires();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

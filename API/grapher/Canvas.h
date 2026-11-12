@@ -85,6 +85,15 @@ struct WireCheck {
     bool        allowed = true;
     std::string type;    ///< an EdgeType id the wire takes instead; empty = as the schema says
     std::string label;   ///< the wire's label; empty = none
+    std::string reason;  ///< refused: why, said at the pointer while the wire is dragged over the refused end
+};
+
+/// @brief While a wire is dragged: the end under the pointer it may not take (Canvas::Refused).
+struct RefusedEnd {
+    std::string node;     ///< empty = none
+    std::string port;     ///< empty = the node as a whole
+    std::string reason;   ///< the host's WireCheck::reason; empty when the schema refused it
+    friend bool operator==(const RefusedEnd&, const RefusedEnd&) = default;
 };
 
 enum class EditMode {
@@ -235,10 +244,13 @@ public:
     /// @brief The node under the pointer changed (empty: none), while no gesture runs: a host can trace what it stands for.
     std::function<void(std::string_view node)>                  onHoverChanged;
     /// @brief Wires may end on a node as a whole (a port-less node's connect handle). False: every wire runs port to
-    ///        port, and port-less nodes (notes, frames) take none.
+    ///        port, and port-less nodes (notes, frames) take none. Per type and per node: NodeType::wholeNodeWires,
+    ///        Node::wholeNodeWires.
     bool wholeNodeWires = true;
-    /// @brief The host's say on a wire, after the schema's: refuse it (a cycle), or mark it (a converting wire's own edge
-    ///        type, a label). Unset: the schema alone decides.
+    /// @brief The host's say on a wire, after the schema's: refuse it (a cycle, a type the host forbids), or mark it (a
+    ///        converting wire's own edge type, a label). Asked live while a wire is dragged, for each end that could take
+    ///        it (so keep it cheap): a refused end under the pointer is ringed in Style::refused, with WireCheck::reason
+    ///        as its tooltip (Refused), and a drop on it does nothing. Unset: the schema alone decides.
     std::function<WireCheck(const Edge& wire)> checkWire;
     /// @brief A press on a full one-wire input lifts its wire: dropped on another input it moves there (a ConnectWire that
     ///        replaces it), dropped on nothing it comes off (RemoveItems). Off by default: then the press starts a new wire.
@@ -361,8 +373,14 @@ public:
     /// @}
 
     /// @brief Whether Connect would wire these: two distinct nodes; with ports, one In and one Out whose types the schema
-    ///        lets connect (Schema::CanConnect); and no edge between the same ends already.
+    ///        lets connect (Schema::CanConnect); a node end without a port only on a node that takes whole-node wires
+    ///        (TakesWholeWires); no edge between the same ends already; and checkWire allows it.
     [[nodiscard]] bool CanWire(std::string_view nodeA, std::string_view portA, std::string_view nodeB, std::string_view portB) const;
+    /// @brief Whether a wire may end on `n` as a whole: wholeNodeWires, then Node::wholeNodeWires, else its type's.
+    [[nodiscard]] bool TakesWholeWires(const Node& n) const;
+    /// @brief While a wire is dragged: the end under the pointer it may not take, and why; RefusedEnd::node empty
+    ///        otherwise.
+    [[nodiscard]] const RefusedEnd& Refused() const { return refused_; }
     /// @return the pin of `port` on `nodeId` in screen pixels, or nullopt when there is none
     [[nodiscard]] std::optional<Vec2> PortScreenPos(std::string_view nodeId, std::string_view port) const;
 
@@ -428,8 +446,9 @@ private:
     /// @brief The port of `to` a wire dragged from `port` of `from` lands on when dropped on `to` as a whole: the first
     ///        that can take it, preferring one with room. Empty when none can.
     [[nodiscard]] std::string LandingPort(const Node& from, std::string_view port, const Node& to) const;
-    /// @brief CanWire, not counting edge `ignoring` (one about to be replaced).
-    [[nodiscard]] bool CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view ignoring) const;
+    /// @brief CanWire, not counting edge `ignoring` (one about to be replaced); refused by checkWire, `why` gets its reason.
+    [[nodiscard]] bool CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view ignoring,
+                               std::string* why = nullptr) const;
     /// @brief Connect, with `lifted` (an edge in the hand, or empty) taken out first and named among what it replaces.
     std::string Wire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view lifted);
     [[nodiscard]] float Snap(float v) const;
@@ -466,6 +485,7 @@ private:
     std::string connectTo_;
     std::string activePort_;        ///< the port a connect starts from; empty = the node's connect handle
     std::string connectPort_;       ///< the port of connectTo_ it would end on
+    RefusedEnd  refused_;           ///< the end under the pointer the dragged wire may not take
     std::string lifted_;            ///< the wire a connect carries off its input (liftWires)
     std::vector<std::pair<std::string, Rect>> origin_;   ///< frames at the start of a move or resize
     NodeSet     carried_;           ///< moving because a selected group holds them, not because they are selected

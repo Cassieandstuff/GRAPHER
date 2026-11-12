@@ -657,6 +657,7 @@ void Canvas::CancelGesture()
 {
     const Mode mode = std::exchange(mode_, Mode::Idle);
     lifted_.clear();
+    refused_ = {};
     connectTo_.clear();
     connectPort_.clear();
     carried_.clear();
@@ -855,9 +856,9 @@ bool Canvas::BeginEdit(std::string_view nodeId, std::string_view rowId)
     e.value  = !r->field.empty() && !n->Field(r->field).empty() ? n->Field(r->field) : r->value;
     e.choices = r->choices;
     if ((e.editor == "reference" || (e.editor == "choice" && e.choices.empty())) && choicesFor) e.choices = choicesFor(*n, *r);
-    e.min  = look.min;
-    e.max  = look.max;
-    e.step = look.step;
+    e.min  = r->min.value_or(look.min);   // the row's own range (the host's data), else its kind's
+    e.max  = r->max.value_or(look.max);
+    e.step = r->step.value_or(look.step);
     if (const auto line = RowScreenRect(nodeId, rowId)) e.at = *line;
     edit_ = std::move(e);
     return true;
@@ -932,13 +933,19 @@ bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b
     return CanWire(a, pa, b, pb, {});
 }
 
-bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view ignoring) const
+bool Canvas::TakesWholeWires(const Node& n) const
+{
+    return wholeNodeWires && n.wholeNodeWires.value_or(TypeOf(n).wholeNodeWires);
+}
+
+bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view ignoring,
+                     std::string* why) const
 {
     if (a == b) return false;
-    if (!wholeNodeWires && (pa.empty() || pb.empty())) return false;   // every wire runs port to port
     const Node* na = graph_->FindNode(a);
     const Node* nb = graph_->FindNode(b);
     if (!na || !nb) return false;
+    if ((pa.empty() && !TakesWholeWires(*na)) || (pb.empty() && !TakesWholeWires(*nb))) return false;   // port to port only
     std::optional<PortDef> da, db;
     if (!pa.empty() && !(da = PortOf(*na, *schema_, pa))) return false;
     if (!pb.empty() && !(db = PortOf(*nb, *schema_, pb))) return false;
@@ -958,7 +965,14 @@ bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b
         proposed.to       = w.to;
         proposed.fromPort = w.fromPort;
         proposed.toPort   = w.toPort;
-        return checkWire(proposed).allowed;
+        const Node*     fromNode = graph_->FindNode(proposed.from);
+        const Node*     toNode   = graph_->FindNode(proposed.to);
+        const PortType* pt       = proposed.fromPort.empty() ? nullptr
+                                                             : schema_->FindPortType(PortTypeOf(*graph_, *schema_, *fromNode, proposed.fromPort));
+        proposed.type = pt && !pt->edge.empty() && schema_->FindEdge(pt->edge) ? pt->edge : schema_->EdgeFor(fromNode->type, toNode->type);
+        WireCheck verdict = checkWire(proposed);
+        if (!verdict.allowed && why) *why = std::move(verdict.reason);
+        return verdict.allowed;
     }
     return true;
 }
@@ -1137,6 +1151,7 @@ std::optional<Rect> Canvas::RowScreenRect(std::string_view nodeId, std::string_v
 
 std::string Canvas::TooltipAt(Vec2 screen) const
 {
+    if (mode_ == Mode::Connecting && !refused_.reason.empty()) return refused_.reason;   // why the end under it won't do
     const Hit hit = HitTest(screen);
     switch (hit.kind) {
     case HitKind::Row:
@@ -1213,7 +1228,7 @@ Hit Canvas::HitAt(Vec2 screen, bool groupInterior) const
                 reachOf = (look->size > 0.f ? look->size * camera.zoom : PinRadius(camera.zoom)) + look->hit;
             if (Distance(screen, camera.ToScreen(s.at)) <= reachOf) return {HitKind::Port, n.id, s.def.id};
         }
-        if (wholeNodeWires && slots.empty() && Distance(screen, ConnectHandle(r)) <= handle) return {HitKind::Connect, n.id};
+        if (TakesWholeWires(n) && slots.empty() && Distance(screen, ConnectHandle(r)) <= handle) return {HitKind::Connect, n.id};
         return {};
     };
     for (const Node* n : order) {
@@ -2238,6 +2253,7 @@ bool Canvas::PointerDown(Vec2 at, Button button, Modifiers mods)
         mode_       = Mode::Connecting;
         active_     = hit.id;
         activePort_ = hit.port;
+        refused_ = {};
         connectTo_.clear();
         connectPort_.clear();
         lifted_.clear();
@@ -2383,6 +2399,7 @@ bool Canvas::PointerMove(Vec2 at, Modifiers mods)
         const Hit hit = HitAt(at, true);   // a group's interior is a target too
         connectTo_.clear();
         connectPort_.clear();
+        refused_ = {};
         if (const Edge* held = lifted_.empty() ? nullptr : graph_->FindEdge(lifted_); held && hit.id == held->to && hit.port == held->toPort) {
             connectTo_   = held->to;   // back where it was lifted from
             connectPort_ = held->toPort;
@@ -2390,21 +2407,34 @@ bool Canvas::PointerMove(Vec2 at, Modifiers mods)
         }
         const Node* from = graph_->FindNode(active_);
         if (!from || hit.kind == HitKind::None || hit.kind == HitKind::Edge || hit.id == active_) return true;
+        // An end that can't take the wire shows so before the drop (the schema's types, the host's checkWire).
         if (hit.kind == HitKind::Port) {
-            if (CanWire(active_, activePort_, hit.id, hit.port)) {
+            if (std::string why; CanWire(active_, activePort_, hit.id, hit.port, {}, &why)) {
                 connectTo_   = hit.id;
                 connectPort_ = hit.port;
+            } else {
+                refused_ = {hit.id, hit.port, std::move(why)};
             }
             return true;
         }
-        // Dropped on a node as a whole: a wire from a port lands on the first of its ports that takes it.
+        // Dropped on a node as a whole: a wire from a port lands on the first of its ports that takes it. A node that
+        // takes no wire as a whole (and a group's interior) is simply no target: it isn't shown refused.
         const Node* to = graph_->FindNode(hit.id);
         if (!to) return true;
         if (activePort_.empty() || PortsOf(*to, *schema_).empty()) {
-            if (CanWire(active_, activePort_, hit.id, {})) connectTo_ = hit.id;
+            if (std::string why; CanWire(active_, activePort_, hit.id, {}, {}, &why)) connectTo_ = hit.id;
+            else if (TakesWholeWires(*to) && !IsGroup(*to, *schema_)) refused_ = {hit.id, {}, std::move(why)};
         } else if (std::string p = LandingPort(*from, activePort_, *to); !p.empty()) {
             connectTo_   = hit.id;
             connectPort_ = std::move(p);
+        } else if (!IsGroup(*to, *schema_)) {
+            // No port of it takes the wire: the host's reason, when one of them was its refusal.
+            refused_ = {hit.id, {}, {}};
+            for (const PortDef& p : PortsOf(*to, *schema_))
+                if (std::string why; !CanWire(active_, activePort_, hit.id, p.id, {}, &why) && !why.empty()) {
+                    refused_.reason = std::move(why);
+                    break;
+                }
         }
         return true;
     }
@@ -2540,6 +2570,7 @@ bool Canvas::PointerUp(Vec2 at, Button)
     case Mode::Connecting: {
         const std::string to     = std::exchange(connectTo_, {});
         const std::string toPort = std::exchange(connectPort_, {});
+        refused_ = {};
         const std::string held   = std::exchange(lifted_, {});
         if (!started_ && Gesture("click", downHit_, at, downMods_)) return true;   // a click on a pin the kit binds
         const Edge*       lifted = held.empty() ? nullptr : graph_->FindEdge(held);
@@ -2767,6 +2798,10 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
             else
                 DrawPin(c, at, dir, pt ? pt->glyph : PortGlyph::Circle, pinR, color, s.nodeFill, on);
             if (!offering || n.id == active_) continue;
+            if (n.id == refused_.node && slot.def.id == refused_.port) {   // under the pointer, and it won't take the wire
+                c.push_back(Circle{at, pinR + 4.f, Color{0, 0, 0, 0}, s.refused, 2.f});
+                continue;
+            }
             const bool target = n.id == connectTo_ && slot.def.id == connectPort_;
             if (target || (!activePort_.empty() && CanWire(active_, activePort_, n.id, slot.def.id)))
                 c.push_back(Circle{at, pinR + (target ? 4.f : 3.f), Color{0, 0, 0, 0}, s.selection, target ? 2.f : 1.25f});
@@ -2897,12 +2932,12 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
             const auto a      = pinOf(*from, activePort_).value_or(SideAnchor(from->frame, FacingSides(from->frame, toRect).first));
             Anchor     b{cursor, {0, 0}};
             if (to) b = pinOf(*to, connectPort_).value_or(SideAnchor(to->frame, FacingSides(from->frame, to->frame).second));
-            c.push_back(Polyline{ToScreen(cam, Route(a, b, EdgeLine::Curve)), s.selection, 2.f, true});
+            c.push_back(Polyline{ToScreen(cam, Route(a, b, EdgeLine::Curve)), refused_.node.empty() ? s.selection : s.refused, 2.f, true});
         }
 
     auto drawHandles = [&](const Node& n, const Rect& r, bool sel) {
         const float hr = HandleRadius(s, z);
-        if (wholeNodeWires && PortsOf(n, *schema_).empty()) c.push_back(Circle{ConnectHandle(r), hr, s.background, sel ? s.selection : s.muted, 1.5f});
+        if (TakesWholeWires(n) && PortsOf(n, *schema_).empty()) c.push_back(Circle{ConnectHandle(r), hr, s.background, sel ? s.selection : s.muted, 1.5f});
         if (TypeOf(n).shape == NodeShape::Dot) return;   // a reroute dot is no size to resize
         const Rect g = ResizeGrip(r, s);
         c.push_back(Polygon{{{g.Right() - 2, g.y + 4}, {g.Right() - 2, g.Bottom() - 2}, {g.x + 4, g.Bottom() - 2}},
@@ -3092,6 +3127,8 @@ DrawList Canvas::Render(const Camera& cam, Vec2 viewport, bool chrome) const
 
         if (const auto ring = highlights.rings.find(n.id); ring != highlights.rings.end())
             c.push_back(FillRect{r.Inflated(3.f), Color{0, 0, 0, 0}, ring->second, 2.f, s.corner * z + 3.f});
+        if (offering && n.id == refused_.node && refused_.port.empty())   // a node that won't take the wire as a whole
+            c.push_back(FillRect{r.Inflated(3.f), Color{0, 0, 0, 0}, s.refused, 2.f, s.corner * z + 3.f});
         if (highlights.dimmed.contains(n.id))
             c.push_back(FillRect{r, Color{s.background.r, s.background.g, s.background.b, 150}, {}, 0.f, s.corner * z});
         // An alias draws dimmed, with a dashed outline.
