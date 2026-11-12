@@ -1931,7 +1931,7 @@ void TestOctagonDial()
         if (const auto* p = std::get_if<grapher::Polygon>(&cmd); p && p->fill == grapher::Color{255, 0, 0})
             headerBand = std::ranges::all_of(p->points, [](grapher::Vec2 v) { return v.y <= 40.01f; }) && p->points.size() >= 4;
         if (const auto* t = std::get_if<grapher::Text>(&cmd); t && t->text.starts_with("speed"))
-            readingOnGap = std::abs(t->rect.Center().y - (ring.center.y + ring.radius)) < 1.f && std::abs(t->rect.Center().x - ring.center.x) < 1.f &&
+            readingOnGap = std::abs(t->box.Center().y - (ring.center.y + ring.radius)) < 1.f && std::abs(t->box.Center().x - ring.center.x) < 1.f &&
                            t->color == grapher::Color{0, 255, 0};
     }
     CHECK((headerBand && readingOnGap));
