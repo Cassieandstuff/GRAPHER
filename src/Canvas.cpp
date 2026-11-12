@@ -2430,8 +2430,8 @@ bool Canvas::PointerMove(Vec2 at, Modifiers mods)
         } else if (!IsGroup(*to, *schema_)) {
             // No port of it takes the wire: the host's reason, when one of them was its refusal.
             refused_ = {hit.id, {}, {}};
-            for (const PortDef& p : PortsOf(*to, *schema_))
-                if (std::string why; !CanWire(active_, activePort_, hit.id, p.id, {}, &why) && !why.empty()) {
+            for (const PortDef& port : PortsOf(*to, *schema_))
+                if (std::string why; !CanWire(active_, activePort_, hit.id, port.id, {}, &why) && !why.empty()) {
                     refused_.reason = std::move(why);
                     break;
                 }

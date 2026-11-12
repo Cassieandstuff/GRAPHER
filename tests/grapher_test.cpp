@@ -3316,6 +3316,70 @@ void TestKitEditsAndReorder()
     CHECK(!p.Last<grapher::ReorderRow>());
 }
 
+void TestTitlesOfLookalikeCards()
+{
+    // Two cards of one kind and one geometry, titled from a field (a material editor's blends, at Material Maker's
+    // places): each draws its own title, and a content-only change shows at once, with nothing cached by geometry.
+    grapher::Schema s;
+    grapher::NodeType shader{"shader", ""};
+    shader.titleField = "title";
+    shader.width      = 200.f;
+    shader.fitHeight  = true;   // the canvas draws from a view of the graph, its content looked up live
+    s.nodeTypes.push_back(shader);
+    s.edgeTypes.push_back({"wire", "wire"});
+    auto blend = [](std::string id, grapher::Vec2 at, std::string mode) {
+        grapher::Node n{std::move(id), "shader", {at.x, at.y, 200.f, 0.f}};
+        n.fields = {{"title", "Blend"}, {"p_blend_type", mode}};
+        n.rows   = {{"rs1", "Source1"}, {"rs2", "Source2"}, {"rop", "Opacity"}, {"rbt", "blend_type", mode}, {"ram", "3:", "0.5"}};
+        return n;
+    };
+    grapher::Graph g;
+    g.nodes.push_back(blend("blend_2", {456, 318}, "Normal"));
+    g.nodes.push_back(blend("blend_1", {288, 203}, "Soft Light"));   // later in the list: drawn over blend_2
+    std::string error;
+    const auto  kit = grapher::ParseKit(R"KIT({ "metrics": { "padding": 8, "titleSize": 12, "fontSize": 11, "header": 26, "row": 20 },
+        "nodes": { "shader": { "band": "#3d5a80", "fill": "#2b2d33", "parts": [
+        { "part": "header", "fill": "band", "height": 26, "top": 0.5,
+          "content": [ { "part": "text", "id": "title", "from": "field:title", "bold": true } ] },
+        { "part": "body" } ] } } })KIT", error);
+    CHECK(kit);
+    grapher::Canvas c(g, s);
+    c.SetKit(&*kit);
+    c.SetViewport({1200, 800});
+    const grapher::DrawList first = c.Draw();
+    CHECK(CountText(first, "Blend") == 2);
+
+    // Where they overlap, blend_1's card covers the start of blend_2's title: drawn after it, over its first letters.
+    const grapher::Rect under = c.ScreenRectOf("blend_2"), over = c.ScreenRectOf("blend_1");
+    std::printf("  lookalike cards: blend_1 %.0f,%.0f %.0fx%.0f over blend_2 at %.0f,%.0f\n", over.x, over.y, over.w, over.h, under.x, under.y);
+    CHECK(over.Right() > under.x && over.Bottom() > under.y);
+    std::size_t titleAt = first.cmds.size();
+    grapher::Rect titleBox;
+    for (std::size_t i = 0; i < first.cmds.size(); ++i)
+        if (const auto* t = std::get_if<grapher::Text>(&first.cmds[i]); t && t->text == "Blend" && under.Contains({t->box.x + 1.f, t->box.Center().y})) {
+            titleAt  = i;
+            titleBox = t->box;
+        }
+    bool covered = false;
+    for (std::size_t i = titleAt + 1; i < first.cmds.size(); ++i)
+        if (const auto* f = std::get_if<grapher::FillRect>(&first.cmds[i]); f && f->fill.a == 255 && over.Holds(f->rect) &&
+                                                                            f->rect.Contains({titleBox.x + 1.f, titleBox.Center().y}))
+            covered = true;   // blend_1's card (or its header) is painted over blend_2's first letters
+    CHECK(titleAt < first.cmds.size() && covered);
+
+    // A content-only change (the same ids, types, frames and rows) draws its new words on the next frame.
+    g.nodes[0].fields["title"] = "Mix";
+    const grapher::DrawList second = c.Draw();
+    CHECK(CountText(second, "Mix") == 1 && CountText(second, "Blend") == 1);
+    // So does a host replacing its whole graph with an equal-shaped one (a projection rebuilt after an edit).
+    grapher::Graph again = g;
+    again.nodes[1].fields["title"] = "Overlay";
+    g = again;
+    c.Refresh();
+    const grapher::DrawList third = c.Draw();
+    CHECK(CountText(third, "Mix") == 1 && CountText(third, "Overlay") == 1 && CountText(third, "Blend") == 0);
+}
+
 void TestRowRangeVetoAndWholeWires()
 {
     // A row's own range wins over its kind's, bound by bound: min and step from the row, max from the kit.
@@ -3715,6 +3779,7 @@ int main()
     TestHostChangesMidDrag();
     TestMaterialGaps();
     TestRowRangeVetoAndWholeWires();
+    TestTitlesOfLookalikeCards();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;
