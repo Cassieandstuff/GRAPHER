@@ -59,6 +59,9 @@ struct Dial {
     float       min = 0.f, max = 1.f;   ///< a cyclic axis' range
     float       value = 0.f;            ///< where the needle points
     std::string label;                  ///< under the needle
+    /// @brief The rows on the rim, by id; empty = every row that claims a port. The rest are listed under the header of
+    ///        an octagon dial (a binding, a "+" line), as a card lists its rows.
+    std::vector<std::string> rim;
     friend bool operator==(const Dial&, const Dial&) = default;
 };
 

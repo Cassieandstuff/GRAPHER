@@ -71,7 +71,7 @@ struct PartSpec {
     std::string                                     editor;    ///< from K2
 
     // From K3:
-    std::optional<std::string> shape;       ///< the root's when its group is closed: box (a header-high frame), pill
+    std::optional<std::string> shape;       ///< the root's when its group is closed: box (a header-high frame), pill; a rim's: circle, octagon
     /// @brief A text's template over its value: `{value}`, `{type}` (the type's label), `{count}` (what a group holds),
     ///        `{arrow}` (a collapsible group's ▾ or ▸, with a space), `{fields}` (its on-card fields, " · " between).
     std::optional<std::string> format;
@@ -86,6 +86,9 @@ struct PartSpec {
     /// @brief The card root's: what `band` is for this node, a colour expression over its type's band (a fixed colour, a
     ///        `palette(...)` slot). A rule may patch it, so one tag can pin a colour.
     std::optional<std::string> band;
+    /// @brief A rim's: how much an octagon's corners are cut, a fraction of its half-width (0.3 by default). The rim's
+    ///        `shape` is circle (the default) or octagon.
+    std::optional<float>       chamfer;
     friend bool operator==(const PartSpec&, const PartSpec&) = default;
 };
 

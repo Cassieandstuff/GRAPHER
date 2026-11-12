@@ -11,7 +11,7 @@ core knows no UI toolkit; backends paint its draw lists.
 | `grapher/SchemaJson.h` | the schema as JSON: `ParseSchema`, `ParseNodeType` (a type defined at runtime), `WriteSchema` |
 | `grapher/Graph.h` | `Node` (with ports of its own), `Edge` (port to port, or node to node), `Graph` — a value type, so undo is a copy |
 | `grapher/Groups.h` | group membership: a frame group holds what lies inside it, a member group what names it as `parent` (`ParentGroup`, `GroupMembers`) |
-| `grapher/Dial.h` | a dial's geometry: `DialAxis` (cyclic or open), `RingOf` |
+| `grapher/Dial.h` | a dial's geometry: `DialAxis` (cyclic or open), its rim (`Ring`: a circle or an octagon), `DialOf` (an octagon dial's body, header and listed rows) |
 | `grapher/Search.h` | `Search`: nodes by their text (titles, ids, type names, rows, fields, bodies), best first |
 | `grapher/Layout.h` | `LayoutColumns` (columns by wire distance, few crossings) and `LayoutGraph` (inside out through member groups, kept nodes stay, open groups push) |
 | `grapher/Routing.h` | `RouteWires` — ports spread along node sides; wires that would cut through a node routed around it (orthogonal A*), drawn in their edge type's style |
@@ -82,6 +82,10 @@ rings what its wires enter. `Node::showWith` shows a node only while it, or one 
 has on the axis (`Node::dial`: cyclic at true angles, or open on a 270° arc with the rows evenly spaced), its pin
 leaving outward. A needle shows `dial.value`. A handle per row drags its value round the ring, Shift snapping to
 sixteenths, and sets it like a choice (`SetValue`).
+A kit's rim part may be `"shape": "octagon"` (with `"chamfer"`, the corners' cut as a fraction): then the node is that
+octagon, its header band on the top edge and its other rows (`dial.rim` names those on the rim) listed under it with
+their pins on its edges; a row stands where the ray at its angle meets the rim, its pin leaving square to the edge and
+its handle dragging along the edges, and an open dial's gap is the flat bottom edge, where the needle's reading sits.
 
 **Wire styles.** An edge type can be dotted and set its width. With a canvas, a wire keeps the sides it leaves and enters
 by until its ends have moved well past where they would turn (`RoutingOptions::sideHysteresis`), so dragging along the

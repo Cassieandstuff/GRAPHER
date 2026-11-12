@@ -118,7 +118,10 @@ public:
         Num(o, "length", p.length, where);
         Str(o, "direction", p.direction, where);
         Str(o, "band", p.band, where);
-        if (p.shape && *p.shape != "box" && *p.shape != "pill") Fail(where, "\"shape\" takes box or pill");
+        Num(o, "chamfer", p.chamfer, where);
+        if (p.shape && *p.shape != "box" && *p.shape != "pill" && *p.shape != "circle" && *p.shape != "octagon")
+            Fail(where, "\"shape\" takes box or pill (a closed group), circle or octagon (a rim)");
+        if (p.chamfer && (*p.chamfer < 0.f || *p.chamfer > 1.f)) Fail(where, "\"chamfer\" is a fraction, 0 to 1");
         if (!OneOf(p.glyph, kGlyphNames)) Fail(where, "\"glyph\" takes circle, square, diamond or arrow");
         if (p.side && *p.side != "left" && *p.side != "right") Fail(where, "\"side\" takes left or right");
         if (p.direction && *p.direction != "in" && *p.direction != "out") Fail(where, "\"direction\" takes in or out");
@@ -285,6 +288,7 @@ void PutFields(json::Object& o, const PartSpec& p)
     PutNum(o, "length", p.length);
     PutStr(o, "direction", p.direction);
     PutStr(o, "band", p.band);
+    PutNum(o, "chamfer", p.chamfer);
     if (!p.on.empty()) {
         json::Object on;
         for (const auto& [g, a] : p.on) on.emplace_back(g, a);
