@@ -1,0 +1,1089 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Cassieandstuff/GRAPHER/schema/kit.schema.json",
+  "title": "GRAPHER kit",
+  "description": "What a host's nodes are made of and how they look, as data (grapher/Kit.h: ParseKit, WriteKit).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "tokens": {
+      "type": "object",
+      "description": "Colour expressions by name ($name).",
+      "additionalProperties": {
+        "type": "string",
+        "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+      }
+    },
+    "palettes": {
+      "type": "object",
+      "description": "Lists of colour expressions, read by palette(name, tag:key).",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        }
+      }
+    },
+    "fonts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "family": {
+            "type": "string"
+          },
+          "size": {
+            "type": "number"
+          },
+          "bold": {
+            "type": "boolean"
+          },
+          "italic": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "$ref": "#/$defs/metrics"
+    },
+    "nodes": {
+      "type": "object",
+      "description": "Node kinds by NodeType id; an id ending in * is a prefix kind.",
+      "additionalProperties": {
+        "$ref": "#/$defs/nodeKind"
+      }
+    },
+    "pins": {
+      "type": "object",
+      "description": "Pin kinds by a PortType's pin (else its id); * ends a prefix kind.",
+      "additionalProperties": {
+        "$ref": "#/$defs/pin"
+      }
+    },
+    "rows": {
+      "type": "object",
+      "description": "Row kinds, by what Row::style names.",
+      "additionalProperties": {
+        "$ref": "#/$defs/row"
+      }
+    },
+    "edges": {
+      "type": "object",
+      "description": "Edge kinds by EdgeType id; * ends a prefix kind.",
+      "additionalProperties": {
+        "$ref": "#/$defs/edge"
+      }
+    },
+    "rules": {
+      "type": "array",
+      "description": "Patches by selector, ordered by specificity, file order among equals.",
+      "items": {
+        "$ref": "#/$defs/rule"
+      }
+    },
+    "actions": {
+      "type": "object",
+      "description": "Reserved: kept as written."
+    }
+  },
+  "$defs": {
+    "part": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "part"
+      ],
+      "properties": {
+        "part": {
+          "type": "string",
+          "enum": [
+            "header",
+            "body",
+            "text",
+            "accent",
+            "pins",
+            "badge",
+            "button",
+            "chip",
+            "bar",
+            "glyph",
+            "image",
+            "rim",
+            "stub"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "description": "Unique in its kind; rules address it. Default: the part's name."
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/part"
+          }
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "fill": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "stroke": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "color": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "strokeWidth": {
+          "type": "number"
+        },
+        "corner": {
+          "type": "number"
+        },
+        "opacity": {
+          "type": "number"
+        },
+        "dash": {
+          "type": "boolean"
+        },
+        "width": {
+          "type": "number"
+        },
+        "top": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        },
+        "from": {
+          "type": "string",
+          "description": "field:<id>, row:<id>, type, fields, fields:all"
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "placeholderColor": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "font": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "scale": {
+          "type": "number"
+        },
+        "box": {
+          "type": "number"
+        },
+        "advance": {
+          "type": "number"
+        },
+        "bold": {
+          "type": "boolean"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "align": {
+          "type": "string",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ]
+        },
+        "if": {
+          "type": "string",
+          "description": "kind? ([tag])* (:state)* (> part)?: a kind may hold ':' and end in '*' (a prefix); states: selected, hovered, dimmed, alias, collapsed, inGroup, wired, unwired, lit, merged; a part may be pin:<kind>, row:<kind> or edge:<kind>."
+        },
+        "editor": {
+          "type": "string"
+        },
+        "shape": {
+          "type": "string",
+          "enum": [
+            "box",
+            "pill",
+            "circle",
+            "octagon"
+          ],
+          "description": "A card root's when its group is closed (box, pill); a rim's (circle, octagon)."
+        },
+        "format": {
+          "type": "string",
+          "description": "A text's template: {value} {type} {count} {arrow} {fields}."
+        },
+        "pin": {
+          "type": "string"
+        },
+        "glyph": {
+          "type": "string",
+          "enum": [
+            "circle",
+            "square",
+            "diamond",
+            "arrow"
+          ]
+        },
+        "hollow": {
+          "type": "boolean"
+        },
+        "side": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right"
+          ]
+        },
+        "length": {
+          "type": "number"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "in",
+            "out"
+          ]
+        },
+        "band": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "chamfer": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "An octagon rim's corner cut, a fraction of its half-width."
+        },
+        "on": {
+          "type": "object",
+          "description": "Gesture -> action id (a host command, or `edit`).",
+          "propertyNames": {
+            "enum": [
+              "click",
+              "doubleClick",
+              "contextMenu",
+              "dragToNothing"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "padding": {
+          "type": "number"
+        },
+        "titleSize": {
+          "type": "number"
+        },
+        "fontSize": {
+          "type": "number"
+        },
+        "header": {
+          "type": "number"
+        },
+        "row": {
+          "type": "number"
+        },
+        "groupHeader": {
+          "type": "number"
+        }
+      }
+    },
+    "nodeKind": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A kind of node: its card's root fields, its parts, its geometry.",
+      "properties": {
+        "visible": {
+          "type": "boolean"
+        },
+        "fill": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "stroke": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "color": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "strokeWidth": {
+          "type": "number"
+        },
+        "corner": {
+          "type": "number"
+        },
+        "opacity": {
+          "type": "number"
+        },
+        "dash": {
+          "type": "boolean"
+        },
+        "width": {
+          "type": "number"
+        },
+        "top": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        },
+        "from": {
+          "type": "string",
+          "description": "field:<id>, row:<id>, type, fields, fields:all"
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "placeholderColor": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "font": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number"
+        },
+        "scale": {
+          "type": "number"
+        },
+        "box": {
+          "type": "number"
+        },
+        "advance": {
+          "type": "number"
+        },
+        "bold": {
+          "type": "boolean"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "align": {
+          "type": "string",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ]
+        },
+        "if": {
+          "type": "string",
+          "description": "kind? ([tag])* (:state)* (> part)?: a kind may hold ':' and end in '*' (a prefix); states: selected, hovered, dimmed, alias, collapsed, inGroup, wired, unwired, lit, merged; a part may be pin:<kind>, row:<kind> or edge:<kind>."
+        },
+        "editor": {
+          "type": "string"
+        },
+        "shape": {
+          "type": "string",
+          "enum": [
+            "box",
+            "pill",
+            "circle",
+            "octagon"
+          ],
+          "description": "A card root's when its group is closed (box, pill); a rim's (circle, octagon)."
+        },
+        "format": {
+          "type": "string",
+          "description": "A text's template: {value} {type} {count} {arrow} {fields}."
+        },
+        "pin": {
+          "type": "string"
+        },
+        "glyph": {
+          "type": "string",
+          "enum": [
+            "circle",
+            "square",
+            "diamond",
+            "arrow"
+          ]
+        },
+        "hollow": {
+          "type": "boolean"
+        },
+        "side": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right"
+          ]
+        },
+        "length": {
+          "type": "number"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "in",
+            "out"
+          ]
+        },
+        "band": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "chamfer": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "An octagon rim's corner cut, a fraction of its half-width."
+        },
+        "on": {
+          "type": "object",
+          "description": "Gesture -> action id (a host command, or `edit`).",
+          "propertyNames": {
+            "enum": [
+              "click",
+              "doubleClick",
+              "contextMenu",
+              "dragToNothing"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/part"
+          }
+        },
+        "metrics": {
+          "$ref": "#/$defs/metrics"
+        },
+        "minWidth": {
+          "type": "number"
+        },
+        "maxWidth": {
+          "type": "number"
+        },
+        "fitWidth": {
+          "type": "boolean"
+        }
+      }
+    },
+    "pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "glyph": {
+          "type": "string",
+          "enum": [
+            "circle",
+            "square",
+            "diamond",
+            "arrow"
+          ]
+        },
+        "size": {
+          "type": "number"
+        },
+        "fill": {
+          "type": "string",
+          "enum": [
+            "wired",
+            "always",
+            "never"
+          ]
+        },
+        "color": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "hollow": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "hit": {
+          "type": "number"
+        },
+        "label": {
+          "type": "boolean"
+        },
+        "on": {
+          "type": "object",
+          "description": "Gesture -> action id (a host command, or `edit`).",
+          "propertyNames": {
+            "enum": [
+              "click",
+              "doubleClick",
+              "contextMenu",
+              "dragToNothing"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "valueColor": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "suffix": {
+          "type": "string"
+        },
+        "align": {
+          "type": "string",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ]
+        },
+        "valueAlign": {
+          "type": "string",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ]
+        },
+        "bold": {
+          "type": "boolean"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "chip": {
+          "type": "boolean"
+        },
+        "editor": {
+          "type": "string",
+          "enum": [
+            "none",
+            "text",
+            "number",
+            "slider",
+            "toggle",
+            "choice",
+            "color",
+            "path",
+            "reference"
+          ]
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        },
+        "step": {
+          "type": "number"
+        },
+        "reorder": {
+          "type": "string"
+        },
+        "on": {
+          "type": "object",
+          "description": "Gesture -> action id (a host command, or `edit`).",
+          "propertyNames": {
+            "enum": [
+              "click",
+              "doubleClick",
+              "contextMenu",
+              "dragToNothing"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "type": "string",
+          "enum": [
+            "curve",
+            "straight",
+            "elbow"
+          ]
+        },
+        "width": {
+          "type": "number"
+        },
+        "widen": {
+          "type": "number"
+        },
+        "dash": {
+          "type": "boolean"
+        },
+        "dotted": {
+          "type": "boolean"
+        },
+        "onTop": {
+          "type": "boolean"
+        },
+        "arrow": {
+          "type": "string",
+          "enum": [
+            "none",
+            "end",
+            "start",
+            "both"
+          ]
+        },
+        "arrowSize": {
+          "type": "number"
+        },
+        "color": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "pinColor": {
+          "type": "boolean"
+        },
+        "opacity": {
+          "type": "number"
+        },
+        "labelColor": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "labelFill": {
+          "type": "string",
+          "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+        },
+        "labelScale": {
+          "type": "number"
+        }
+      }
+    },
+    "rule": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "select"
+          ],
+          "description": "Patches a pin kind (> pin:<kind>).",
+          "properties": {
+            "select": {
+              "type": "string",
+              "description": "kind? ([tag])* (:state)* (> part)?: a kind may hold ':' and end in '*' (a prefix); states: selected, hovered, dimmed, alias, collapsed, inGroup, wired, unwired, lit, merged; a part may be pin:<kind>, row:<kind> or edge:<kind>.",
+              "pattern": ">\\s*pin:"
+            },
+            "glyph": {
+              "type": "string",
+              "enum": [
+                "circle",
+                "square",
+                "diamond",
+                "arrow"
+              ]
+            },
+            "size": {
+              "type": "number"
+            },
+            "fill": {
+              "type": "string",
+              "enum": [
+                "wired",
+                "always",
+                "never"
+              ]
+            },
+            "color": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "hollow": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "hit": {
+              "type": "number"
+            },
+            "label": {
+              "type": "boolean"
+            },
+            "on": {
+              "type": "object",
+              "description": "Gesture -> action id (a host command, or `edit`).",
+              "propertyNames": {
+                "enum": [
+                  "click",
+                  "doubleClick",
+                  "contextMenu",
+                  "dragToNothing"
+                ]
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "select"
+          ],
+          "description": "Patches a row kind (> row:<kind>).",
+          "properties": {
+            "select": {
+              "type": "string",
+              "description": "kind? ([tag])* (:state)* (> part)?: a kind may hold ':' and end in '*' (a prefix); states: selected, hovered, dimmed, alias, collapsed, inGroup, wired, unwired, lit, merged; a part may be pin:<kind>, row:<kind> or edge:<kind>.",
+              "pattern": ">\\s*row:"
+            },
+            "color": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "valueColor": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "prefix": {
+              "type": "string"
+            },
+            "suffix": {
+              "type": "string"
+            },
+            "align": {
+              "type": "string",
+              "enum": [
+                "left",
+                "center",
+                "right"
+              ]
+            },
+            "valueAlign": {
+              "type": "string",
+              "enum": [
+                "left",
+                "center",
+                "right"
+              ]
+            },
+            "bold": {
+              "type": "boolean"
+            },
+            "italic": {
+              "type": "boolean"
+            },
+            "chip": {
+              "type": "boolean"
+            },
+            "editor": {
+              "type": "string",
+              "enum": [
+                "none",
+                "text",
+                "number",
+                "slider",
+                "toggle",
+                "choice",
+                "color",
+                "path",
+                "reference"
+              ]
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            },
+            "reorder": {
+              "type": "string"
+            },
+            "on": {
+              "type": "object",
+              "description": "Gesture -> action id (a host command, or `edit`).",
+              "propertyNames": {
+                "enum": [
+                  "click",
+                  "doubleClick",
+                  "contextMenu",
+                  "dragToNothing"
+                ]
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "select"
+          ],
+          "description": "Patches an edge kind (> edge:<kind>); its kind, tags and states are the edge's.",
+          "properties": {
+            "select": {
+              "type": "string",
+              "description": "kind? ([tag])* (:state)* (> part)?: a kind may hold ':' and end in '*' (a prefix); states: selected, hovered, dimmed, alias, collapsed, inGroup, wired, unwired, lit, merged; a part may be pin:<kind>, row:<kind> or edge:<kind>.",
+              "pattern": ">\\s*edge:"
+            },
+            "width": {
+              "type": "number"
+            },
+            "widen": {
+              "type": "number"
+            },
+            "dash": {
+              "type": "boolean"
+            },
+            "dotted": {
+              "type": "boolean"
+            },
+            "onTop": {
+              "type": "boolean"
+            },
+            "arrow": {
+              "type": "string",
+              "enum": [
+                "none",
+                "end",
+                "start",
+                "both"
+              ]
+            },
+            "arrowSize": {
+              "type": "number"
+            },
+            "color": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "pinColor": {
+              "type": "boolean"
+            },
+            "opacity": {
+              "type": "number"
+            },
+            "labelColor": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "labelFill": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "labelScale": {
+              "type": "number"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "select"
+          ],
+          "description": "Patches the card, or the part it names (> <id>).",
+          "properties": {
+            "select": {
+              "type": "string",
+              "description": "kind? ([tag])* (:state)* (> part)?: a kind may hold ':' and end in '*' (a prefix); states: selected, hovered, dimmed, alias, collapsed, inGroup, wired, unwired, lit, merged; a part may be pin:<kind>, row:<kind> or edge:<kind>.",
+              "pattern": "^(?!.*>\\s*(pin|row|edge):)"
+            },
+            "visible": {
+              "type": "boolean"
+            },
+            "fill": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "stroke": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "color": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "strokeWidth": {
+              "type": "number"
+            },
+            "corner": {
+              "type": "number"
+            },
+            "opacity": {
+              "type": "number"
+            },
+            "dash": {
+              "type": "boolean"
+            },
+            "width": {
+              "type": "number"
+            },
+            "top": {
+              "type": "number"
+            },
+            "height": {
+              "type": "number"
+            },
+            "from": {
+              "type": "string",
+              "description": "field:<id>, row:<id>, type, fields, fields:all"
+            },
+            "placeholder": {
+              "type": "string"
+            },
+            "placeholderColor": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "font": {
+              "type": "string"
+            },
+            "size": {
+              "type": "number"
+            },
+            "scale": {
+              "type": "number"
+            },
+            "box": {
+              "type": "number"
+            },
+            "advance": {
+              "type": "number"
+            },
+            "bold": {
+              "type": "boolean"
+            },
+            "italic": {
+              "type": "boolean"
+            },
+            "align": {
+              "type": "string",
+              "enum": [
+                "left",
+                "center",
+                "right"
+              ]
+            },
+            "if": {
+              "type": "string",
+              "description": "kind? ([tag])* (:state)* (> part)?: a kind may hold ':' and end in '*' (a prefix); states: selected, hovered, dimmed, alias, collapsed, inGroup, wired, unwired, lit, merged; a part may be pin:<kind>, row:<kind> or edge:<kind>."
+            },
+            "editor": {
+              "type": "string"
+            },
+            "shape": {
+              "type": "string",
+              "enum": [
+                "box",
+                "pill",
+                "circle",
+                "octagon"
+              ],
+              "description": "A card root's when its group is closed (box, pill); a rim's (circle, octagon)."
+            },
+            "format": {
+              "type": "string",
+              "description": "A text's template: {value} {type} {count} {arrow} {fields}."
+            },
+            "pin": {
+              "type": "string"
+            },
+            "glyph": {
+              "type": "string",
+              "enum": [
+                "circle",
+                "square",
+                "diamond",
+                "arrow"
+              ]
+            },
+            "hollow": {
+              "type": "boolean"
+            },
+            "side": {
+              "type": "string",
+              "enum": [
+                "left",
+                "right"
+              ]
+            },
+            "length": {
+              "type": "number"
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "in",
+                "out"
+              ]
+            },
+            "band": {
+              "type": "string",
+              "description": "A colour expression: #rrggbb[aa], $token, band, none, lighter(c, n), darker(c, n), alpha(c, a), palette(name, tag:key)."
+            },
+            "chamfer": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "An octagon rim's corner cut, a fraction of its half-width."
+            },
+            "on": {
+              "type": "object",
+              "description": "Gesture -> action id (a host command, or `edit`).",
+              "propertyNames": {
+                "enum": [
+                  "click",
+                  "doubleClick",
+                  "contextMenu",
+                  "dragToNothing"
+                ]
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

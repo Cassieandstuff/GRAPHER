@@ -1,0 +1,83 @@
+{
+    "$schema": "../../schema/kit.schema.json",
+    "tokens": {
+        "background": "#1d1e22",
+        "nodeFill": "#2b2d33",
+        "nodeStroke": "#00000080",
+        "text": "#e6e7ea",
+        "muted": "#8a8d96",
+        "selection": "#5a9cff",
+        "float": "#a1a1a1",
+        "vec2": "#7f7fd9",
+        "vec3": "#6363c7",
+        "color": "#c7c729",
+        "texture": "#e0883a"
+    },
+    "palettes": {
+        "frames": ["#5b7aa6", "#6f9a5b", "#a6745b", "#8a5ba6", "#5ba69a", "#a69a5b"]
+    },
+    "metrics": {"padding": 8, "titleSize": 12, "fontSize": 11, "header": 26, "row": 20, "groupHeader": 24},
+    "nodes": {
+        "input:*": {
+            "band": "#7a4a2e", "fill": "$nodeFill", "stroke": "$nodeStroke", "corner": 5,
+            "parts": [
+                {"part": "header", "fill": "band", "height": 26, "top": 0.5,
+                 "content": [{"part": "text", "id": "title", "from": "field:title", "color": "$text", "bold": true}]},
+                {"part": "body"}
+            ]
+        },
+        "math:*": {
+            "band": "#3d5a80", "fill": "$nodeFill", "stroke": "$nodeStroke", "corner": 5,
+            "parts": [
+                {"part": "header", "fill": "band", "height": 26, "top": 0.5,
+                 "content": [{"part": "text", "id": "title", "from": "field:title", "placeholder": "{type}", "color": "$text", "bold": true}]},
+                {"part": "body"}
+            ]
+        },
+        "texture:sample": {
+            "band": "#8a5a2a", "fill": "$nodeFill", "stroke": "$nodeStroke", "corner": 5,
+            "parts": [
+                {"part": "header", "fill": "band", "height": 26, "top": 0.5,
+                 "content": [{"part": "text", "id": "title", "from": "field:title", "color": "$text", "bold": true}]},
+                {"part": "body"}
+            ]
+        },
+        "output:*": {
+            "band": "#2e6b45", "fill": "$nodeFill", "stroke": "$nodeStroke", "corner": 5, "strokeWidth": 1.5,
+            "parts": [
+                {"part": "header", "fill": "band", "height": 26, "top": 0.5,
+                 "content": [{"part": "text", "id": "title", "from": "field:title", "color": "$text", "bold": true}]},
+                {"part": "body"}
+            ]
+        },
+        "frame": {
+            "band": "palette(frames, tag:frame)", "fill": "alpha(band, 0.12)", "stroke": "band", "corner": 7,
+            "parts": [
+                {"part": "header", "fill": "alpha(band, 0.5)",
+                 "content": [{"part": "text", "id": "title", "from": "field:title", "format": "{arrow}{value}", "color": "$text"}]}
+            ]
+        }
+    },
+    "pins": {
+        "float": {"glyph": "circle", "color": "$float"},
+        "vec2": {"glyph": "diamond", "color": "$vec2"},
+        "vec3": {"glyph": "diamond", "color": "$vec3"},
+        "color": {"glyph": "circle", "color": "$color"},
+        "texture": {"glyph": "square", "color": "$texture"}
+    },
+    "rows": {
+        "number": {"color": "$muted", "valueColor": "$text", "editor": "slider", "min": 0, "max": 1, "step": 0.01,
+                   "on": {"doubleClick": "edit"}},
+        "colour": {"color": "$muted", "valueColor": "$text", "editor": "color", "on": {"doubleClick": "edit"}},
+        "file": {"color": "$muted", "valueColor": "$text", "editor": "path", "on": {"doubleClick": "edit"}}
+    },
+    "edges": {
+        "wire": {"line": "curve", "width": 2, "pinColor": true, "arrow": "none"}
+    },
+    "rules": [
+        {"select": "*:selected", "stroke": "$selection", "strokeWidth": 2},
+        {"select": "*:lit > edge:wire", "widen": 1},
+        {"select": "*:selected > edge:wire", "color": "$selection", "pinColor": false, "widen": 1},
+        {"select": "*:unwired > pin:float", "color": "alpha($float, 0.6)"}
+    ]
+}

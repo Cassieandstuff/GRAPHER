@@ -1949,7 +1949,10 @@ void Canvas::DrawOctagonDial(std::vector<DrawCmd>& c, const Node& n, const DialS
             what += " " + row.value;
         }
         const float ls = label ? label->size * z * label->scale : fs * 0.9f;
-        const float w  = 110.f * z, lh = ls * 1.3f;
+        // As wide as it reads (by code point, about 0.62 of its size each), so a long name keeps its value.
+        std::size_t points = 0;
+        for (const char ch : what) points += (static_cast<unsigned char>(ch) & 0xC0) != 0x80 ? 1 : 0;
+        const float w  = std::max(110.f * z, ls * 0.62f * static_cast<float>(points) + 8.f * z), lh = ls * 1.3f;
         const Vec2  at = cam.ToScreen(ring.At(a)) + normal * (10.f * z);
         Rect        box{at.x - w * 0.5f, at.y - lh * 0.5f, w, lh};
         Align       align = Align::Center;

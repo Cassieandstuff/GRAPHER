@@ -1,8 +1,14 @@
 // GRAPHER core tests: plain asserts, no framework (the TARGETER convention).
 #include <grapher/Grapher.h>
 
+#include "../src/Json.h"
+
 #include <algorithm>
 #include <array>
+#include <regex>
+#include <iterator>
+#include <fstream>
+#include <filesystem>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -1937,6 +1943,227 @@ void TestOctagonDial()
     CHECK((headerBand && readingOnGap));
 }
 
+// ── K5: the kit's JSON Schema, the example material kit, a rim label's width ─────────────────────────────────
+
+std::string ReadSource(const char* relative)
+{
+    std::ifstream in(std::filesystem::path(GRAPHER_SOURCE_DIR) / relative, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+/// @brief `v` checked against JSON Schema node `s`, in the parts of the language schema/kit.schema.json uses: $ref, anyOf,
+///        type, enum, pattern, minimum and maximum, properties, additionalProperties (false or a schema), propertyNames'
+///        enum, required, items. Problems go to `errors`, each with where it is.
+void Validate(const grapher::json::Value& v, const grapher::json::Value& s, const grapher::json::Value& root, const std::string& at,
+              std::vector<std::string>& errors)
+{
+    using grapher::json::Value;
+    if (const Value* ref = s.Find("$ref")) {
+        const std::string& r      = *ref->String();
+        const Value*       target = r.starts_with("#/$defs/") ? root.Find("$defs")->Find(r.substr(8)) : nullptr;
+        if (!target) return errors.push_back(at + ": no " + r);
+        return Validate(v, *target, root, at, errors);
+    }
+    if (const Value* any = s.Find("anyOf")) {
+        for (const Value& branch : *any->Items()) {
+            std::vector<std::string> mine;
+            Validate(v, branch, root, at, mine);
+            if (mine.empty()) return;
+        }
+        return errors.push_back(at + ": matches no branch of anyOf");
+    }
+    if (const Value* type = s.Find("type")) {
+        const std::string& t  = *type->String();
+        const bool         ok = t == "object" ? v.Members() != nullptr : t == "array" ? v.Items() != nullptr : t == "string" ? v.String() != nullptr
+                              : t == "number" ? v.Number() != nullptr : t == "boolean" ? v.Bool() != nullptr : true;
+        if (!ok) return errors.push_back(at + ": is not " + t);
+    }
+    if (const Value* e = s.Find("enum"); e && v.String())
+        if (std::ranges::none_of(*e->Items(), [&](const Value& w) { return w.String() && *w.String() == *v.String(); }))
+            errors.push_back(at + ": \"" + *v.String() + "\" is not one of its words");
+    if (const Value* p = s.Find("pattern"); p && v.String() && !std::regex_search(*v.String(), std::regex(*p->String())))
+        errors.push_back(at + ": \"" + *v.String() + "\" does not match " + *p->String());
+    if (const Value* lo = s.Find("minimum"); lo && v.Number() && *v.Number() < *lo->Number()) errors.push_back(at + ": below its minimum");
+    if (const Value* hi = s.Find("maximum"); hi && v.Number() && *v.Number() > *hi->Number()) errors.push_back(at + ": above its maximum");
+    if (const grapher::json::Object* o = v.Members()) {
+        const Value* props = s.Find("properties");
+        const Value* extra = s.Find("additionalProperties");
+        const Value* names = s.Find("propertyNames");
+        if (const Value* req = s.Find("required"))
+            for (const Value& k : *req->Items())
+                if (!v.Find(*k.String())) errors.push_back(at + ": lacks \"" + *k.String() + "\"");
+        for (const auto& [key, value] : *o) {
+            if (names) Validate(Value(key), *names, root, at + " key " + key, errors);
+            if (const Value* p = props ? props->Find(key) : nullptr) {
+                Validate(value, *p, root, at + "." + key, errors);
+            } else if (extra && extra->Members()) {
+                Validate(value, *extra, root, at + "." + key, errors);
+            } else if (extra && extra->Bool() && !*extra->Bool()) {
+                errors.push_back(at + ": has no member \"" + key + "\"");
+            }
+        }
+    }
+    if (const grapher::json::Array* a = v.Items())
+        if (const Value* items = s.Find("items"))
+            for (std::size_t k = 0; k < a->size(); ++k) Validate((*a)[k], *items, root, at + "[" + std::to_string(k) + "]", errors);
+}
+
+std::vector<std::string> AgainstKitSchema(std::string_view json)
+{
+    std::string error;
+    const auto  schema = grapher::json::Parse(ReadSource("schema/kit.schema.json"), error);
+    const auto  doc    = grapher::json::Parse(json, error);
+    if (!schema || !doc) return {"unreadable: " + error};
+    std::vector<std::string> errors;
+    Validate(*doc, *schema, *schema, "kit", errors);
+    return errors;
+}
+
+/// @brief A part with every field a kit can state.
+grapher::PartSpec FullPart(grapher::PartKind kind, std::string id)
+{
+    grapher::PartSpec p{kind, std::move(id)};
+    p.visible = true, p.dash = true, p.bold = true, p.italic = true, p.hollow = true;
+    p.fill = "#102030", p.stroke = "$a", p.color = "band", p.placeholderColor = "none", p.band = "darker(band, 120)";
+    p.strokeWidth = 1.f, p.corner = 2.f, p.opacity = 0.5f, p.width = 3.f, p.top = 0.5f, p.height = 20.f;
+    p.size = 12.f, p.scale = 0.9f, p.box = 1.3f, p.advance = 1.4f, p.length = 14.f, p.chamfer = 0.3f;
+    p.from = "field:title", p.placeholder = "{type}", p.font = "mono", p.align = "center", p.condition = "box[hot]:selected";
+    p.on = {{"click", "act"}, {"dragToNothing", "make"}};
+    p.editor = "text", p.shape = "pill", p.format = "{arrow}{value}", p.pin = "end", p.glyph = "square", p.side = "right", p.direction = "out";
+    return p;
+}
+
+void TestKitSchema()
+{
+    // A kit stating every field there is writes JSON the schema takes, member by member.
+    grapher::Kit kit;
+    kit.tokens   = {{"a", "#ffffff"}};
+    kit.palettes = {{"groups", {"#ff0000", "$a"}}};
+    kit.fonts    = {{"mono", {"Consolas", 11.f, true, false}}};
+    kit.metrics  = {8.f, 12.f, 11.f, 40.f, 18.f, 24.f};
+    grapher::NodeKind card;
+    card.id      = "card:*";
+    card.card    = FullPart(grapher::PartKind::Card, "card");
+    grapher::PartSpec head = FullPart(grapher::PartKind::Header, "header");
+    head.content = {FullPart(grapher::PartKind::Text, "title"), FullPart(grapher::PartKind::Rim, "rim")};
+    card.card.content = {head, FullPart(grapher::PartKind::Pins, "ends")};
+    card.metrics  = kit.metrics;
+    card.minWidth = 100.f, card.maxWidth = 300.f, card.fitWidth = true;
+    kit.nodes     = {card};
+    grapher::PinSpec pin{"diamond", 4.5f, "always", "#fff", "none", 6.f, false, {{"dragToNothing", "make"}}};
+    kit.pins      = {{"role:*", pin}};
+    grapher::RowSpec row;
+    row.color = row.valueColor = "#abc", row.prefix = "+ ", row.suffix = " s", row.align = "right", row.valueAlign = "left";
+    row.bold = row.italic = row.chip = true, row.editor = "slider", row.min = 0.f, row.max = 1.f, row.step = 0.1f, row.reorder = "list";
+    row.on   = {{"doubleClick", "edit"}};
+    kit.rows = {{"fact", row}};
+    grapher::EdgeSpec edge;
+    edge.line = "elbow", edge.width = 2.f, edge.widen = 1.f, edge.dash = edge.dotted = edge.onTop = true, edge.arrow = "both", edge.arrowSize = 8.f;
+    edge.color = "$a", edge.pinColor = true, edge.opacity = 0.8f, edge.labelColor = "#fff", edge.labelFill = "none", edge.labelScale = 0.9f;
+    kit.edges = {{"wire:*", edge}};
+    grapher::EdgeSpec lit = edge;
+    lit.line.reset();   // a rule never reroutes
+    kit.rules = {{*grapher::ParseSelector("card:*[hot]:selected > header"), FullPart(grapher::PartKind::Header, "header"), {}, {}, {}},
+                 {*grapher::ParseSelector("*:unwired > pin:role:*"), {}, pin, {}, {}},
+                 {*grapher::ParseSelector("* > row:fact"), {}, {}, row, {}},
+                 {*grapher::ParseSelector("*:lit > edge:wire:*"), {}, {}, {}, lit}};
+    kit.reserved = {{"actions", R"({"make": "node.newFrom"})"}};
+    const std::string written = grapher::WriteKit(kit);
+    const auto        errors  = AgainstKitSchema(written);
+    for (const std::string& e : errors) std::printf("  kit schema: %s\n", e.c_str());
+    CHECK(errors.empty());
+    // It finds what it should: a member no kit has, a word no field takes, a pin rule's colour where it takes a fill mode.
+    CHECK(!AgainstKitSchema(R"({"nodes": {"x": {"colour": "#fff"}}})").empty());
+    CHECK(!AgainstKitSchema(R"({"pins": {"x": {"glyph": "star"}}})").empty());
+    CHECK(!AgainstKitSchema(R"({"rules": [{"select": "* > pin:x", "fill": "#fff"}]})").empty());
+    CHECK(!AgainstKitSchema(R"({"nodes": {"x": {"parts": [{"part": "rim", "chamfer": 2}]}}})").empty());
+    CHECK(AgainstKitSchema(R"({"rules": [{"select": "* > pin:x", "fill": "always"}, {"select": "box:selected", "fill": "#fff"}]})").empty());
+    // The sample kit and the example material kit are kits the schema takes; a kit may name its schema.
+    CHECK(AgainstKitSchema(kSampleKit).empty());
+    const std::string material = ReadSource("examples/material/material.kit.json");
+    CHECK(AgainstKitSchema(material).empty());
+    std::string error;
+    CHECK((grapher::ParseKit(material, error) && error.empty()));
+}
+
+void TestMaterialExample()
+{
+    // examples/material: a material graph's schema (value types and conversions) and its kit.
+    const auto schema = grapher::ParseSchema(ReadSource("examples/material/material.schema.json"));
+    std::string error;
+    const auto  kit = grapher::ParseKit(ReadSource("examples/material/material.kit.json"), error);
+    CHECK((schema.has_value() && kit.has_value()));
+    if (!schema || !kit) return;
+    const grapher::Schema& s = *schema;
+    CHECK((s.CanConnect("float", "vec3") && s.CanConnect("vec3", "color") && !s.CanConnect("texture", "float") && !s.CanConnect("vec3", "float")));
+
+    grapher::Graph g;
+    auto node = [&](std::string id, std::string type, grapher::Rect frame, std::string title) -> grapher::Node& {
+        g.nodes.push_back({std::move(id), std::move(type), frame});
+        g.nodes.back().fields = {{"title", std::move(title)}};
+        return g.nodes.back();
+    };
+    node("F", "frame", {0, 0, 700, 400}, "Shading").tags = {"frame:shading"};
+    grapher::Node& value = node("v", "input:float", {20, 40, 160, 60}, "Roughness");
+    value.parent         = "F";
+    value.rows           = {{"value", "Value", "0.5", "number"}};
+    grapher::Node& tint  = node("c", "input:color", {20, 140, 160, 60}, "Tint");
+    tint.parent          = "F";
+    tint.rows            = {{"value", "Colour", "#c08040", "colour"}};
+    node("add", "math:add", {240, 40, 160, 90}, "Add").parent = "F";
+    node("out", "output:surface", {460, 40, 200, 130}, "Surface").parent = "F";
+    g.edges = {{"e1", "v", "add", "wire", {}, "out", "a"}, {"e2", "add", "out", "wire", {}, "out", "roughness"},
+               {"e3", "c", "out", "wire", {}, "out", "baseColor"}};
+    grapher::Canvas c(g, s);
+    c.SetKit(&*kit);
+    c.SetViewport({900, 600});
+    // Kinds by prefix and by id: the inputs' band, the maths', the output's heavier outline; a frame's colour from the
+    // palette by its tag.
+    CHECK((c.LookOf(g.nodes[1]).band == grapher::Color{0x7a, 0x4a, 0x2e} && c.LookOf(g.nodes[3]).band == grapher::Color{0x3d, 0x5a, 0x80}));
+    CHECK(c.LookOf(g.nodes[4]).strokeWidth == 1.5f);
+    CHECK(c.LookOf(g.nodes[0]).band == *grapher::ResolveColor("palette(frames, tag:frame)", {}, *kit, g.nodes[0].tags));
+    // Pins by value type; a value's row edited with a slider over 0..1.
+    const grapher::NodeLook& add = c.LookOf(g.nodes[3]);
+    CHECK((add.pins.at("float")[1].color == grapher::Color{0xa1, 0xa1, 0xa1} && add.pins.at("texture")[1].glyph == grapher::PortGlyph::Square));
+    const grapher::RowLook& slider = c.LookOf(g.nodes[1]).rows.at("number");
+    CHECK((slider.editor == "slider" && slider.min == 0.f && slider.max == 1.f));
+    CHECK(c.LookOf(g.nodes[2]).rows.at("colour").editor == "color");
+    // Each wire in the colour of the type its source carries.
+    bool floatWire = false, colourWire = false;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* p = std::get_if<grapher::Polyline>(&cmd); p && p->width == 2.f) {
+            floatWire  = floatWire || p->color == grapher::Color{0xa1, 0xa1, 0xa1};
+            colourWire = colourWire || p->color == grapher::Color{0xc7, 0xc7, 0x29};
+        }
+    CHECK((floatWire && colourWire));
+}
+
+void TestRimLabelWidth()
+{
+    // An octagon dial's rim label is as wide as it reads: a long name keeps its value.
+    grapher::Schema s;
+    grapher::NodeType blend{"blend", "Blend"};
+    blend.shape = grapher::NodeShape::Dial;
+    s.nodeTypes = {blend};
+    std::string error;
+    const auto  kit = grapher::ParseKit(R"({"nodes": {"blend": {"parts": [{"part": "rim", "shape": "octagon"}]}}})", error);
+    CHECK(kit.has_value());
+    if (!kit) return;
+    grapher::Graph g;
+    g.nodes.push_back({"d", "blend", {0, 0, 400, 400}});
+    g.nodes[0].ports = {{"p0", "", "", grapher::PortDir::Out}, {"p1", "", "", grapher::PortDir::Out}};
+    g.nodes[0].rows  = {{"r0", "Tor_1stP_Walk_And_Then_Some", "82.4"}, {"r1", "Run", "351"}};
+    g.nodes[0].rows[0].port = "p0", g.nodes[0].rows[1].port = "p1";
+    grapher::Canvas c(g, s);
+    c.SetKit(&*kit);
+    c.SetViewport({800, 600});
+    bool whole = false;
+    for (const auto& cmd : c.Draw().cmds)
+        if (const auto* t = std::get_if<grapher::Text>(&cmd); t && t->text == "Tor_1stP_Walk_And_Then_Some 82.4")
+            whole = t->box.w >= t->size * 0.62f * static_cast<float>(t->text.size());
+    CHECK(whole);
+}
+
 // ── Highlights, minimap, search ─────────────────────────────────────────────
 
 bool HasFill(const grapher::DrawList& l, auto&& pred)
@@ -3378,6 +3605,9 @@ int main()
     TestShowWithAndWireStyles();
     TestDial();
     TestOctagonDial();
+    TestKitSchema();
+    TestMaterialExample();
+    TestRimLabelWidth();
     TestHighlights();
     TestMinimapAndSearch();
     TestLiftWires();
