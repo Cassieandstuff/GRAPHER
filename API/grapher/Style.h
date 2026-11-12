@@ -41,6 +41,7 @@ struct Style {
     Color searchRing{255, 140, 60};   ///< the other search hits
     bool  highlightSelectedWires = false;  ///< wires touching a selected node draw in the selection colour
     std::uint8_t groupFill = 22;   ///< the alpha of a group's band-coloured fill
+    Color refused{232, 84, 72};    ///< a dragged wire over an end it may not take: that end's ring, and the wire
     friend bool operator==(const Style&, const Style&) = default;
 };
 

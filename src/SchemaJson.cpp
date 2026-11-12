@@ -168,6 +168,7 @@ NodeType ReadNodeType(Reader& r, const json::Value& o, std::size_t index)
     r.Bool(o, "showCount", t.showCount, where);
     r.Bool(o, "fitHeight", t.fitHeight, where);
     r.Bool(o, "fixed", t.fixed, where);
+    r.Bool(o, "wholeNodeWires", t.wholeNodeWires, where);
     const json::Array& fields = r.List(o, "fields", where);
     for (std::size_t k = 0; k < fields.size() && r.Ok(); ++k) {
         FieldDef f;
@@ -247,6 +248,7 @@ json::Value WriteNodeType(const NodeType& t)
     Put(o, "showCount", t.showCount, def.showCount, t.showCount);
     Put(o, "fitHeight", t.fitHeight, def.fitHeight, t.fitHeight);
     Put(o, "fixed", t.fixed, def.fixed, t.fixed);
+    Put(o, "wholeNodeWires", t.wholeNodeWires, def.wholeNodeWires, t.wholeNodeWires);
     if (!t.fields.empty()) {
         json::Array fields;
         for (const FieldDef& f : t.fields) {

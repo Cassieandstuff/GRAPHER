@@ -82,6 +82,10 @@ struct NodeType {
     /// @brief A member group that stays as the host puts it (a whole document's frame): a press on it is a press on the
     ///        canvas, so it is never picked, moved or closed by hand, and its header shows no arrow.
     bool                  fixed = false;
+    /// @brief A wire may end on a node of this type as a whole (a port-less node's connect handle, a drop on it). False:
+    ///        it takes wires only on its ports, and a port-less one (a note, a frame) takes none. Node::wholeNodeWires
+    ///        overrides it per node.
+    bool                  wholeNodeWires = true;
     friend bool operator==(const NodeType&, const NodeType&) = default;
 };
 

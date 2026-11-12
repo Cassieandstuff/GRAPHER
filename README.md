@@ -104,8 +104,12 @@ it in the bottom right (`setMinimapShown`). `grapher::Search` ranks nodes by the
 ringing the rest, keeps the hit on Enter and goes back on Esc. `addOverlay` keeps a host's widgets over a corner.
 
 **Host hooks for richer editors.** `Canvas::checkWire` gives the host a say on each wire after the schema's (refuse a
-cycle; mark a converting wire with its own edge type or a label). `wholeNodeWires = false` makes every wire run port to
-port. A node type with `fitHeight` grows its cards to show all their ports and rows (a port count that is data). A port
+cycle; mark a converting wire with its own edge type or a label). It is asked live while a wire is dragged: an end under
+the pointer that the schema or the host refuses is ringed in `Style::refused`, the wire turns that colour, the host's
+`WireCheck::reason` shows at the pointer (`Canvas::Refused`), and a drop there wires nothing. `wholeNodeWires = false`
+makes every wire run port to port; `NodeType::wholeNodeWires` and `Node::wholeNodeWires` switch it off for one type or
+one node (no connect handle, no drop onto it as a whole). A row's own `min`, `max` and `step` (a property's limits, from
+the host's data) win over its kit row kind's in the editor it opens. A node type with `fitHeight` grows its cards to show all their ports and rows (a port count that is data). A port
 can carry its own `tooltip`. A reroute dot is grabbed by its middle, its pins by its rim, and has no resize grip.
 
 **Large graphs.** The canvas keeps its routes, per-node and per-edge tables until a frame, port, edge or option
