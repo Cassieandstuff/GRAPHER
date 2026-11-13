@@ -92,6 +92,10 @@ struct NodeType {
     /// @brief Below this zoom the picture isn't drawn: a Foot slot leaves its room empty (the card keeps its size), a
     ///        Below slot is simply not there. 0 = always drawn.
     float                 imageMinZoom = 0.f;
+    /// @brief The picture slot takes the left button: a press in it, the drag and the release go to the host
+    ///        (Canvas::onImagePointer) instead of moving the node, so a host can turn a live view in it. The wheel and the
+    ///        middle button still navigate the canvas there, as everywhere.
+    bool                  imageInput = false;
     friend bool operator==(const NodeType&, const NodeType&) = default;
 };
 

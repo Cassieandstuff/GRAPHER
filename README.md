@@ -49,8 +49,12 @@ command names it by key and the backend resolves it (`CanvasWidget::setImageSour
 host's (a thumbnail, or a live view it renders); GRAPHER only places it. `imagePlacement` puts the slot at the card's
 foot (the card has room for it) or `Below` it: hanging under the frame, not counted in the card's height, no routing
 obstacle, drawn under every wire and card so a neighbour that overlaps it covers it, and taking a press only where
-nothing else does (`Hit::part` `kImagePart`; a press there grabs its node for now, and `ImageSlotAt` is the seam for
-handing a slot's own presses to the host later). `Node::imagePlacement` overrides it per node. Below a type's
+nothing else does (`Hit::part` `kImagePart`, `ImageSlotAt`; a press there grabs its node). A type with `imageInput`
+keeps the left button in its slot for the host instead: the press selects the node, and it, the drag (every move, in
+the slot or out of it), the release and a double-click arrive at `Canvas::onImagePointer` as an `ImagePointer` (the
+pointer from the slot's corner and the slot's size, in screen pixels), with a `Cancel` when Esc or another button ends
+the press. The wheel and the middle button still navigate the canvas there, and the right button is its context menu.
+`Node::imagePlacement` overrides the placement per node. Below a type's
 `imageMinZoom` no picture draws, and the card keeps its size. Framing (`Frame`, `DrawAll`) takes in the hanging
 pictures that draw at the zoom it comes to, and the minimap shows them faintly under the cards. `ImageSlots` and `ImageScreenRect` say where each slot
 is drawn in screen pixels, and the Qt widget's `SizedImageSource` is told each picture's drawn size in device pixels,

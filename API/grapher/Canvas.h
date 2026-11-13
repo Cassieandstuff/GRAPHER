@@ -70,10 +70,28 @@ enum class HitKind {
 inline constexpr std::string_view kGroupIn  = "grapher:in";
 inline constexpr std::string_view kGroupOut = "grapher:out";
 
-/// @brief Hit::part of a press in a node's picture slot hanging below its card (ImagePlacement::Below). For now such a
-///        press is a press on its node (it selects and moves it); routing presses, drags and the wheel inside a slot to
-///        the host (a live viewport) would start from this part and Canvas::ImageSlotAt.
+/// @brief Hit::part of a press in a node's picture slot hanging below its card (ImagePlacement::Below). Such a press is a
+///        press on its node (it selects and moves it), unless its type takes input in the slot (NodeType::imageInput).
 inline constexpr std::string_view kImagePart = "grapher:image";
+
+/// @brief What the left button does in a picture slot that takes input (NodeType::imageInput, Canvas::onImagePointer).
+enum class ImagePhase {
+    Down,     ///< pressed in the slot (the node is selected)
+    Move,     ///< moved while held, inside the slot or not
+    Up,            ///< released
+    Cancel,        ///< the press ended without a release (Esc, another button): undo what it began
+    DoubleClick,   ///< the second press of a double-click (Canvas::DoubleClick), after the first one's Down and Up
+};
+
+/// @brief One left-button event in a picture slot, for the host that fills it.
+struct ImagePointer {
+    std::string node;                       ///< whose slot
+    ImagePhase  phase = ImagePhase::Down;
+    Vec2        at;                         ///< the pointer, screen pixels from the slot's top-left corner (outside it
+                                            ///< during a drag that left it)
+    Vec2        size;                       ///< the slot's size on screen, pixels
+    Modifiers   mods;                       ///< held now (Move); at the press (Down, Up, Cancel)
+};
 
 /// @brief A node's picture slot as drawn at the current camera (Canvas::ImageSlots): where it sits on screen, so a host
 ///        renders what goes in it at that many pixels, and again when the zoom changes them.
@@ -256,6 +274,9 @@ public:
     std::function<void(const Intent&)>          onIntent;
     /// @brief A member group opened or closed (view state, not an edit: a host may keep it, or lay the graph out again).
     std::function<void(std::string_view group, bool collapsed)> onCollapseChanged;
+    /// @brief The left button in a picture slot whose type takes input (NodeType::imageInput): press, drag, release.
+    ///        Unset: such a slot is part of its node, as any other. The wheel always zooms the canvas.
+    std::function<void(const ImagePointer&)> onImagePointer;
     /// @brief The node under the pointer changed (empty: none), while no gesture runs: a host can trace what it stands for.
     std::function<void(std::string_view node)>                  onHoverChanged;
     /// @brief Wires may end on a node as a whole (a port-less node's connect handle). False: every wire runs port to
@@ -299,7 +320,8 @@ public:
     /// @brief Set the edited row (and its field) to `value`: one step, proposed in Propose mode (SetValue).
     /// @return false when there is no such row
     bool CommitEdit(std::string_view nodeId, std::string_view rowId, std::string_view value);
-    /// @brief A double-click at `at`, for the kit's bindings first. @return true when one took it (an action or an edit)
+    /// @brief A double-click at `at`: in a slot that takes input, its host's (ImagePhase::DoubleClick); else for the kit's
+    ///        bindings. @return true when one took it (the slot's host, an action or an edit)
     bool DoubleClick(Vec2 at, Modifiers mods = {});
     /// @brief A context-menu click at `at`, for the kit's bindings first. @return true when one took it
     bool ContextMenu(Vec2 at, Modifiers mods = {});
@@ -403,7 +425,7 @@ public:
     ///         or none drawn at this zoom
     [[nodiscard]] std::optional<Rect> ImageScreenRect(std::string_view nodeId) const;
     /// @return the node whose drawn picture slot is under the point and not covered (by another card, or a wire); empty
-    ///         for none. The seam for handing a slot's own presses to the host; nothing routes them yet.
+    ///         for none.
     [[nodiscard]] std::string ImageSlotAt(Vec2 screen) const;
     /// @return where `n`'s picture slot sits: its own override, else its type's
     [[nodiscard]] ImagePlacement PlacementOf(const Node& n) const;
@@ -453,7 +475,7 @@ public:
     [[nodiscard]] DrawList DrawAll(float zoom = 1.f, float margin = 40.f) const;
 
 private:
-    enum class Mode { Idle, Moving, Resizing, Connecting, Marquee, Panning, RowPress, DialDrag, RowReorder };
+    enum class Mode { Idle, Moving, Resizing, Connecting, Marquee, Panning, RowPress, DialDrag, RowReorder, ImagePress };
 
     [[nodiscard]] DrawList Render(const Camera& cam, Vec2 viewport, bool chrome) const;
     /// @param groupInterior a group's empty interior counts as the group (a connection's target)
@@ -480,6 +502,12 @@ private:
     [[nodiscard]] float HangReach() const;
     /// @return a shown node's slot hanging below its card, world units, with the zoom it draws from; nullopt for none
     [[nodiscard]] std::optional<std::pair<Rect, float>> BelowSlot(const Node& shown) const;
+    /// @return the node whose drawn picture slot `hit` (at `screen`) is in; empty for none
+    [[nodiscard]] std::string SlotOfHit(const Hit& hit, Vec2 screen) const;
+    /// @return the same, when its type takes input there (NodeType::imageInput) and a host listens (onImagePointer)
+    [[nodiscard]] std::string InputSlotAt(const Hit& hit, Vec2 screen) const;
+    /// @brief Tell the host of the held slot press (onImagePointer), the pointer at `screen`
+    void ImageEvent(ImagePhase phase, Vec2 screen, Modifiers mods);
     /// @return `bounds` grown by the hanging slots of the shown nodes in `ids` (empty: all) that draw at `zoom`
     [[nodiscard]] Rect WithSlots(Rect bounds, const NodeSet& ids, float zoom) const;
     /// @brief CanWire, not counting edge `ignoring` (one about to be replaced); refused by checkWire, `why` gets its reason.
@@ -517,7 +545,8 @@ private:
     Vec2        downAt_;
     Vec2        pointer_;
     Vec2        panAtDown_;
-    std::string active_;            ///< the node a resize or connect starts from
+    std::string active_;            ///< the node a resize or connect starts from, or whose slot is pressed
+    Rect        imageRect_;         ///< the pressed slot where it was last drawn (ImagePress)
     std::string connectTo_;
     std::string activePort_;        ///< the port a connect starts from; empty = the node's connect handle
     std::string connectPort_;       ///< the port of connectTo_ it would end on

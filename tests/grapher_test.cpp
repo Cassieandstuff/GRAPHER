@@ -3513,6 +3513,109 @@ void TestImageSlots()
     CHECK(slotOnMap);
 }
 
+void TestImageInput()
+{
+    // A slot whose type takes input keeps the left button for its host (turning a live view): press, drag, release,
+    // double-click. The node is selected and never moves; the wheel still zooms the canvas.
+    grapher::Schema s;
+    grapher::NodeType view{"view", "View"};
+    view.width          = 200.f;
+    view.height         = 80.f;
+    view.imageHeight    = 120.f;
+    view.imagePlacement = grapher::ImagePlacement::Below;
+    view.imageInput     = true;
+    grapher::NodeType still = view;   // the same slot, taking no input: part of its node
+    still.id         = "still";
+    still.imageInput = false;
+    grapher::NodeType foot{"foot", "Foot"};
+    foot.width       = 200.f;
+    foot.height      = 160.f;
+    foot.imageHeight = 40.f;
+    foot.imageInput  = true;
+    s.nodeTypes = {view, still, foot};
+    grapher::Graph g;
+    g.nodes.push_back({"a", "view", {0, 0, 200, 80}});   // its slot: 0..200 x 85..205
+    g.nodes[0].image = "live";
+    g.nodes.push_back({"s", "still", {400, 0, 200, 80}});
+    g.nodes[1].image = "live";
+    g.nodes.push_back({"f", "foot", {800, 0, 200, 160}});
+    g.nodes[2].image = "live";
+    grapher::Canvas c(g, s);
+    c.SetViewport({1200, 800});
+    c.snap = 0.f;
+
+    // No host listening: the slot is its node's, and a drag there moves it.
+    c.PointerDown({50, 120}, grapher::Button::Left, {});
+    c.PointerMove({80, 150});
+    c.PointerUp({80, 150}, grapher::Button::Left);
+    CHECK((g.nodes[0].frame == grapher::Rect{30, 30, 200, 80}));
+    g.nodes[0].frame = {0, 0, 200, 80};
+    c.GraphChanged();
+    c.ClearSelection();
+
+    std::vector<grapher::ImagePointer> seen;
+    c.onImagePointer = [&](const grapher::ImagePointer& e) { seen.push_back(e); };
+    auto last = [&] { return seen.empty() ? grapher::ImagePointer{} : seen.back(); };
+    c.PointerDown({50, 120}, grapher::Button::Left, {true, false, false});
+    CHECK((seen.size() == 1 && last().node == "a" && last().phase == grapher::ImagePhase::Down && Near(last().at, {50, 35}) &&
+           Near(last().size, {200, 120}) && last().mods.shift));
+    CHECK(c.SelectedNodes() == grapher::NodeSet{"a"} && c.Busy());
+    c.PointerMove({51, 121});   // every pixel, under the drag threshold too
+    CHECK((seen.size() == 2 && last().phase == grapher::ImagePhase::Move && Near(last().at, {51, 36})));
+    c.PointerMove({300, 400}, {false, true, false});   // out of the slot, still its host's
+    CHECK((last().phase == grapher::ImagePhase::Move && Near(last().at, {300, 315}) && last().mods.ctrl));
+    // The wheel zooms the canvas under a held press; the slot's size and the pointer follow the view.
+    const float before = c.camera.zoom;
+    c.Wheel({50, 120}, 1.f);
+    CHECK(c.camera.zoom > before);
+    c.PointerMove({50, 120});
+    const auto zoomed = c.ImageScreenRect("a");
+    CHECK((zoomed && Near(last().size, {zoomed->w, zoomed->h}) && Near(last().at, {50 - zoomed->x, 120 - zoomed->y})));
+    c.PointerUp({50, 120}, grapher::Button::Left);
+    CHECK((last().phase == grapher::ImagePhase::Up && last().mods.shift && !c.Busy()));
+    CHECK((g.nodes[0].frame == grapher::Rect{0, 0, 200, 80} && !c.Proposing()));
+    c.camera = {};
+
+    // A double-click there is the host's too, not the kit's or the node's.
+    CHECK(c.DoubleClick({60, 130}));
+    CHECK((last().phase == grapher::ImagePhase::DoubleClick && last().node == "a" && Near(last().at, {60, 45})));
+
+    // Esc, or another button, ends the press without a release.
+    c.PointerDown({50, 120}, grapher::Button::Left, {});
+    c.CancelGesture();
+    CHECK((last().phase == grapher::ImagePhase::Cancel && !c.Busy()));
+    c.PointerDown({50, 120}, grapher::Button::Left, {});
+    c.PointerDown({50, 120}, grapher::Button::Middle, {});
+    CHECK(last().phase == grapher::ImagePhase::Cancel);
+    c.PointerUp({50, 120}, grapher::Button::Middle);
+    const std::size_t n = seen.size();
+
+    // A slot taking no input stays its node's, host or no host; so does the card above a slot that takes it.
+    c.PointerDown({450, 120}, grapher::Button::Left, {});
+    c.PointerMove({480, 150});
+    c.PointerUp({480, 150}, grapher::Button::Left);
+    CHECK((seen.size() == n && g.nodes[1].frame == grapher::Rect{430, 30, 200, 80}));
+    c.PointerDown({100, 40}, grapher::Button::Left, {});
+    c.PointerUp({100, 40}, grapher::Button::Left);
+    CHECK(seen.size() == n && c.SelectedNodes() == grapher::NodeSet{"a"});
+
+    // A slot at a card's foot takes input the same way, and the card around it stays the card's.
+    const auto fs = c.ImageScreenRect("f");
+    CHECK(fs.has_value());
+    if (fs) {
+        const grapher::Vec2 mid{fs->x + fs->w * 0.5f, fs->y + fs->h * 0.5f};
+        c.PointerDown(mid, grapher::Button::Left, {});
+        c.PointerUp(mid, grapher::Button::Left);
+        CHECK((seen.size() == n + 2 && seen[n].node == "f" && Near(seen[n].at, {fs->w * 0.5f, fs->h * 0.5f}) &&
+               Near(seen[n].size, {fs->w, fs->h})));
+    }
+
+    // Round-trips through the schema's JSON, written only when set.
+    const auto back = grapher::ParseSchema(grapher::WriteSchema(s));
+    CHECK((back && back->nodeTypes[0].imageInput && !back->nodeTypes[1].imageInput));
+    CHECK(grapher::WriteSchema(MakeSchema()).find("imageInput") == std::string::npos);
+}
+
 void TestRowRangeVetoAndWholeWires()
 {
     // A row's own range wins over its kind's, bound by bound: min and step from the row, max from the kit.
@@ -3853,8 +3956,6 @@ int main()
 #ifdef _MSC_VER
     // A failed debug assertion prints and aborts instead of opening a dialog nobody running the suite will see.
     for (int kind : {_CRT_WARN, _CRT_ERROR, _CRT_ASSERT}) {
-        _CrtSetReportMode(kind, _CRTDBG_MODE_FILE);
-        _CrtSetReportFile(kind, _CRTDBG_FILE_STDERR);
     }
 #endif
     TestColor();
@@ -3914,6 +4015,7 @@ int main()
     TestRowRangeVetoAndWholeWires();
     TestTitlesOfLookalikeCards();
     TestImageSlots();
+    TestImageInput();
     if (g_failed) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failed);
         return EXIT_FAILURE;

@@ -657,6 +657,7 @@ void Canvas::Refresh()
 void Canvas::CancelGesture()
 {
     const Mode mode = std::exchange(mode_, Mode::Idle);
+    if (mode == Mode::ImagePress) ImageEvent(ImagePhase::Cancel, pointer_, downMods_);
     lifted_.clear();
     refused_ = {};
     connectTo_.clear();
@@ -805,7 +806,17 @@ bool Canvas::CommitEdit(std::string_view nodeId, std::string_view rowId, std::st
     return true;
 }
 
-bool Canvas::DoubleClick(Vec2 at, Modifiers mods) { return kit_ && Gesture("doubleClick", HitTest(at), at, mods); }
+bool Canvas::DoubleClick(Vec2 at, Modifiers mods)
+{
+    const Hit hit = HitTest(at);
+    if (std::string slot = InputSlotAt(hit, at); !slot.empty()) {
+        active_    = std::move(slot);
+        imageRect_ = {};
+        ImageEvent(ImagePhase::DoubleClick, at, mods);
+        return true;
+    }
+    return kit_ && Gesture("doubleClick", hit, at, mods);
+}
 bool Canvas::ContextMenu(Vec2 at, Modifiers mods) { return kit_ && Gesture("contextMenu", HitTest(at), at, mods); }
 
 std::string Canvas::BindingFor(const Hit& hit, std::string_view gesture) const
@@ -1032,14 +1043,30 @@ std::optional<Rect> Canvas::ImageScreenRect(std::string_view nodeId) const
     return FootImageRect(*n, camera);
 }
 
-std::string Canvas::ImageSlotAt(Vec2 screen) const
+std::string Canvas::ImageSlotAt(Vec2 screen) const { return SlotOfHit(HitTest(screen), screen); }
+
+std::string Canvas::SlotOfHit(const Hit& hit, Vec2 screen) const
 {
-    const Hit hit = HitTest(screen);
     if (hit.kind != HitKind::Node && hit.kind != HitKind::Row) return {};
     if (hit.part == kImagePart) return hit.id;   // below its card, and nothing over it there
     const Node* n = ShownNode(hit.id);
     const auto  r = n ? FootImageRect(*n, camera) : std::nullopt;
     return r && r->Contains(screen) ? hit.id : std::string();
+}
+
+std::string Canvas::InputSlotAt(const Hit& hit, Vec2 screen) const
+{
+    if (!onImagePointer || (hit.kind != HitKind::Node && hit.kind != HitKind::Row)) return {};
+    const Node* n = ShownNode(hit.id);
+    if (!n || !TypeOf(*n).imageInput) return {};
+    return SlotOfHit(hit, screen);
+}
+
+void Canvas::ImageEvent(ImagePhase phase, Vec2 screen, Modifiers mods)
+{
+    if (!onImagePointer) return;
+    if (const auto r = ImageScreenRect(active_)) imageRect_ = *r;   // the view may pan or zoom under a held press
+    onImagePointer(ImagePointer{active_, phase, Vec2{screen.x - imageRect_.x, screen.y - imageRect_.y}, Vec2{imageRect_.w, imageRect_.h}, mods});
 }
 
 bool Canvas::CanWire(std::string_view a, std::string_view pa, std::string_view b, std::string_view pb, std::string_view ignoring,
@@ -2355,6 +2382,7 @@ void Canvas::SetPath(std::size_t i) const
 
 bool Canvas::PointerDown(Vec2 at, Button button, Modifiers mods)
 {
+    if (mode_ == Mode::ImagePress) ImageEvent(ImagePhase::Cancel, pointer_, downMods_);   // another button ends it
     downAt_ = pointer_ = at;
     started_ = false;
     origin_.clear();
@@ -2369,6 +2397,15 @@ bool Canvas::PointerDown(Vec2 at, Button button, Modifiers mods)
     const Hit hit = HitTest(at);
     downHit_      = hit;
     downMods_     = mods;
+    // A slot that takes input keeps the left button for its host: the press selects its node and moves nothing.
+    if (std::string slot = InputSlotAt(hit, at); !slot.empty()) {
+        if (!selNodes_.contains(slot)) SelectNodes({slot});
+        mode_      = Mode::ImagePress;
+        active_    = std::move(slot);
+        imageRect_ = {};
+        ImageEvent(ImagePhase::Down, at, mods);
+        return true;
+    }
     switch (hit.kind) {
     case HitKind::Handle:
         if (!selNodes_.contains(hit.id)) SelectNodes({hit.id});
@@ -2491,6 +2528,12 @@ void Canvas::StartMove()
 
 bool Canvas::PointerMove(Vec2 at, Modifiers mods)
 {
+    if (mode_ == Mode::ImagePress) {   // every move goes to the host, from the first pixel
+        const bool moved = Distance(at, pointer_) > 0.f;
+        pointer_         = at;
+        if (moved) ImageEvent(ImagePhase::Move, at, mods);
+        return false;
+    }
     pointer_  = at;
     snapDial_ = mods.shift;
     if (mode_ != Mode::Idle && !started_) {
@@ -2597,6 +2640,9 @@ bool Canvas::PointerUp(Vec2 at, Button)
     mode_           = Mode::Idle;
 
     switch (mode) {
+    case Mode::ImagePress:
+        ImageEvent(ImagePhase::Up, at, downMods_);
+        return false;
     case Mode::DialDrag: {
         if (!started_) return false;
         const Node* n = graph_->FindNode(active_);

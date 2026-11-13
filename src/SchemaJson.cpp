@@ -172,6 +172,7 @@ NodeType ReadNodeType(Reader& r, const json::Value& o, std::size_t index)
     r.Bool(o, "wholeNodeWires", t.wholeNodeWires, where);
     r.Enum(o, "imagePlacement", kPlacements, t.imagePlacement, where);
     r.Num(o, "imageMinZoom", t.imageMinZoom, where);
+    r.Bool(o, "imageInput", t.imageInput, where);
     const json::Array& fields = r.List(o, "fields", where);
     for (std::size_t k = 0; k < fields.size() && r.Ok(); ++k) {
         FieldDef f;
@@ -254,6 +255,7 @@ json::Value WriteNodeType(const NodeType& t)
     Put(o, "wholeNodeWires", t.wholeNodeWires, def.wholeNodeWires, t.wholeNodeWires);
     Put(o, "imagePlacement", t.imagePlacement, def.imagePlacement, std::string(NameOf(kPlacements, t.imagePlacement)));
     Put(o, "imageMinZoom", t.imageMinZoom, def.imageMinZoom, static_cast<double>(t.imageMinZoom));
+    Put(o, "imageInput", t.imageInput, def.imageInput, t.imageInput);
     if (!t.fields.empty()) {
         json::Array fields;
         for (const FieldDef& f : t.fields) {
